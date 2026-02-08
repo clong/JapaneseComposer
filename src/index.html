@@ -17,6 +17,9 @@
           <button class="chip" id="language-toggle" type="button" aria-pressed="false">
             日本語 UI
           </button>
+          <button class="chip" id="mode-toggle" type="button" aria-pressed="false">
+            Mode: Edit
+          </button>
           <button class="chip" id="furigana-toggle" type="button" aria-pressed="true">
             Furigana: On
           </button>
@@ -30,16 +33,15 @@
         <section class="panel editor-panel">
           <div class="panel-header">
             <h2 id="editor-title">Composer</h2>
-            <p id="editor-subtitle">Write in English or Japanese — hover view shows furigana and kanji details.</p>
+            <p id="editor-subtitle">Write in English or Japanese — switch to Reading Mode for furigana and kanji details.</p>
           </div>
-          <div class="composer-stack">
+          <div class="composer-surface">
             <textarea
               id="composer-input"
               spellcheck="false"
               placeholder="Write your journal entry here..."
             ></textarea>
-            <div class="hover-label" id="hover-title">Hover View</div>
-            <div id="preview" class="preview hover-preview" aria-live="polite"></div>
+            <div id="preview" class="preview overlay-preview" aria-live="polite"></div>
           </div>
         </section>
 
@@ -65,6 +67,15 @@
       <div class="tooltip-reading" id="tooltip-reading">---</div>
       <div class="tooltip-meaning" id="tooltip-meaning">---</div>
       <button class="primary" id="tooltip-add" type="button">Add to vocab</button>
+    </div>
+
+    <div id="selection-tooltip" class="tooltip selection-tooltip" role="dialog" aria-hidden="true">
+      <div class="tooltip-title" id="selection-title">Selection</div>
+      <div class="selection-actions">
+        <button class="ghost" id="selection-translate" type="button">Translate</button>
+        <button class="ghost" id="selection-copy" type="button">Copy</button>
+      </div>
+      <div class="selection-result" id="selection-result"></div>
     </div>
 
     <script type="module" src="./assets/app.js"></script>

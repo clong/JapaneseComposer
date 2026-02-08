@@ -14,6 +14,8 @@
   --radius: 24px;
   --radius-small: 14px;
   --border: 1px solid rgba(40, 32, 28, 0.12);
+  --composer-font-size: 18px;
+  --composer-line-height: 1.75;
 }
 
 * {
@@ -100,7 +102,7 @@ body::before {
 
 .app-main {
   display: grid;
-  grid-template-columns: minmax(520px, 2.4fr) minmax(240px, 0.8fr);
+  grid-template-columns: minmax(520px, 2.4fr) minmax(360px, 1.6fr);
   gap: 20px;
   align-items: stretch;
 }
@@ -141,39 +143,63 @@ body::before {
   font-size: 14px;
 }
 
-textarea#composer-input {
+.composer-surface {
+  position: relative;
   flex: 1.2;
-  width: 100%;
-  resize: none;
+  min-height: 360px;
   border-radius: var(--radius-small);
   border: 1px solid rgba(30, 22, 20, 0.1);
-  padding: 18px;
-  font-family: 'Noto Serif JP', 'DM Serif Display', serif;
-  font-size: 18px;
-  line-height: 1.7;
   background: var(--paper);
-  color: var(--ink);
-  min-height: 240px;
+  overflow: hidden;
 }
 
-textarea#composer-input:focus {
+.composer-surface:focus-within {
   outline: 2px solid rgba(217, 95, 76, 0.4);
   box-shadow: 0 12px 30px rgba(217, 95, 76, 0.2);
 }
 
-.preview {
-  flex: 1;
+textarea#composer-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
   border-radius: var(--radius-small);
-  border: 1px solid rgba(30, 22, 20, 0.1);
+  border: none;
   padding: 18px;
-  background: var(--paper);
-  font-family: 'Noto Serif JP', serif;
-  font-size: 19px;
-  line-height: 1.8;
+  font-family: 'Noto Serif JP', 'DM Serif Display', serif;
+  font-size: var(--composer-font-size);
+  line-height: var(--composer-line-height);
+  background: transparent;
+  color: var(--ink);
+  caret-color: var(--ink);
+  z-index: 1;
+}
+
+textarea#composer-input:focus {
+  outline: none;
+}
+
+textarea#composer-input::placeholder {
+  color: rgba(31, 27, 26, 0.45);
+}
+
+.preview {
+  position: absolute;
+  inset: 0;
+  padding: 18px;
+  font-family: 'Noto Serif JP', 'DM Serif Display', serif;
+  font-size: var(--composer-font-size);
+  line-height: var(--composer-line-height);
   overflow-y: auto;
   white-space: pre-wrap;
-  min-height: 200px;
-  max-height: 45vh;
+  color: var(--ink);
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  visibility: hidden;
+  display: none;
+  transition: opacity 0.2s ease;
 }
 
 .preview ruby {
@@ -184,6 +210,7 @@ textarea#composer-input:focus {
 .preview rt {
   font-size: 0.55em;
   color: var(--ink-muted);
+  pointer-events: none;
 }
 
 .app.furigana-off .preview rt {
@@ -207,16 +234,33 @@ textarea#composer-input:focus {
   color: #2d1e1a;
 }
 
+.preview .char {
+  display: inline-block;
+}
+
 .vocab-panel {
   gap: 12px;
 }
 
-.composer-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex: 1;
-  min-height: 0;
+.app.reading-mode .preview {
+  pointer-events: auto;
+  opacity: 1;
+  visibility: visible;
+  display: block;
+}
+
+.app.reading-mode textarea#composer-input {
+  color: transparent;
+  caret-color: transparent;
+  pointer-events: none;
+}
+
+.app.reading-mode textarea#composer-input::placeholder {
+  color: transparent;
+}
+
+.app.reading-mode {
+  --composer-line-height: 2.2;
 }
 
 .hover-label {
@@ -232,6 +276,80 @@ textarea#composer-input:focus {
   gap: 12px;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.vocab-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vocab-row {
+  display: grid;
+  grid-template-columns: 1.6fr 0.8fr 0.8fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-radius: var(--radius-small);
+  border: 1px solid rgba(30, 22, 20, 0.08);
+  background: var(--paper-strong);
+  position: relative;
+}
+
+.vocab-row.vocab-head {
+  background: rgba(217, 95, 76, 0.08);
+  border-color: rgba(217, 95, 76, 0.25);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 12px;
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.vocab-cell {
+  font-size: 14px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.vocab-row .vocab-cell:last-child {
+  font-family: 'Noto Serif JP', 'DM Serif Display', serif;
+  font-size: 15px;
+}
+
+.vocab-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(217, 95, 76, 0.12);
+  color: #d95f4c;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity 0.2s ease, transform 0.2s ease, background 0.2s ease;
+  cursor: pointer;
+}
+
+.vocab-delete svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.vocab-row:hover .vocab-delete {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.vocab-delete:hover {
+  background: rgba(217, 95, 76, 0.22);
+  color: #b54434;
 }
 
 .vocab-card {
@@ -299,6 +417,42 @@ textarea#composer-input:focus {
 .tooltip-title {
   font-weight: 600;
   font-size: 16px;
+}
+
+.selection-tooltip {
+  max-width: 420px;
+}
+
+.selection-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.selection-result {
+  display: none;
+  border-radius: 12px;
+  border: 1px solid rgba(30, 22, 20, 0.12);
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--paper);
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.selection-tooltip.expanded .selection-result {
+  display: block;
+}
+
+.selection-translation {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.selection-romaji {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--ink-muted);
 }
 
 .tooltip-reading {
