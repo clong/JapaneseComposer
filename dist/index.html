@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Japanese Composer</title>
+    <link rel="stylesheet" href="./assets/app.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-title" id="app-title">Japanese Composer</span>
+          <span class="brand-subtitle" id="app-subtitle">Journal workspace with furigana and vocab support</span>
+        </div>
+        <div class="controls">
+          <button class="chip" id="language-toggle" type="button" aria-pressed="false">
+            日本語 UI
+          </button>
+          <button class="chip" id="furigana-toggle" type="button" aria-pressed="true">
+            Furigana: On
+          </button>
+          <button class="chip" id="vocab-toggle" type="button" aria-pressed="true">
+            Vocab: On
+          </button>
+        </div>
+      </header>
+
+      <main class="app-main">
+        <section class="panel editor-panel">
+          <div class="panel-header">
+            <h2 id="editor-title">Composer</h2>
+            <p id="editor-subtitle">Write in English or Japanese — hover view shows furigana and kanji details.</p>
+          </div>
+          <div class="composer-stack">
+            <textarea
+              id="composer-input"
+              spellcheck="false"
+              placeholder="Write your journal entry here..."
+            ></textarea>
+            <div class="hover-label" id="hover-title">Hover View</div>
+            <div id="preview" class="preview hover-preview" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <aside class="panel vocab-panel" id="vocab-panel">
+          <div class="panel-header">
+            <div>
+              <h2 id="vocab-title">Vocabulary</h2>
+              <p id="vocab-subtitle">Saved words from your journal entry.</p>
+            </div>
+            <button class="ghost" id="clear-vocab" type="button">Clear</button>
+          </div>
+          <div id="vocab-list" class="vocab-list"></div>
+        </aside>
+      </main>
+
+      <footer class="app-footer">
+        <span id="build-stamp">Build 2026-02-08T06:29:20.947Z</span>
+      </footer>
+    </div>
+
+    <div id="tooltip" class="tooltip" role="dialog" aria-hidden="true">
+      <div class="tooltip-title" id="tooltip-word">---</div>
+      <div class="tooltip-reading" id="tooltip-reading">---</div>
+      <div class="tooltip-meaning" id="tooltip-meaning">---</div>
+      <button class="primary" id="tooltip-add" type="button">Add to vocab</button>
+    </div>
+
+    <script type="module" src="./assets/app.js"></script>
+  </body>
+</html>
