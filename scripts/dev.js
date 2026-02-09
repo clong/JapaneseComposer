@@ -76,12 +76,99 @@ Respond in the same language as the question when possible; otherwise respond in
 `;
 
 const debugEnabled = process.env.DEV_DEBUG === '1';
+const BASIC_AUTH_PASSWORD = process.env.BASIC_AUTH_PASSWORD || '';
+const BASIC_AUTH_REALM = process.env.BASIC_AUTH_REALM || 'Japanese Composer';
 
 function debug(...args) {
   if (!debugEnabled) {
     return;
   }
   console.log('[dev]', ...args);
+}
+
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  const realIp = req.headers['x-real-ip'];
+  if (typeof realIp === 'string' && realIp.trim()) {
+    return realIp.trim();
+  }
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+function parseBasicAuth(header) {
+  if (typeof header !== 'string') {
+    return null;
+  }
+  const [scheme, encoded] = header.split(' ');
+  if (!scheme || scheme.toLowerCase() !== 'basic' || !encoded) {
+    return null;
+  }
+  let decoded = '';
+  try {
+    decoded = Buffer.from(encoded, 'base64').toString('utf8');
+  } catch (error) {
+    return null;
+  }
+  const separator = decoded.indexOf(':');
+  if (separator === -1) {
+    return { username: '', password: decoded };
+  }
+  return {
+    username: decoded.slice(0, separator),
+    password: decoded.slice(separator + 1)
+  };
+}
+
+function auditAuthEvent({ ok, reason, username, req }) {
+  const timestamp = new Date().toISOString();
+  const ip = getClientIp(req);
+  const method = req.method || 'UNKNOWN';
+  const path = req.url || '/';
+  const userAgent = typeof req.headers['user-agent'] === 'string'
+    ? req.headers['user-agent']
+    : '';
+  const statusLabel = ok ? 'allow' : 'deny';
+  const details = [
+    `time=${timestamp}`,
+    `ip=${ip}`,
+    `method=${method}`,
+    `path=${path}`,
+    `user=${username || 'unknown'}`,
+    `reason=${reason || 'ok'}`,
+    userAgent ? `ua="${userAgent.replace(/"/g, '\\"')}"` : null
+  ].filter(Boolean).join(' ');
+  console.log(`[auth] ${statusLabel} ${details}`);
+}
+
+function requireBasicAuth(req, res) {
+  if (!BASIC_AUTH_PASSWORD) {
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Server authentication is not configured.');
+    auditAuthEvent({ ok: false, reason: 'missing_password', username: '', req });
+    return false;
+  }
+
+  const credentials = parseBasicAuth(req.headers.authorization);
+  if (!credentials || credentials.password !== BASIC_AUTH_PASSWORD) {
+    res.writeHead(401, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'WWW-Authenticate': `Basic realm="${BASIC_AUTH_REALM}", charset="UTF-8"`
+    });
+    res.end('Authentication required.');
+    auditAuthEvent({
+      ok: false,
+      reason: credentials ? 'invalid_password' : 'missing_header',
+      username: credentials?.username || '',
+      req
+    });
+    return false;
+  }
+
+  auditAuthEvent({ ok: true, reason: 'ok', username: credentials.username, req });
+  return true;
 }
 
 await fs.mkdir(dataDir, { recursive: true });
@@ -124,6 +211,9 @@ const mimeTypes = {
   '.ico': 'image/x-icon'
 };
 const server = http.createServer(async (req, res) => {
+  if (!requireBasicAuth(req, res)) {
+    return;
+  }
   const requestUrl = new URL(req.url || '/', 'http://localhost');
   if (requestUrl.pathname === '/api/vocab') {
     if (!vocabDbReady) {

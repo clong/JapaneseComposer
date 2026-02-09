@@ -14,10 +14,6 @@ primary_region = 'sjc'
   min_machines_running = 0
   processes = ['app']
 
-  [http_service.basic_auth]
-    username = "composer"
-    password = "${BASIC_AUTH_PASSWORD}"
-
 [mounts]
   source = "vocab_data"
   destination = "/data"

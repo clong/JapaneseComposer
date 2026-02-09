@@ -23,6 +23,16 @@ npm run dev
 
 Then visit the printed local URL.
 
+### Authentication
+
+The dev server requires basic authentication. Set the password via:
+
+```bash
+BASIC_AUTH_PASSWORD=your_password npm run dev
+```
+
+Optionally override the prompt text with `BASIC_AUTH_REALM`.
+
 ## Tests
 
 ```bash
