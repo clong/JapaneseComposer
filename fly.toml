@@ -1,22 +1,20 @@
-app = "japanese-composer"
-primary_region = "sea"
+# fly.toml app configuration file generated for japanese-composer on 2026-02-08T23:21:43-08:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-[build]
-  dockerfile = "Dockerfile"
-
-[env]
-  NODE_ENV = "production"
-  PORT = "5173"
-  VOCAB_DB_PATH = "/data/vocab.sqlite"
+app = 'japanese-composer'
+primary_region = 'sjc'
 
 [http_service]
   internal_port = 5173
   force_https = true
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  auto_stop_machines = "stop"
   min_machines_running = 0
-  processes = ["app"]
+  processes = ['app']
 
-[[mounts]]
-  source = "japanese_composer_data"
-  destination = "/data"
+[[vm]]
+  memory = '1gb'
+  cpus = 1
+  memory_mb = 1024

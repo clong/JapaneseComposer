@@ -30,12 +30,25 @@ const html = await fs.readFile(htmlPath, 'utf8');
 const stampedHtml = html.replace('@@BUILD_TIMESTAMP@@', new Date().toISOString());
 await fs.writeFile(path.join(distDir, 'index.html'), stampedHtml);
 
+const shareHtmlPath = path.join(srcDir, 'share.html');
+if (await pathExists(shareHtmlPath)) {
+  const shareHtml = await fs.readFile(shareHtmlPath, 'utf8');
+  const stampedShareHtml = shareHtml.replace('@@BUILD_TIMESTAMP@@', new Date().toISOString());
+  await fs.writeFile(path.join(distDir, 'share.html'), stampedShareHtml);
+}
+
 if (await pathExists(faviconPath)) {
   await fs.copyFile(faviconPath, path.join(distDir, 'favicon.ico'));
 }
 
 await fs.copyFile(path.join(srcDir, 'app.js'), path.join(assetsDir, 'app.js'));
 await fs.copyFile(path.join(srcDir, 'styles.css'), path.join(assetsDir, 'app.css'));
+if (await pathExists(path.join(srcDir, 'share.js'))) {
+  await fs.copyFile(path.join(srcDir, 'share.js'), path.join(assetsDir, 'share.js'));
+}
+if (await pathExists(path.join(srcDir, 'share.css'))) {
+  await fs.copyFile(path.join(srcDir, 'share.css'), path.join(assetsDir, 'share.css'));
+}
 
 const kuromojiScriptPath = (await pathExists(kuromojiDistScriptPath))
   ? kuromojiDistScriptPath

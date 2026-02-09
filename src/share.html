@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shared Entry · Japanese Composer</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" type="image/x-icon" />
+    <link rel="stylesheet" href="/assets/app.css" />
+    <link rel="stylesheet" href="/assets/share.css" />
+  </head>
+  <body class="share-page">
+    <div class="share-shell">
+      <header class="share-header">
+        <div>
+          <div class="share-brand">Japanese Composer</div>
+          <div class="share-subtitle">Shared journal entry</div>
+        </div>
+        <div class="share-status" id="share-status">Loading…</div>
+      </header>
+
+      <main class="share-main">
+        <section class="panel share-panel share-entry-panel">
+          <div class="share-entry-header">
+            <h1 id="share-entry-title">Shared entry</h1>
+            <div class="share-entry-meta" id="share-entry-meta"></div>
+          </div>
+          <div class="share-entry-body" id="share-entry-body"></div>
+        </section>
+
+        <section class="panel share-panel share-feedback-panel">
+          <div class="share-feedback-header">
+            <div>
+              <h2>Feedback</h2>
+              <p>Leave notes, corrections, or encouragement.</p>
+            </div>
+            <button class="ghost" id="share-refresh" type="button">Refresh</button>
+          </div>
+          <form class="share-comment-form" id="share-comment-form">
+            <div class="share-form-row">
+              <label for="share-comment-name">Your name (optional)</label>
+              <input id="share-comment-name" type="text" placeholder="Your name" maxlength="80" />
+            </div>
+            <div class="share-form-row">
+              <label for="share-comment-body">Comment</label>
+              <textarea id="share-comment-body" rows="4" placeholder="Write feedback here…" maxlength="2000" required></textarea>
+            </div>
+            <button class="primary" id="share-comment-submit" type="submit">Send feedback</button>
+            <div class="share-comment-status" id="share-comment-status"></div>
+          </form>
+          <div class="share-comments-list" id="share-comments-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/assets/share.js"></script>
+  </body>
+</html>

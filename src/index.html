@@ -123,6 +123,39 @@
               <div id="questions-list" class="questions-list"></div>
             </div>
           </section>
+          <section class="panel share-panel" id="share-panel">
+            <div class="panel-header panel-header-actions">
+              <div>
+                <h2 id="share-title">Sharing</h2>
+                <p id="share-subtitle">Create a link to collect feedback on this entry.</p>
+              </div>
+              <div class="panel-actions">
+                <button
+                  class="ghost panel-toggle"
+                  id="share-collapse"
+                  type="button"
+                  aria-expanded="true"
+                  aria-controls="share-body"
+                >
+                  Collapse
+                </button>
+              </div>
+            </div>
+            <div class="panel-body" id="share-body">
+              <div class="share-controls">
+                <button class="primary" id="share-create" type="button">Create link</button>
+                <button class="ghost" id="share-copy" type="button">Copy link</button>
+                <button class="ghost" id="share-open" type="button">Open</button>
+                <button class="ghost" id="share-refresh" type="button">Refresh</button>
+              </div>
+              <div class="share-field">
+                <label id="share-link-label" for="share-link">Share link</label>
+                <input id="share-link" class="share-link-input" type="text" readonly />
+              </div>
+              <div class="share-status" id="share-status"></div>
+              <div class="share-comments" id="share-comments-list"></div>
+            </div>
+          </section>
         </aside>
       </main>
 

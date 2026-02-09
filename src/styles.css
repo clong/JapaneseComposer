@@ -645,6 +645,77 @@ textarea#composer-input::placeholder {
   text-align: center;
 }
 
+.share-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.share-panel {
+  min-height: 360px;
+}
+
+.share-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.share-field label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.share-link-input {
+  border-radius: 12px;
+  border: 1px solid rgba(30, 22, 20, 0.15);
+  background: var(--paper-strong);
+  padding: 10px 12px;
+  font-size: 13px;
+  font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  color: var(--ink);
+}
+
+.share-status {
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.share-comments {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.share-comment-card {
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 16px;
+  border: 1px solid rgba(30, 22, 20, 0.1);
+  padding: 12px 14px;
+}
+
+.share-comment-meta {
+  font-size: 12px;
+  color: var(--ink-muted);
+  margin-bottom: 6px;
+}
+
+.share-comment-body {
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+.share-empty {
+  color: var(--ink-muted);
+  font-size: 13px;
+  border: 1px dashed rgba(30, 22, 20, 0.18);
+  border-radius: var(--radius-small);
+  padding: 14px;
+  text-align: center;
+}
+
 .app-footer {
   margin-top: 22px;
   color: var(--ink-muted);

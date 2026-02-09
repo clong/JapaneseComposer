@@ -1,6 +1,7 @@
 const DIRECT_DICT_ENDPOINT = 'https://jisho.org/api/v1/search/words?keyword=';
 const PROXY_DICT_ENDPOINT = '/api/lookup?keyword=';
 const VOCAB_API_ENDPOINT = '/api/vocab';
+const SHARE_API_ENDPOINT = '/api/share';
 const preferProxy = typeof window !== 'undefined'
   && window.location
   && ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
@@ -8,6 +9,10 @@ const vocabApiEnabled = typeof window !== 'undefined'
   && window.location
   && window.location.protocol !== 'file:';
 let vocabApiAvailable = vocabApiEnabled;
+const shareApiEnabled = typeof window !== 'undefined'
+  && window.location
+  && window.location.protocol !== 'file:';
+let shareApiAvailable = shareApiEnabled;
 const STORAGE_KEYS = {
   entry: 'jc_entry',
   vocab: 'jc_vocab_list',
@@ -109,7 +114,26 @@ const i18n = {
     questionsEmpty: 'No questions yet. Select text and ask a question.',
     questionsSelectedLabel: 'Selected text',
     questionsQuestionLabel: 'Question',
-    questionsAnswerLabel: 'Answer'
+    questionsAnswerLabel: 'Answer',
+    shareTitle: 'Sharing',
+    shareSubtitle: 'Create a link to collect feedback on this entry.',
+    shareCreate: 'Create link',
+    shareCopy: 'Copy link',
+    shareOpen: 'Open',
+    shareRefresh: 'Refresh',
+    shareLinkLabel: 'Share link',
+    shareLinkPlaceholder: 'Create a share link to send.',
+    shareCopied: 'Copied',
+    shareCopyError: 'Copy failed.',
+    shareCreateMissing: 'Enter some text to share.',
+    shareCreateError: 'Share failed.',
+    shareLoading: 'Loading feedback…',
+    shareEmpty: 'No feedback yet.',
+    shareDisabled: 'Sharing is unavailable in this mode.',
+    shareSyncing: 'Syncing…',
+    shareSynced: 'Last synced',
+    shareSyncError: 'Sync failed.',
+    shareAnonymous: 'Anonymous'
   },
   ja: {
     appTitle: '日本語コンポーザー',
@@ -174,7 +198,26 @@ const i18n = {
     questionsEmpty: 'まだ質問がありません。テキストを選択して質問してください。',
     questionsSelectedLabel: '選択テキスト',
     questionsQuestionLabel: '質問',
-    questionsAnswerLabel: '回答'
+    questionsAnswerLabel: '回答',
+    shareTitle: '共有',
+    shareSubtitle: 'この作文を共有してフィードバックを集めます。',
+    shareCreate: '共有リンク作成',
+    shareCopy: 'コピー',
+    shareOpen: '開く',
+    shareRefresh: '更新',
+    shareLinkLabel: '共有リンク',
+    shareLinkPlaceholder: '共有リンクを作成してください。',
+    shareCopied: 'コピーしました',
+    shareCopyError: 'コピーに失敗しました。',
+    shareCreateMissing: '共有するテキストを入力してください。',
+    shareCreateError: '共有に失敗しました。',
+    shareLoading: 'フィードバック読み込み中…',
+    shareEmpty: 'まだフィードバックがありません。',
+    shareDisabled: 'このモードでは共有できません。',
+    shareSyncing: '同期中…',
+    shareSynced: '同期',
+    shareSyncError: '同期に失敗しました。',
+    shareAnonymous: '匿名'
   }
 };
 
@@ -188,7 +231,10 @@ const state = {
   language: 'en',
   mode: 'edit',
   vocab: [],
-  questions: []
+  questions: [],
+  shareToken: '',
+  shareUrl: '',
+  shareCreatedAt: null
 };
 
 const proofreadState = {
@@ -198,10 +244,23 @@ const proofreadState = {
   updatedAt: null
 };
 
+const shareState = {
+  status: 'idle',
+  error: '',
+  comments: [],
+  syncing: false,
+  syncError: '',
+  lastSyncedAt: null,
+  lastFetchedAt: null
+};
+
 const lookupCache = new Map();
 const pendingLookups = new Map();
 let pendingRender = false;
 let vocabSaveQueue = Promise.resolve();
+let shareSyncTimer = null;
+let shareSyncPending = null;
+let shareSyncInFlight = false;
 
 function enqueueVocabApiTask(task) {
   vocabSaveQueue = vocabSaveQueue
@@ -231,6 +290,19 @@ const questionsCollapse = document.querySelector('#questions-collapse');
 const questionsTitle = document.querySelector('#questions-title');
 const questionsSubtitle = document.querySelector('#questions-subtitle');
 const questionsList = document.querySelector('#questions-list');
+const sharePanel = document.querySelector('#share-panel');
+const shareBody = document.querySelector('#share-body');
+const shareCollapse = document.querySelector('#share-collapse');
+const shareTitle = document.querySelector('#share-title');
+const shareSubtitle = document.querySelector('#share-subtitle');
+const shareCreate = document.querySelector('#share-create');
+const shareCopy = document.querySelector('#share-copy');
+const shareOpen = document.querySelector('#share-open');
+const shareRefresh = document.querySelector('#share-refresh');
+const shareLinkLabel = document.querySelector('#share-link-label');
+const shareLinkInput = document.querySelector('#share-link');
+const shareStatus = document.querySelector('#share-status');
+const shareCommentsList = document.querySelector('#share-comments-list');
 const languageToggle = document.querySelector('#language-toggle');
 const modeToggle = document.querySelector('#mode-toggle');
 const furiganaToggle = document.querySelector('#furigana-toggle');
@@ -915,6 +987,11 @@ function normalizeDocumentEntries(entries) {
       const proofreadUpdatedAt = Number.isFinite(entry.proofreadUpdatedAt)
         ? Math.trunc(entry.proofreadUpdatedAt)
         : null;
+      const shareToken = typeof entry.shareToken === 'string' ? entry.shareToken.trim() : '';
+      const shareUrl = typeof entry.shareUrl === 'string' ? entry.shareUrl.trim() : '';
+      const shareCreatedAt = Number.isFinite(entry.shareCreatedAt)
+        ? Math.trunc(entry.shareCreatedAt)
+        : null;
       const createdAt = Number.isFinite(entry.createdAt) ? Math.trunc(entry.createdAt) : now;
       const updatedAt = Number.isFinite(entry.updatedAt) ? Math.trunc(entry.updatedAt) : createdAt;
       return {
@@ -925,6 +1002,9 @@ function normalizeDocumentEntries(entries) {
         questions,
         proofreadContent,
         proofreadUpdatedAt,
+        shareToken,
+        shareUrl,
+        shareCreatedAt,
         createdAt,
         updatedAt
       };
@@ -1069,6 +1149,9 @@ function createDocument({ title = '', text = '', vocab = [], questions = [] } = 
     questions: normalizeQuestionEntries(questions),
     proofreadContent: '',
     proofreadUpdatedAt: null,
+    shareToken: '',
+    shareUrl: '',
+    shareCreatedAt: null,
     createdAt: now,
     updatedAt: now
   };
@@ -1080,6 +1163,9 @@ function applyDocumentToState(doc) {
   state.text = doc.text || '';
   state.vocab = normalizeVocabEntries(doc.vocab);
   state.questions = normalizeQuestionEntries(doc.questions);
+  state.shareToken = doc.shareToken || '';
+  state.shareUrl = doc.shareUrl || (doc.shareToken ? buildShareUrl(doc.shareToken) : '');
+  state.shareCreatedAt = Number.isFinite(doc.shareCreatedAt) ? doc.shareCreatedAt : null;
 }
 
 function hydrateProofreadFromDocument(doc, { reset = false } = {}) {
@@ -1113,6 +1199,22 @@ function hydrateProofreadFromDocument(doc, { reset = false } = {}) {
   }
 }
 
+function hydrateShareFromDocument(doc) {
+  shareState.comments = [];
+  shareState.status = 'idle';
+  shareState.error = '';
+  shareState.syncError = '';
+  shareState.lastFetchedAt = null;
+  shareState.lastSyncedAt = null;
+  if (doc?.shareToken && shareApiAvailable) {
+    shareState.status = 'loading';
+    renderSharePanel();
+    void refreshShareComments();
+    return;
+  }
+  renderSharePanel();
+}
+
 function persistActiveDocument({ updateList = false, normalize = false } = {}) {
   if (!state.documentId) {
     return;
@@ -1140,6 +1242,9 @@ function persistActiveDocument({ updateList = false, normalize = false } = {}) {
       questions: normalizedQuestions,
       proofreadContent: proofreadContent || '',
       proofreadUpdatedAt,
+      shareToken: state.shareToken,
+      shareUrl: state.shareUrl,
+      shareCreatedAt: state.shareCreatedAt,
       createdAt: now,
       updatedAt: now
     });
@@ -1149,6 +1254,9 @@ function persistActiveDocument({ updateList = false, normalize = false } = {}) {
     doc.text = state.text;
     doc.vocab = normalizedVocab;
     doc.questions = normalizedQuestions;
+    doc.shareToken = state.shareToken;
+    doc.shareUrl = state.shareUrl;
+    doc.shareCreatedAt = state.shareCreatedAt;
     if (hasProofread) {
       doc.proofreadContent = proofreadContent || '';
       doc.proofreadUpdatedAt = proofreadUpdatedAt;
@@ -1162,6 +1270,8 @@ function persistActiveDocument({ updateList = false, normalize = false } = {}) {
   if (updateList) {
     renderDocumentSelect();
   }
+
+  scheduleShareSync();
 }
 
 function setActiveDocument(doc, { resetProofread = true } = {}) {
@@ -1176,6 +1286,7 @@ function setActiveDocument(doc, { resetProofread = true } = {}) {
   renderVocab();
   renderQuestions();
   hydrateProofreadFromDocument(doc, { reset: resetProofread });
+  hydrateShareFromDocument(doc);
   clearActiveHover();
   hideTooltip();
   hideSelectionTooltip();
@@ -1551,6 +1662,267 @@ function renderQuestions() {
   });
 }
 
+function buildShareUrl(token) {
+  if (!token) {
+    return '';
+  }
+  try {
+    return new URL(`/share/${token}`, window.location.origin).toString();
+  } catch (error) {
+    return `/share/${token}`;
+  }
+}
+
+function formatShareTimestamp(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return '';
+  }
+  const locale = state.language === 'ja' ? 'ja-JP' : 'en-US';
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    }).format(date);
+  } catch (error) {
+    return date.toLocaleString();
+  }
+}
+
+function buildSharePayload() {
+  const doc = state.documents.find((item) => item.id === state.documentId);
+  const payload = {
+    title: state.title,
+    text: state.text,
+    updatedAt: Date.now()
+  };
+  if (Number.isFinite(doc?.createdAt)) {
+    payload.createdAt = Math.trunc(doc.createdAt);
+  }
+  return payload;
+}
+
+function renderShareComments() {
+  const copy = i18n[state.language];
+  shareCommentsList.replaceChildren();
+
+  if (!shareApiAvailable) {
+    const empty = document.createElement('div');
+    empty.className = 'share-empty';
+    empty.textContent = copy.shareDisabled;
+    shareCommentsList.appendChild(empty);
+    return;
+  }
+
+  if (!state.shareToken) {
+    const empty = document.createElement('div');
+    empty.className = 'share-empty';
+    empty.textContent = copy.shareLinkPlaceholder;
+    shareCommentsList.appendChild(empty);
+    return;
+  }
+
+  if (shareState.status === 'loading') {
+    const loading = document.createElement('div');
+    loading.className = 'share-empty';
+    loading.textContent = copy.shareLoading;
+    shareCommentsList.appendChild(loading);
+    return;
+  }
+
+  if (shareState.status === 'error') {
+    const error = document.createElement('div');
+    error.className = 'share-empty';
+    error.textContent = shareState.error || copy.shareSyncError;
+    shareCommentsList.appendChild(error);
+    return;
+  }
+
+  if (!shareState.comments.length) {
+    const empty = document.createElement('div');
+    empty.className = 'share-empty';
+    empty.textContent = copy.shareEmpty;
+    shareCommentsList.appendChild(empty);
+    return;
+  }
+
+  shareState.comments.forEach((comment) => {
+    const card = document.createElement('div');
+    card.className = 'share-comment-card';
+
+    const meta = document.createElement('div');
+    meta.className = 'share-comment-meta';
+    const author = comment.author || copy.shareAnonymous;
+    const timestamp = comment.createdAt ? formatShareTimestamp(new Date(comment.createdAt)) : '';
+    meta.textContent = timestamp ? `${author} · ${timestamp}` : author;
+
+    const body = document.createElement('div');
+    body.className = 'share-comment-body';
+    body.textContent = comment.body || '';
+
+    card.appendChild(meta);
+    card.appendChild(body);
+    shareCommentsList.appendChild(card);
+  });
+}
+
+function renderSharePanel() {
+  const copy = i18n[state.language];
+  shareTitle.textContent = copy.shareTitle;
+  shareSubtitle.textContent = copy.shareSubtitle;
+  shareCreate.textContent = copy.shareCreate;
+  shareCopy.textContent = copy.shareCopy;
+  shareOpen.textContent = copy.shareOpen;
+  shareRefresh.textContent = copy.shareRefresh;
+  shareLinkLabel.textContent = copy.shareLinkLabel;
+
+  const hasShare = Boolean(state.shareToken);
+  shareLinkInput.placeholder = copy.shareLinkPlaceholder;
+  if (hasShare && !state.shareUrl) {
+    state.shareUrl = buildShareUrl(state.shareToken);
+  }
+  shareLinkInput.value = hasShare ? state.shareUrl : '';
+
+  const hasText = Boolean(state.text.trim());
+  shareCreate.disabled = !shareApiAvailable || !hasText || hasShare || shareState.syncing;
+  shareCopy.disabled = !hasShare;
+  shareOpen.disabled = !hasShare;
+  shareRefresh.disabled = !hasShare;
+
+  let statusText = '';
+  if (!shareApiAvailable) {
+    statusText = copy.shareDisabled;
+  } else if (shareState.syncing) {
+    statusText = copy.shareSyncing;
+  } else if (shareState.syncError) {
+    statusText = shareState.syncError;
+  } else if (shareState.lastSyncedAt instanceof Date) {
+    const formatted = formatShareTimestamp(shareState.lastSyncedAt);
+    statusText = formatted ? `${copy.shareSynced}: ${formatted}` : '';
+  }
+
+  shareStatus.textContent = statusText;
+  renderShareComments();
+}
+
+async function refreshShareComments({ silent = false } = {}) {
+  if (!state.shareToken || !shareApiAvailable) {
+    shareState.comments = [];
+    shareState.status = 'idle';
+    shareState.error = '';
+    renderShareComments();
+    return;
+  }
+  if (!silent) {
+    shareState.status = 'loading';
+    shareState.error = '';
+    renderShareComments();
+  }
+  try {
+    const comments = await requestShareComments(state.shareToken);
+    shareState.comments = comments;
+    shareState.status = 'success';
+    shareState.error = '';
+    shareState.lastFetchedAt = new Date();
+    renderShareComments();
+  } catch (error) {
+    shareState.status = 'error';
+    shareState.error = error?.message || i18n[state.language].shareSyncError;
+    renderShareComments();
+  }
+}
+
+function scheduleShareSync() {
+  if (!state.shareToken || !shareApiAvailable) {
+    return;
+  }
+  shareSyncPending = buildSharePayload();
+  if (shareSyncTimer) {
+    return;
+  }
+  shareSyncTimer = setTimeout(async () => {
+    shareSyncTimer = null;
+    if (shareSyncInFlight || !shareSyncPending) {
+      return;
+    }
+    if (!state.shareToken || !shareApiAvailable) {
+      shareSyncPending = null;
+      return;
+    }
+    const payload = shareSyncPending;
+    shareSyncPending = null;
+    shareSyncInFlight = true;
+    shareState.syncing = true;
+    shareState.syncError = '';
+    renderSharePanel();
+    try {
+      await requestShareUpdate(state.shareToken, payload);
+      shareState.lastSyncedAt = new Date();
+    } catch (error) {
+      shareState.syncError = i18n[state.language].shareSyncError;
+    } finally {
+      shareState.syncing = false;
+      shareSyncInFlight = false;
+      renderSharePanel();
+      if (shareSyncPending) {
+        scheduleShareSync();
+      }
+    }
+  }, 1500);
+}
+
+async function requestShareCreate(entry) {
+  const response = await fetch(SHARE_API_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entry })
+  });
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 405) {
+      shareApiAvailable = false;
+    }
+    const data = await safeParseJson(response);
+    throw new Error(data?.error || 'Share failed');
+  }
+  return response.json();
+}
+
+async function requestShareUpdate(token, entry) {
+  const response = await fetch(`${SHARE_API_ENDPOINT}/${encodeURIComponent(token)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entry })
+  });
+  if (!response.ok) {
+    if (response.status === 405) {
+      shareApiAvailable = false;
+    }
+    const data = await safeParseJson(response);
+    throw new Error(data?.error || 'Share update failed');
+  }
+  return response.json();
+}
+
+async function requestShareComments(token) {
+  const response = await fetch(`${SHARE_API_ENDPOINT}/${encodeURIComponent(token)}/comments`);
+  if (!response.ok) {
+    if (response.status === 405) {
+      shareApiAvailable = false;
+    }
+    const data = await safeParseJson(response);
+    throw new Error(data?.error || 'Share comments failed');
+  }
+  const data = await response.json();
+  return Array.isArray(data?.comments) ? data.comments : [];
+}
+
+async function safeParseJson(response) {
+  try {
+    return await response.json();
+  } catch (error) {
+    return null;
+  }
+}
+
 function buildDocumentLabel(doc, copy) {
   const title = typeof doc.title === 'string' ? doc.title.trim() : '';
   return title || copy.documentUntitled;
@@ -1678,6 +2050,7 @@ function renderUI() {
   vocabPanel.style.display = state.showVocab ? 'flex' : 'none';
   syncPanelToggle(vocabPanel, vocabBody, vocabCollapse, copy);
   syncPanelToggle(questionsPanel, questionsBody, questionsCollapse, copy);
+  syncPanelToggle(sharePanel, shareBody, shareCollapse, copy);
   clearVocab.textContent = copy.clear;
   tooltipAdd.textContent = copy.addToVocab;
   selectionTitle.textContent = copy.selectionTitle;
@@ -1701,6 +2074,7 @@ function renderUI() {
 
   renderDocumentControls();
   renderProofread();
+  renderSharePanel();
 }
 
 function schedulePreviewRender() {
@@ -2074,6 +2448,83 @@ function bindEvents() {
   questionsCollapse.addEventListener('click', () => {
     const nextCollapsed = !questionsPanel.classList.contains('is-collapsed');
     setPanelCollapsed(questionsPanel, questionsBody, questionsCollapse, nextCollapsed);
+  });
+
+  shareCollapse.addEventListener('click', () => {
+    const nextCollapsed = !sharePanel.classList.contains('is-collapsed');
+    setPanelCollapsed(sharePanel, shareBody, shareCollapse, nextCollapsed);
+  });
+
+  shareCreate.addEventListener('click', async () => {
+    const copy = i18n[state.language];
+    if (!shareApiAvailable) {
+      shareState.syncError = copy.shareDisabled;
+      renderSharePanel();
+      return;
+    }
+    const hasText = Boolean(state.text.trim());
+    if (!hasText) {
+      shareState.syncError = copy.shareCreateMissing;
+      renderSharePanel();
+      return;
+    }
+
+    shareState.syncing = true;
+    shareState.syncError = '';
+    renderSharePanel();
+
+    try {
+      const result = await requestShareCreate(buildSharePayload());
+      const token = typeof result?.token === 'string' ? result.token : '';
+      if (!token) {
+        throw new Error(copy.shareCreateError);
+      }
+      state.shareToken = token;
+      state.shareUrl = buildShareUrl(token);
+      state.shareCreatedAt = Number.isFinite(result?.createdAt)
+        ? Math.trunc(result.createdAt)
+        : Date.now();
+      persistActiveDocument({ updateList: true });
+      shareState.lastSyncedAt = new Date();
+      shareState.syncError = '';
+      await refreshShareComments({ silent: true });
+    } catch (error) {
+      shareState.syncError = error?.message || copy.shareCreateError;
+    } finally {
+      shareState.syncing = false;
+      renderSharePanel();
+    }
+  });
+
+  shareCopy.addEventListener('click', async () => {
+    const copy = i18n[state.language];
+    const link = state.shareUrl;
+    if (!link) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(link);
+      shareCopy.textContent = copy.shareCopied;
+      setTimeout(() => {
+        shareCopy.textContent = copy.shareCopy;
+      }, 1200);
+    } catch (error) {
+      shareCopy.textContent = copy.shareCopyError;
+      setTimeout(() => {
+        shareCopy.textContent = copy.shareCopy;
+      }, 1200);
+    }
+  });
+
+  shareOpen.addEventListener('click', () => {
+    if (!state.shareUrl) {
+      return;
+    }
+    window.open(state.shareUrl, '_blank', 'noopener');
+  });
+
+  shareRefresh.addEventListener('click', () => {
+    void refreshShareComments();
   });
 
   clearVocab.addEventListener('click', () => {

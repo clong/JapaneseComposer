@@ -1,5 +1,6 @@
 import http from 'node:http';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +12,7 @@ const dataDir = path.join(root, 'data');
 const localEntriesPath = process.env.JMDICT_ENTRIES_PATH || path.join(dataDir, 'jmdict-entries.json');
 const localIndexPath = process.env.JMDICT_INDEX_PATH || path.join(dataDir, 'jmdict-index.json');
 const vocabDbPath = process.env.VOCAB_DB_PATH || path.join(dataDir, 'vocab.sqlite');
+const shareDbPath = process.env.SHARE_DB_PATH || path.join(dataDir, 'shares.sqlite');
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1';
 const PROOFREAD_SYSTEM_PROMPT = `System Prompt: Japanese Writing Evaluator & Tutor
 
@@ -95,6 +97,16 @@ try {
   console.error('Failed to initialize vocab database:', error);
 }
 
+let shareDbReady = false;
+try {
+  debug('Initializing share DB:', shareDbPath);
+  await ensureShareDb(shareDbPath);
+  shareDbReady = true;
+  debug('Share DB ready.');
+} catch (error) {
+  console.error('Failed to initialize share database:', error);
+}
+
 debug('Loading local dictionary...');
 const localDictionary = await loadLocalDictionary();
 const localLookupCache = new Map();
@@ -168,6 +180,144 @@ const server = http.createServer(async (req, res) => {
       }
       return;
     }
+    res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
+  if (requestUrl.pathname === '/api/share') {
+    if (!shareDbReady) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Share database unavailable' }));
+      return;
+    }
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    const body = await readJsonBody(req);
+    const entry = normalizeShareEntry(body?.entry);
+    if (!entry) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Missing entry' }));
+      return;
+    }
+    const token = createShareToken();
+    try {
+      await writeShareEntry(shareDbPath, token, entry);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ token, createdAt: entry.createdAt, updatedAt: entry.updatedAt }));
+      return;
+    } catch (error) {
+      res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Share create failed' }));
+      return;
+    }
+  }
+  if (requestUrl.pathname.startsWith('/api/share/')) {
+    if (!shareDbReady) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Share database unavailable' }));
+      return;
+    }
+    const segments = requestUrl.pathname.split('/').filter(Boolean);
+    const token = segments[2];
+    const subresource = segments[3] || '';
+    if (!token) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Missing share token' }));
+      return;
+    }
+
+    if (subresource === 'comments') {
+      if (req.method === 'GET') {
+        try {
+          const comments = await readShareComments(shareDbPath, token);
+          if (comments === null) {
+            res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: 'Share not found' }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ comments }));
+          return;
+        } catch (error) {
+          res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'Share comments lookup failed' }));
+          return;
+        }
+      }
+      if (req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const comment = normalizeShareComment(body);
+        if (!comment) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'Missing comment' }));
+          return;
+        }
+        try {
+          const created = await insertShareComment(shareDbPath, token, comment);
+          if (!created) {
+            res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: 'Share not found' }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ comment: created }));
+          return;
+        } catch (error) {
+          res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'Share comment failed' }));
+          return;
+        }
+      }
+      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    if (req.method === 'GET') {
+      try {
+        const entry = await readShareEntry(shareDbPath, token);
+        if (!entry) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'Share not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ entry }));
+        return;
+      } catch (error) {
+        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Share lookup failed' }));
+        return;
+      }
+    }
+    if (req.method === 'PUT') {
+      const body = await readJsonBody(req);
+      const entry = normalizeShareEntry(body?.entry);
+      if (!entry) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Missing entry' }));
+        return;
+      }
+      try {
+        const updated = await updateShareEntry(shareDbPath, token, entry);
+        if (!updated) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'Share not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, updatedAt: entry.updatedAt }));
+        return;
+      } catch (error) {
+        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Share update failed' }));
+        return;
+      }
+    }
+
     res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ error: 'Method not allowed' }));
     return;
@@ -396,6 +546,22 @@ const server = http.createServer(async (req, res) => {
       return;
     }
   }
+  const shareSegments = requestUrl.pathname.split('/').filter(Boolean);
+  const isShareRoute = (shareSegments[0] === 'share' || shareSegments[0] === 's')
+    && shareSegments.length === 2;
+  if (isShareRoute) {
+    try {
+      const shareHtmlPath = path.join(distDir, 'share.html');
+      const data = await fs.readFile(shareHtmlPath);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(data);
+      return;
+    } catch (error) {
+      res.writeHead(404);
+      res.end('Not found');
+      return;
+    }
+  }
   const requestPath = decodeURIComponent(requestUrl.pathname);
   const safePath = requestPath === '/' ? '/index.html' : requestPath;
   const filePath = path.join(distDir, safePath);
@@ -548,6 +714,172 @@ async function ensureVocabDb(dbPath) {
     ON CONFLICT(id) DO NOTHING;
   `;
   await runSqlite(dbPath, sql);
+}
+
+async function ensureShareDb(dbPath) {
+  const sql = `
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE IF NOT EXISTS shared_entries (
+      token TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS share_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token TEXT NOT NULL,
+      author TEXT,
+      body TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (token) REFERENCES shared_entries(token) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_share_comments_token ON share_comments(token, created_at);
+  `;
+  await runSqlite(dbPath, sql);
+}
+
+function createShareToken() {
+  return randomBytes(18).toString('hex');
+}
+
+function normalizeShareEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const title = typeof entry.title === 'string' ? entry.title.trim().slice(0, 200) : '';
+  const text = typeof entry.text === 'string' ? entry.text.trim().slice(0, 20000) : '';
+  if (!title && !text) {
+    return null;
+  }
+  const now = Date.now();
+  const createdAt = Number.isFinite(entry.createdAt) ? Math.trunc(entry.createdAt) : now;
+  const updatedAt = Number.isFinite(entry.updatedAt) ? Math.trunc(entry.updatedAt) : now;
+  return {
+    title,
+    text,
+    createdAt,
+    updatedAt
+  };
+}
+
+function normalizeShareComment(body) {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const author = typeof body.author === 'string' ? body.author.trim().slice(0, 80) : '';
+  const text = typeof body.body === 'string' ? body.body.trim().slice(0, 2000) : '';
+  if (!text) {
+    return null;
+  }
+  return {
+    author,
+    body: text
+  };
+}
+
+function parseSqliteJson(stdout) {
+  if (!stdout || !stdout.trim()) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(stdout);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+async function writeShareEntry(dbPath, token, entry) {
+  const payload = JSON.stringify(entry);
+  const sql = `
+    INSERT INTO shared_entries (token, payload, created_at, updated_at)
+    VALUES (${sqlString(token)}, ${sqlString(payload)}, ${entry.createdAt}, ${entry.updatedAt});
+  `;
+  await runSqlite(dbPath, sql);
+}
+
+async function updateShareEntry(dbPath, token, entry) {
+  const existing = await readShareEntry(dbPath, token);
+  if (!existing) {
+    return false;
+  }
+  const payload = JSON.stringify(entry);
+  const sql = `
+    UPDATE shared_entries
+    SET payload = ${sqlString(payload)}, updated_at = ${entry.updatedAt}
+    WHERE token = ${sqlString(token)};
+  `;
+  await runSqlite(dbPath, sql);
+  return true;
+}
+
+async function readShareEntry(dbPath, token) {
+  const sql = `
+    SELECT payload, created_at, updated_at
+    FROM shared_entries
+    WHERE token = ${sqlString(token)}
+    LIMIT 1;
+  `;
+  const stdout = await runSqlite(dbPath, sql, { json: true });
+  const rows = parseSqliteJson(stdout);
+  if (!rows.length) {
+    return null;
+  }
+  const payload = rows[0]?.payload;
+  if (typeof payload !== 'string') {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(payload);
+    return {
+      ...parsed,
+      createdAt: Number(rows[0]?.created_at) || parsed?.createdAt || null,
+      updatedAt: Number(rows[0]?.updated_at) || parsed?.updatedAt || null
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+async function readShareComments(dbPath, token) {
+  const entry = await readShareEntry(dbPath, token);
+  if (!entry) {
+    return null;
+  }
+  const sql = `
+    SELECT id, author, body, created_at
+    FROM share_comments
+    WHERE token = ${sqlString(token)}
+    ORDER BY created_at DESC
+    LIMIT 200;
+  `;
+  const stdout = await runSqlite(dbPath, sql, { json: true });
+  const rows = parseSqliteJson(stdout);
+  return rows.map((row) => ({
+    id: Number(row.id),
+    author: row.author || '',
+    body: row.body || '',
+    createdAt: Number(row.created_at) || null
+  }));
+}
+
+async function insertShareComment(dbPath, token, comment) {
+  const entry = await readShareEntry(dbPath, token);
+  if (!entry) {
+    return null;
+  }
+  const createdAt = Date.now();
+  const sql = `
+    INSERT INTO share_comments (token, author, body, created_at)
+    VALUES (${sqlString(token)}, ${sqlString(comment.author || '')}, ${sqlString(comment.body)}, ${createdAt});
+  `;
+  await runSqlite(dbPath, sql);
+  return {
+    id: null,
+    author: comment.author || '',
+    body: comment.body,
+    createdAt
+  };
 }
 
 function normalizeVocabList(items, { defaultAddedAt } = {}) {
