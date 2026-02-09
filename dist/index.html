@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Japanese Composer</title>
+    <link rel="icon" href="./favicon.ico" sizes="any" type="image/x-icon" />
     <link rel="stylesheet" href="./assets/app.css" />
   </head>
   <body>
@@ -35,6 +36,26 @@
             <h2 id="editor-title">Composer</h2>
             <p id="editor-subtitle">Write in English or Japanese — switch to Reading Mode for furigana and kanji details.</p>
           </div>
+          <div class="document-bar">
+            <div class="document-field">
+              <label for="document-title" id="document-title-label">Document title</label>
+              <input
+                id="document-title"
+                class="document-input"
+                type="text"
+                placeholder="Give this entry a title..."
+              />
+            </div>
+            <div class="document-actions">
+              <div class="document-field">
+                <label for="document-select" id="document-select-label">Saved documents</label>
+                <select id="document-select" class="document-select"></select>
+              </div>
+              <button class="ghost" id="document-new" type="button">New</button>
+              <button class="primary" id="document-save" type="button">Save</button>
+              <button class="ghost danger" id="document-delete" type="button">Delete</button>
+            </div>
+          </div>
           <div class="composer-surface">
             <textarea
               id="composer-input"
@@ -43,22 +64,70 @@
             ></textarea>
             <div id="preview" class="preview overlay-preview" aria-live="polite"></div>
           </div>
+          <div class="proofread-panel">
+            <div class="proofread-header">
+              <div>
+                <h3 id="proofread-title">Proofreading</h3>
+                <p id="proofread-subtitle">Send the full entry to OpenAI for JLPT feedback and corrections.</p>
+              </div>
+              <button class="primary" id="proofread-button" type="button">Proofread</button>
+            </div>
+            <div class="proofread-meta" id="proofread-meta"></div>
+            <div class="proofread-result" id="proofread-result" aria-live="polite"></div>
+          </div>
         </section>
 
-        <aside class="panel vocab-panel" id="vocab-panel">
-          <div class="panel-header">
-            <div>
-              <h2 id="vocab-title">Vocabulary</h2>
-              <p id="vocab-subtitle">Saved words from your journal entry.</p>
+        <aside class="side-panel">
+          <section class="panel vocab-panel" id="vocab-panel">
+            <div class="panel-header panel-header-actions">
+              <div>
+                <h2 id="vocab-title">Vocabulary</h2>
+                <p id="vocab-subtitle">Saved words from your journal entry.</p>
+              </div>
+              <div class="panel-actions">
+                <button
+                  class="ghost panel-toggle"
+                  id="vocab-collapse"
+                  type="button"
+                  aria-expanded="true"
+                  aria-controls="vocab-body"
+                >
+                  Collapse
+                </button>
+                <button class="ghost" id="clear-vocab" type="button">Clear</button>
+              </div>
             </div>
-            <button class="ghost" id="clear-vocab" type="button">Clear</button>
-          </div>
-          <div id="vocab-list" class="vocab-list"></div>
+            <div class="panel-body" id="vocab-body">
+              <div id="vocab-list" class="vocab-list"></div>
+            </div>
+          </section>
+          <section class="panel questions-panel" id="questions-panel">
+            <div class="panel-header panel-header-actions">
+              <div>
+                <h2 id="questions-title">Questions</h2>
+                <p id="questions-subtitle">Your Q&A about selected text.</p>
+              </div>
+              <div class="panel-actions">
+                <button
+                  class="ghost panel-toggle"
+                  id="questions-collapse"
+                  type="button"
+                  aria-expanded="true"
+                  aria-controls="questions-body"
+                >
+                  Collapse
+                </button>
+              </div>
+            </div>
+            <div class="panel-body" id="questions-body">
+              <div id="questions-list" class="questions-list"></div>
+            </div>
+          </section>
         </aside>
       </main>
 
       <footer class="app-footer">
-        <span id="build-stamp">Build 2026-02-08T07:58:33.705Z</span>
+        <span id="build-stamp">Build 2026-02-09T01:08:52.137Z</span>
       </footer>
     </div>
 
@@ -74,10 +143,17 @@
       <div class="selection-actions">
         <button class="ghost" id="selection-translate" type="button">Translate</button>
         <button class="ghost" id="selection-copy" type="button">Copy</button>
+        <button class="ghost" id="selection-ask" type="button">Ask</button>
       </div>
+      <form class="selection-ask" id="selection-ask-form">
+        <label class="sr-only" id="selection-ask-label" for="selection-ask-input">Ask about selected text</label>
+        <textarea id="selection-ask-input" rows="3" placeholder="Ask a question about this text..."></textarea>
+        <button class="primary" id="selection-ask-submit" type="submit">Send</button>
+      </form>
       <div class="selection-result" id="selection-result"></div>
     </div>
 
+    <script src="./assets/kuromoji.js"></script>
     <script type="module" src="./assets/app.js"></script>
   </body>
 </html>

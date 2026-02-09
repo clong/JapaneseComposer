@@ -71,7 +71,18 @@ GOOGLE_TRANSLATE_API_KEY=your_key_here npm run dev
 
 If the key is missing, the translate action will show an error.
 
+## Proofreading
+
+The Proofread button uses the OpenAI Responses API via the local dev server proxy. Provide an API key when running the dev server:
+
+```bash
+OPENAI_API_KEY=your_key_here npm run dev
+```
+
+You can override the model with `OPENAI_MODEL` (defaults to `gpt-4.1`).
+
 ## Notes
 
-- Vocabulary entries are stored in `localStorage` under the key `jc_vocab_list`.
+- Vocabulary entries are stored in SQLite when running the dev server (`data/vocab.sqlite`, override with `VOCAB_DB_PATH`). Opening `dist/index.html` directly falls back to `localStorage` under the key `jc_vocab_list`.
+- The dev server persistence uses the system `sqlite3` CLI; ensure it is available on your `PATH`.
 - The UI language toggle switches labels between English and Japanese.
