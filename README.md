@@ -1,6 +1,11 @@
 # Japanese Composer
 
-A lightweight, dependency-free web-based Japanese/English journal composer with furigana toggle, kanji hover details, and a built-in vocabulary list.
+A lightweight, runtime-dependency-free web-based Japanese/English journal composer with furigana toggle, kanji hover details, and a built-in vocabulary list.
+
+## Requirements
+
+- Node.js >= 18
+- `sqlite3` CLI (optional, only needed for vocab persistence when running the dev server)
 
 ## Quick start
 
@@ -80,6 +85,14 @@ OPENAI_API_KEY=your_key_here npm run dev
 ```
 
 You can override the model with `OPENAI_MODEL` (defaults to `gpt-4.1`).
+
+## Selected text Q&A
+
+The "Ask" action (for selected text questions) uses the OpenAI Responses API via the local dev server proxy. Provide the same `OPENAI_API_KEY` (and optional `OPENAI_MODEL`) when running the dev server.
+
+## Dev server-only features
+
+- Translation, proofreading, and selected text Q&A require the dev server (`npm run dev`). Opening `dist/index.html` directly will not enable these API-backed features.
 
 ## Notes
 
