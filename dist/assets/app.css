@@ -254,6 +254,77 @@ body::before {
   box-shadow: 0 12px 30px rgba(217, 95, 76, 0.2);
 }
 
+.corrections-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: var(--radius-small);
+  border: 1px solid rgba(30, 22, 20, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.corrections-header h3 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.corrections-header p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.corrections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.corrections-empty {
+  color: var(--ink-muted);
+  font-size: 14px;
+  border: 1px dashed rgba(30, 22, 20, 0.2);
+  border-radius: 12px;
+  padding: 12px;
+  text-align: center;
+}
+
+.corrections-track {
+  border-radius: 12px;
+  border: 1px solid rgba(30, 22, 20, 0.12);
+  background: var(--paper);
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'Noto Serif JP', 'DM Serif Display', serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.correction-removed {
+  background: rgba(181, 68, 52, 0.14);
+  color: #7f2d24;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  border-radius: 4px;
+  padding: 0 1px;
+}
+
+.correction-added {
+  background: rgba(62, 133, 96, 0.2);
+  color: #1f5a3f;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+  border-radius: 4px;
+  padding: 0 1px;
+}
+
 .proofread-panel {
   margin-top: 18px;
   padding: 16px;

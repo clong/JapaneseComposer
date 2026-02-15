@@ -37,6 +37,9 @@ const tokenizableRunRegex = new RegExp(`[${tokenizableCharRange}]+`, 'g');
 const segmenter = typeof Intl !== 'undefined' && Intl.Segmenter
   ? new Intl.Segmenter('ja', { granularity: 'word' })
   : null;
+const correctionSegmenter = typeof Intl !== 'undefined' && Intl.Segmenter
+  ? new Intl.Segmenter('ja', { granularity: 'word' })
+  : null;
 
 const tokenReadingOverrides = new Map([
   ['日本', 'にほん'],
@@ -92,13 +95,14 @@ const i18n = {
     languageToggle: '日本語 UI',
     modeEdit: 'Mode: Edit',
     modeRead: 'Mode: Reading',
+    modeCorrections: 'Mode: Corrections',
     addToVocab: 'Add to vocab',
     clear: 'Clear',
     collapse: 'Collapse',
     expand: 'Expand',
     loading: 'Looking up…',
     missing: 'No definition found.',
-    proofreadTitle: 'Proofreading',
+    proofreadTitle: 'AI Proofreader',
     proofreadSubtitle: 'Send the full entry to OpenAI for JLPT feedback and corrections.',
     proofreadButton: 'Proofread',
     proofreadEmpty: 'No feedback yet. Click Proofread to analyze your entry.',
@@ -133,7 +137,11 @@ const i18n = {
     shareSyncing: 'Syncing…',
     shareSynced: 'Last synced',
     shareSyncError: 'Sync failed.',
-    shareAnonymous: 'Anonymous'
+    shareAnonymous: 'Anonymous',
+    correctionsTitle: 'Tracked Changes',
+    correctionsSubtitle: 'Tracked edits from the original text.',
+    correctionsEmpty: 'No tracked edits yet.',
+    correctionsResetConfirm: 'Making an edit to your post after corrections have been added will clear all tracked corrections. Do you want to continue?'
   },
   ja: {
     appTitle: '日本語コンポーザー',
@@ -176,6 +184,7 @@ const i18n = {
     languageToggle: 'English UI',
     modeEdit: 'モード: 編集',
     modeRead: 'モード: 閲覧',
+    modeCorrections: 'モード: 添削',
     addToVocab: '語彙に追加',
     clear: 'クリア',
     collapse: '折りたたむ',
@@ -217,7 +226,11 @@ const i18n = {
     shareSyncing: '同期中…',
     shareSynced: '同期',
     shareSyncError: '同期に失敗しました。',
-    shareAnonymous: '匿名'
+    shareAnonymous: '匿名',
+    correctionsTitle: '添削履歴',
+    correctionsSubtitle: '元の文章からの変更点を表示します。',
+    correctionsEmpty: 'まだ変更はありません。',
+    correctionsResetConfirm: '添削履歴がある状態で投稿を編集すると、履歴はすべて消去されます。続けますか？'
   }
 };
 
@@ -232,6 +245,7 @@ const state = {
   mode: 'edit',
   vocab: [],
   questions: [],
+  correctionsBaseText: '',
   shareToken: '',
   shareUrl: '',
   shareCreatedAt: null
@@ -257,10 +271,15 @@ const shareState = {
 const lookupCache = new Map();
 const pendingLookups = new Map();
 let pendingRender = false;
+let pendingCorrectionsRender = false;
+let pendingCorrectionResetOnInput = false;
 let vocabSaveQueue = Promise.resolve();
 let shareSyncTimer = null;
 let shareSyncPending = null;
 let shareSyncInFlight = false;
+let shareEntryPollTimer = null;
+let shareEntryPullInFlight = false;
+const SHARE_ENTRY_POLL_INTERVAL_MS = 5000;
 
 function enqueueVocabApiTask(task) {
   vocabSaveQueue = vocabSaveQueue
@@ -280,6 +299,10 @@ const documentSave = document.querySelector('#document-save');
 const documentNew = document.querySelector('#document-new');
 const documentDelete = document.querySelector('#document-delete');
 const preview = document.querySelector('#preview');
+const correctionsPanel = document.querySelector('#corrections-panel');
+const correctionsTitle = document.querySelector('#corrections-title');
+const correctionsSubtitle = document.querySelector('#corrections-subtitle');
+const correctionsList = document.querySelector('#corrections-list');
 const vocabPanel = document.querySelector('#vocab-panel');
 const vocabBody = document.querySelector('#vocab-body');
 const vocabCollapse = document.querySelector('#vocab-collapse');
@@ -963,6 +986,16 @@ function normalizeQuestionEntries(entries) {
     .filter(Boolean);
 }
 
+function normalizeCorrectionsBaseText(value, fallback = '') {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof fallback === 'string') {
+    return fallback;
+  }
+  return '';
+}
+
 function normalizeDocumentEntries(entries) {
   if (!Array.isArray(entries)) {
     return [];
@@ -983,6 +1016,7 @@ function normalizeDocumentEntries(entries) {
       const text = typeof entry.text === 'string' ? entry.text : '';
       const vocab = normalizeVocabEntries(entry.vocab);
       const questions = normalizeQuestionEntries(entry.questions);
+      const correctionsBaseText = normalizeCorrectionsBaseText(entry.correctionsBaseText, text);
       const proofreadContent = typeof entry.proofreadContent === 'string' ? entry.proofreadContent : '';
       const proofreadUpdatedAt = Number.isFinite(entry.proofreadUpdatedAt)
         ? Math.trunc(entry.proofreadUpdatedAt)
@@ -1000,6 +1034,7 @@ function normalizeDocumentEntries(entries) {
         text,
         vocab,
         questions,
+        correctionsBaseText,
         proofreadContent,
         proofreadUpdatedAt,
         shareToken,
@@ -1139,21 +1174,47 @@ function enqueueVocabDelete(entry) {
   enqueueVocabApiTask(() => deleteVocabEntryFromApi(normalized));
 }
 
-function createDocument({ title = '', text = '', vocab = [], questions = [] } = {}) {
+function createDocument({
+  title = '',
+  text = '',
+  vocab = [],
+  questions = [],
+  correctionsBaseText = text,
+  proofreadContent = '',
+  proofreadUpdatedAt = null,
+  shareToken = '',
+  shareUrl = '',
+  shareCreatedAt = null,
+  createdAt = null,
+  updatedAt = null
+} = {}) {
   const now = Date.now();
+  const normalizedProofreadUpdatedAt = Number.isFinite(proofreadUpdatedAt)
+    ? Math.trunc(proofreadUpdatedAt)
+    : null;
+  const normalizedShareToken = typeof shareToken === 'string' ? shareToken.trim() : '';
+  const normalizedShareUrl = normalizedShareToken
+    ? (typeof shareUrl === 'string' && shareUrl.trim() ? shareUrl.trim() : buildShareUrl(normalizedShareToken))
+    : '';
+  const normalizedShareCreatedAt = Number.isFinite(shareCreatedAt)
+    ? Math.trunc(shareCreatedAt)
+    : null;
+  const normalizedCreatedAt = Number.isFinite(createdAt) ? Math.trunc(createdAt) : now;
+  const normalizedUpdatedAt = Number.isFinite(updatedAt) ? Math.trunc(updatedAt) : normalizedCreatedAt;
   return {
     id: generateDocumentId(),
     title,
     text,
     vocab: normalizeVocabEntries(vocab),
     questions: normalizeQuestionEntries(questions),
-    proofreadContent: '',
-    proofreadUpdatedAt: null,
-    shareToken: '',
-    shareUrl: '',
-    shareCreatedAt: null,
-    createdAt: now,
-    updatedAt: now
+    correctionsBaseText: normalizeCorrectionsBaseText(correctionsBaseText, text),
+    proofreadContent: typeof proofreadContent === 'string' ? proofreadContent : '',
+    proofreadUpdatedAt: normalizedProofreadUpdatedAt,
+    shareToken: normalizedShareToken,
+    shareUrl: normalizedShareUrl,
+    shareCreatedAt: normalizedShareCreatedAt,
+    createdAt: normalizedCreatedAt,
+    updatedAt: normalizedUpdatedAt
   };
 }
 
@@ -1163,8 +1224,9 @@ function applyDocumentToState(doc) {
   state.text = doc.text || '';
   state.vocab = normalizeVocabEntries(doc.vocab);
   state.questions = normalizeQuestionEntries(doc.questions);
+  state.correctionsBaseText = normalizeCorrectionsBaseText(doc.correctionsBaseText, state.text);
   state.shareToken = doc.shareToken || '';
-  state.shareUrl = doc.shareUrl || (doc.shareToken ? buildShareUrl(doc.shareToken) : '');
+  state.shareUrl = state.shareToken ? buildShareUrl(state.shareToken) : '';
   state.shareCreatedAt = Number.isFinite(doc.shareCreatedAt) ? doc.shareCreatedAt : null;
 }
 
@@ -1200,6 +1262,7 @@ function hydrateProofreadFromDocument(doc, { reset = false } = {}) {
 }
 
 function hydrateShareFromDocument(doc) {
+  stopShareEntryPolling();
   shareState.comments = [];
   shareState.status = 'idle';
   shareState.error = '';
@@ -1209,7 +1272,9 @@ function hydrateShareFromDocument(doc) {
   if (doc?.shareToken && shareApiAvailable) {
     shareState.status = 'loading';
     renderSharePanel();
+    startShareEntryPolling();
     void refreshShareComments();
+    void pullSharedEntry({ silent: true });
     return;
   }
   renderSharePanel();
@@ -1240,6 +1305,7 @@ function persistActiveDocument({ updateList = false, normalize = false } = {}) {
       text: state.text,
       vocab: normalizedVocab,
       questions: normalizedQuestions,
+      correctionsBaseText: normalizeCorrectionsBaseText(state.correctionsBaseText, state.text),
       proofreadContent: proofreadContent || '',
       proofreadUpdatedAt,
       shareToken: state.shareToken,
@@ -1254,6 +1320,7 @@ function persistActiveDocument({ updateList = false, normalize = false } = {}) {
     doc.text = state.text;
     doc.vocab = normalizedVocab;
     doc.questions = normalizedQuestions;
+    doc.correctionsBaseText = normalizeCorrectionsBaseText(state.correctionsBaseText, state.text);
     doc.shareToken = state.shareToken;
     doc.shareUrl = state.shareUrl;
     doc.shareCreatedAt = state.shareCreatedAt;
@@ -1283,6 +1350,7 @@ function setActiveDocument(doc, { resetProofread = true } = {}) {
   composerInput.value = state.text;
   renderDocumentSelect();
   renderPreview();
+  renderCorrections();
   renderVocab();
   renderQuestions();
   hydrateProofreadFromDocument(doc, { reset: resetProofread });
@@ -1303,6 +1371,7 @@ function buildLegacyDocument() {
     id: generateDocumentId(),
     title: '',
     text: storedEntry || defaultText,
+    correctionsBaseText: storedEntry || defaultText,
     vocab: legacyVocab,
     questions: legacyQuestions,
     proofreadContent: '',
@@ -1550,6 +1619,182 @@ function renderPreview() {
   });
 }
 
+function normalizeLineBreaks(text) {
+  return String(text || '').replace(/\r\n/g, '\n');
+}
+
+function hasTrackedCorrections() {
+  return normalizeLineBreaks(state.correctionsBaseText) !== normalizeLineBreaks(state.text);
+}
+
+function tokenizeCorrectionText(text) {
+  if (!text) {
+    return [];
+  }
+  if (!correctionSegmenter) {
+    return Array.from(text);
+  }
+  const tokens = [];
+  for (const part of correctionSegmenter.segment(text)) {
+    if (!part || typeof part.segment !== 'string' || !part.segment) {
+      continue;
+    }
+    tokens.push(part.segment);
+  }
+  return tokens;
+}
+
+function buildFallbackTokenDiffOperations(beforeTokens, afterTokens) {
+  let prefix = 0;
+  while (
+    prefix < beforeTokens.length
+    && prefix < afterTokens.length
+    && beforeTokens[prefix] === afterTokens[prefix]
+  ) {
+    prefix += 1;
+  }
+
+  let beforeSuffix = beforeTokens.length - 1;
+  let afterSuffix = afterTokens.length - 1;
+  while (
+    beforeSuffix >= prefix
+    && afterSuffix >= prefix
+    && beforeTokens[beforeSuffix] === afterTokens[afterSuffix]
+  ) {
+    beforeSuffix -= 1;
+    afterSuffix -= 1;
+  }
+
+  const operations = [];
+  for (let i = 0; i < prefix; i += 1) {
+    operations.push({ type: 'equal', text: beforeTokens[i] });
+  }
+  for (let i = prefix; i <= beforeSuffix; i += 1) {
+    operations.push({ type: 'delete', text: beforeTokens[i] });
+  }
+  for (let i = prefix; i <= afterSuffix; i += 1) {
+    operations.push({ type: 'insert', text: afterTokens[i] });
+  }
+  for (let i = beforeSuffix + 1; i < beforeTokens.length; i += 1) {
+    operations.push({ type: 'equal', text: beforeTokens[i] });
+  }
+  return operations;
+}
+
+function mergeCorrectionOperations(operations) {
+  const merged = [];
+  operations.forEach((operation) => {
+    if (!operation || !operation.text) {
+      return;
+    }
+    const previous = merged[merged.length - 1];
+    if (previous && previous.type === operation.type) {
+      previous.text += operation.text;
+      return;
+    }
+    merged.push({ type: operation.type, text: operation.text });
+  });
+  return merged;
+}
+
+function buildTokenDiffOperations(beforeTokens, afterTokens) {
+  const n = beforeTokens.length;
+  const m = afterTokens.length;
+  const maxCells = 300000;
+  if (n * m > maxCells) {
+    return buildFallbackTokenDiffOperations(beforeTokens, afterTokens);
+  }
+
+  const matrix = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      if (beforeTokens[i] === afterTokens[j]) {
+        matrix[i][j] = matrix[i + 1][j + 1] + 1;
+      } else {
+        matrix[i][j] = Math.max(matrix[i + 1][j], matrix[i][j + 1]);
+      }
+    }
+  }
+
+  const operations = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (beforeTokens[i] === afterTokens[j]) {
+      operations.push({ type: 'equal', text: beforeTokens[i] });
+      i += 1;
+      j += 1;
+      continue;
+    }
+    if (matrix[i + 1][j] >= matrix[i][j + 1]) {
+      operations.push({ type: 'delete', text: beforeTokens[i] });
+      i += 1;
+    } else {
+      operations.push({ type: 'insert', text: afterTokens[j] });
+      j += 1;
+    }
+  }
+  while (i < n) {
+    operations.push({ type: 'delete', text: beforeTokens[i] });
+    i += 1;
+  }
+  while (j < m) {
+    operations.push({ type: 'insert', text: afterTokens[j] });
+    j += 1;
+  }
+
+  return mergeCorrectionOperations(operations);
+}
+
+function buildCorrectionOperations(baseText, currentText) {
+  const before = normalizeLineBreaks(baseText);
+  const after = normalizeLineBreaks(currentText);
+  if (before === after) {
+    return [];
+  }
+
+  const beforeTokens = tokenizeCorrectionText(before);
+  const afterTokens = tokenizeCorrectionText(after);
+  return buildTokenDiffOperations(beforeTokens, afterTokens);
+}
+
+function renderCorrections() {
+  if (!correctionsPanel || !correctionsList || !correctionsTitle || !correctionsSubtitle) {
+    return;
+  }
+
+  const copy = i18n[state.language];
+  correctionsTitle.textContent = copy.correctionsTitle;
+  correctionsSubtitle.textContent = copy.correctionsSubtitle;
+
+  correctionsList.replaceChildren();
+  const operations = buildCorrectionOperations(state.correctionsBaseText, state.text);
+  const hasChanges = operations.some((operation) => operation.type !== 'equal');
+  if (!hasChanges) {
+    const empty = document.createElement('div');
+    empty.className = 'corrections-empty';
+    empty.textContent = copy.correctionsEmpty;
+    correctionsList.appendChild(empty);
+    return;
+  }
+
+  const trackedText = document.createElement('div');
+  trackedText.className = 'corrections-track';
+
+  operations.forEach((operation) => {
+    if (operation.type === 'equal') {
+      trackedText.appendChild(document.createTextNode(operation.text));
+      return;
+    }
+    const span = document.createElement('span');
+    span.className = operation.type === 'insert' ? 'correction-added' : 'correction-removed';
+    span.textContent = operation.text;
+    trackedText.appendChild(span);
+  });
+
+  correctionsList.appendChild(trackedText);
+}
+
 function renderVocab() {
   vocabList.replaceChildren();
 
@@ -1663,13 +1908,56 @@ function renderQuestions() {
 }
 
 function buildShareUrl(token) {
-  if (!token) {
+  const normalizedToken = typeof token === 'string' ? token.trim() : '';
+  if (!normalizedToken) {
     return '';
   }
   try {
-    return new URL(`/share/${token}`, window.location.origin).toString();
+    const currentUrl = new URL(window.location.href);
+    const pathParts = currentUrl.pathname.split('/').filter(Boolean);
+    const isLegacyShareRoute = (pathParts[0] === 'share' || pathParts[0] === 's')
+      && pathParts.length === 2;
+    let basePath = currentUrl.pathname;
+    if (isLegacyShareRoute) {
+      basePath = '/';
+    }
+    if (basePath.endsWith('.html')) {
+      basePath = basePath.replace(/[^/]+$/, '');
+    }
+    if (!basePath) {
+      basePath = '/';
+    }
+    const shareUrl = new URL(basePath, window.location.origin);
+    shareUrl.searchParams.set('share', normalizedToken);
+    return shareUrl.toString();
   } catch (error) {
-    return `/share/${token}`;
+    return `/?share=${encodeURIComponent(normalizedToken)}`;
+  }
+}
+
+function getShareTokenFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    const queryToken = typeof url.searchParams.get('share') === 'string'
+      ? url.searchParams.get('share').trim()
+      : '';
+    if (queryToken) {
+      return queryToken;
+    }
+    const fallbackToken = typeof url.searchParams.get('token') === 'string'
+      ? url.searchParams.get('token').trim()
+      : '';
+    if (fallbackToken) {
+      return fallbackToken;
+    }
+    const parts = url.pathname.split('/').filter(Boolean);
+    const shareIndex = parts.findIndex((part) => part === 'share' || part === 's');
+    if (shareIndex >= 0 && parts[shareIndex + 1]) {
+      return parts[shareIndex + 1].trim();
+    }
+    return '';
+  } catch (error) {
+    return '';
   }
 }
 
@@ -1690,15 +1978,169 @@ function formatShareTimestamp(date) {
 
 function buildSharePayload() {
   const doc = state.documents.find((item) => item.id === state.documentId);
+  const hasProofread = proofreadState.status === 'success' && Boolean(proofreadState.content);
+  const proofreadContent = hasProofread
+    ? proofreadState.content
+    : (typeof doc?.proofreadContent === 'string' ? doc.proofreadContent : '');
+  const proofreadUpdatedAt = hasProofread
+    ? (proofreadState.updatedAt instanceof Date ? proofreadState.updatedAt.getTime() : Date.now())
+    : (Number.isFinite(doc?.proofreadUpdatedAt) ? Math.trunc(doc.proofreadUpdatedAt) : null);
   const payload = {
     title: state.title,
     text: state.text,
+    correctionsBaseText: normalizeCorrectionsBaseText(state.correctionsBaseText, state.text),
+    vocab: normalizeVocabEntries(state.vocab),
+    questions: normalizeQuestionEntries(state.questions),
+    proofreadContent,
+    proofreadUpdatedAt,
     updatedAt: Date.now()
   };
   if (Number.isFinite(doc?.createdAt)) {
     payload.createdAt = Math.trunc(doc.createdAt);
   }
   return payload;
+}
+
+function stopShareEntryPolling() {
+  if (shareEntryPollTimer) {
+    clearInterval(shareEntryPollTimer);
+    shareEntryPollTimer = null;
+  }
+}
+
+function startShareEntryPolling() {
+  if (shareEntryPollTimer || !state.shareToken || !shareApiAvailable) {
+    return;
+  }
+  shareEntryPollTimer = setInterval(() => {
+    void pullSharedEntry({ silent: true });
+  }, SHARE_ENTRY_POLL_INTERVAL_MS);
+}
+
+function hasPendingLocalShareSync() {
+  return Boolean(shareSyncPending) || shareSyncInFlight || shareState.syncing;
+}
+
+function buildSharedDocumentFromEntry(token, entry) {
+  const createdAt = Number.isFinite(entry?.createdAt)
+    ? Math.trunc(entry.createdAt)
+    : Date.now();
+  const updatedAt = Number.isFinite(entry?.updatedAt)
+    ? Math.trunc(entry.updatedAt)
+    : createdAt;
+  return createDocument({
+    title: typeof entry?.title === 'string' ? entry.title : '',
+    text: typeof entry?.text === 'string' ? entry.text : '',
+    correctionsBaseText: normalizeCorrectionsBaseText(entry?.correctionsBaseText, entry?.text),
+    vocab: normalizeVocabEntries(entry?.vocab),
+    questions: normalizeQuestionEntries(entry?.questions),
+    proofreadContent: typeof entry?.proofreadContent === 'string' ? entry.proofreadContent : '',
+    proofreadUpdatedAt: Number.isFinite(entry?.proofreadUpdatedAt)
+      ? Math.trunc(entry.proofreadUpdatedAt)
+      : null,
+    shareToken: token,
+    shareUrl: buildShareUrl(token),
+    shareCreatedAt: createdAt,
+    createdAt,
+    updatedAt
+  });
+}
+
+function refreshCurrentDocumentFromState() {
+  if (documentTitleInput && documentTitleInput.value !== state.title) {
+    documentTitleInput.value = state.title;
+  }
+  composerInput.value = state.text;
+  renderDocumentSelect();
+  renderPreview();
+  renderCorrections();
+  renderVocab();
+  renderQuestions();
+  renderProofread();
+  renderSharePanel();
+}
+
+function mergeSharedEntryIntoDocuments(token, entry, { force = false, activate = false } = {}) {
+  const sharedDocument = buildSharedDocumentFromEntry(token, entry);
+  const existingIndex = state.documents.findIndex((doc) => doc.shareToken === token);
+
+  if (existingIndex === -1) {
+    state.documents.unshift(sharedDocument);
+    saveDocumentsToStorage();
+    if (activate) {
+      setActiveDocument(sharedDocument, { resetProofread: false });
+    } else {
+      renderDocumentSelect();
+    }
+    return true;
+  }
+
+  const existing = state.documents[existingIndex];
+  const localUpdatedAt = Number.isFinite(existing.updatedAt) ? existing.updatedAt : 0;
+  const remoteUpdatedAt = Number.isFinite(sharedDocument.updatedAt) ? sharedDocument.updatedAt : 0;
+  if (!force && remoteUpdatedAt <= localUpdatedAt) {
+    return false;
+  }
+
+  const merged = {
+    ...existing,
+    ...sharedDocument,
+    id: existing.id,
+    createdAt: Number.isFinite(existing.createdAt) ? existing.createdAt : sharedDocument.createdAt
+  };
+  state.documents.splice(existingIndex, 1, merged);
+  saveDocumentsToStorage();
+
+  if (activate) {
+    setActiveDocument(merged, { resetProofread: false });
+    return true;
+  }
+
+  if (state.documentId === merged.id) {
+    applyDocumentToState(merged);
+    safeStorageSet(STORAGE_KEYS.activeDocument, state.documentId);
+    hydrateProofreadFromDocument(merged, { reset: false });
+    refreshCurrentDocumentFromState();
+  } else {
+    renderDocumentSelect();
+  }
+
+  return true;
+}
+
+async function pullSharedEntry({ silent = false, force = false } = {}) {
+  if (!state.shareToken || !shareApiAvailable) {
+    stopShareEntryPolling();
+    return false;
+  }
+  if (shareEntryPullInFlight) {
+    return false;
+  }
+  if (!force && hasPendingLocalShareSync()) {
+    return false;
+  }
+
+  shareEntryPullInFlight = true;
+  try {
+    const entry = await requestShareEntry(state.shareToken);
+    const didApply = mergeSharedEntryIntoDocuments(state.shareToken, entry, { force });
+    if (!silent) {
+      shareState.syncError = '';
+      renderSharePanel();
+    }
+    return didApply;
+  } catch (error) {
+    if (!shareApiAvailable) {
+      stopShareEntryPolling();
+    }
+    if (!silent) {
+      shareState.syncError = error?.message || i18n[state.language].shareSyncError;
+      renderSharePanel();
+    }
+    return false;
+  } finally {
+    shareEntryPullInFlight = false;
+  }
 }
 
 function renderShareComments() {
@@ -1915,11 +2357,40 @@ async function requestShareComments(token) {
   return Array.isArray(data?.comments) ? data.comments : [];
 }
 
+async function requestShareEntry(token) {
+  const response = await fetch(`${SHARE_API_ENDPOINT}/${encodeURIComponent(token)}`);
+  if (!response.ok) {
+    if (response.status === 405) {
+      shareApiAvailable = false;
+    }
+    const data = await safeParseJson(response);
+    throw new Error(data?.error || 'Share not found');
+  }
+  const data = await response.json();
+  if (!data || typeof data.entry !== 'object' || !data.entry) {
+    throw new Error('Share not found');
+  }
+  return data.entry;
+}
+
 async function safeParseJson(response) {
   try {
     return await response.json();
   } catch (error) {
     return null;
+  }
+}
+
+async function hydrateSharedDocumentFromUrl() {
+  const token = getShareTokenFromUrl();
+  if (!token || !shareApiAvailable) {
+    return;
+  }
+  try {
+    const entry = await requestShareEntry(token);
+    mergeSharedEntryIntoDocuments(token, entry, { force: true, activate: true });
+  } catch (error) {
+    // Ignore share import errors and keep local state.
   }
 }
 
@@ -2029,17 +2500,26 @@ function setPanelCollapsed(panel, body, button, collapsed) {
 
 function renderUI() {
   const copy = i18n[state.language];
+  const isReadingMode = state.mode === 'read';
+  const isCorrectionsMode = state.mode === 'corrections';
 
   document.documentElement.lang = state.language;
 
   app.classList.toggle('furigana-off', !state.showFurigana);
-  app.classList.toggle('reading-mode', state.mode === 'read');
+  app.classList.toggle('reading-mode', isReadingMode);
+  app.classList.toggle('corrections-mode', isCorrectionsMode);
 
   languageToggle.textContent = copy.languageToggle;
   languageToggle.setAttribute('aria-pressed', state.language === 'ja');
 
-  modeToggle.textContent = state.mode === 'read' ? copy.modeRead : copy.modeEdit;
-  modeToggle.setAttribute('aria-pressed', state.mode === 'read');
+  if (state.mode === 'read') {
+    modeToggle.textContent = copy.modeRead;
+  } else if (state.mode === 'corrections') {
+    modeToggle.textContent = copy.modeCorrections;
+  } else {
+    modeToggle.textContent = copy.modeEdit;
+  }
+  modeToggle.setAttribute('aria-pressed', String(state.mode !== 'edit'));
 
   furiganaToggle.textContent = state.showFurigana ? copy.furiganaOn : copy.furiganaOff;
   furiganaToggle.setAttribute('aria-pressed', state.showFurigana);
@@ -2071,8 +2551,12 @@ function renderUI() {
   questionsSubtitle.textContent = copy.questionsSubtitle;
   composerInput.placeholder = copy.editorPlaceholder;
   composerInput.readOnly = state.mode === 'read';
+  if (correctionsPanel) {
+    correctionsPanel.hidden = !isCorrectionsMode;
+  }
 
   renderDocumentControls();
+  renderCorrections();
   renderProofread();
   renderSharePanel();
 }
@@ -2085,6 +2569,17 @@ function schedulePreviewRender() {
   requestAnimationFrame(() => {
     pendingRender = false;
     renderPreview();
+  });
+}
+
+function scheduleCorrectionsRender() {
+  if (pendingCorrectionsRender) {
+    return;
+  }
+  pendingCorrectionsRender = true;
+  requestAnimationFrame(() => {
+    pendingCorrectionsRender = false;
+    renderCorrections();
   });
 }
 
@@ -2202,7 +2697,7 @@ function hideSelectionTooltip() {
 }
 
 function maybeUpdateSelectionTooltip(point) {
-  if (state.mode !== 'edit') {
+  if (state.mode === 'read') {
     hideSelectionTooltip();
     return;
   }
@@ -2389,10 +2884,39 @@ function bindEvents() {
     documentTitleInput?.focus();
   });
 
+  composerInput.addEventListener('beforeinput', (event) => {
+    if (state.mode === 'corrections') {
+      return;
+    }
+    if (pendingCorrectionResetOnInput) {
+      return;
+    }
+    if (!(event instanceof InputEvent) || !event.cancelable) {
+      return;
+    }
+    if (!hasTrackedCorrections()) {
+      return;
+    }
+    const copy = i18n[state.language];
+    const shouldClear = window.confirm(copy.correctionsResetConfirm);
+    if (!shouldClear) {
+      event.preventDefault();
+      return;
+    }
+    pendingCorrectionResetOnInput = true;
+  });
+
   composerInput.addEventListener('input', (event) => {
     state.text = event.target.value;
+    if (state.mode !== 'corrections') {
+      state.correctionsBaseText = state.text;
+      pendingCorrectionResetOnInput = false;
+    }
     saveEntry();
     schedulePreviewRender();
+    if (state.mode === 'corrections') {
+      scheduleCorrectionsRender();
+    }
     maybeUpdateSelectionTooltip(lastSelectionPoint);
     renderProofread();
   });
@@ -2423,7 +2947,14 @@ function bindEvents() {
   });
 
   modeToggle.addEventListener('click', () => {
-    state.mode = state.mode === 'read' ? 'edit' : 'read';
+    if (state.mode === 'edit') {
+      state.mode = 'read';
+    } else if (state.mode === 'read') {
+      state.mode = 'corrections';
+    } else {
+      state.mode = 'edit';
+    }
+
     renderUI();
     clearActiveHover();
     hideTooltip();
@@ -2474,11 +3005,14 @@ function bindEvents() {
     renderSharePanel();
 
     try {
-      const result = await requestShareCreate(buildSharePayload());
+      const payload = buildSharePayload();
+      payload.correctionsBaseText = state.text;
+      const result = await requestShareCreate(payload);
       const token = typeof result?.token === 'string' ? result.token : '';
       if (!token) {
         throw new Error(copy.shareCreateError);
       }
+      state.correctionsBaseText = payload.correctionsBaseText;
       state.shareToken = token;
       state.shareUrl = buildShareUrl(token);
       state.shareCreatedAt = Number.isFinite(result?.createdAt)
@@ -2524,7 +3058,10 @@ function bindEvents() {
   });
 
   shareRefresh.addEventListener('click', () => {
-    void refreshShareComments();
+    void Promise.all([
+      refreshShareComments(),
+      pullSharedEntry()
+    ]);
   });
 
   clearVocab.addEventListener('click', () => {
@@ -2791,8 +3328,9 @@ function bindEvents() {
   });
 }
 
-function init() {
+async function init() {
   loadState();
+  await hydrateSharedDocumentFromUrl();
   composerInput.value = state.text;
   renderUI();
   renderPreview();
@@ -2807,4 +3345,4 @@ function init() {
   });
 }
 
-init();
+void init();

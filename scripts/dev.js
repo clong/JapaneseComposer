@@ -294,9 +294,9 @@ const server = http.createServer(async (req, res) => {
     }
     const token = createShareToken();
     try {
-      await writeShareEntry(shareDbPath, token, entry);
+      const written = await writeShareEntry(shareDbPath, token, entry);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ token, createdAt: entry.createdAt, updatedAt: entry.updatedAt }));
+      res.end(JSON.stringify({ token, createdAt: written.createdAt, updatedAt: written.updatedAt }));
       return;
     } catch (error) {
       res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -399,7 +399,7 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: true, updatedAt: entry.updatedAt }));
+        res.end(JSON.stringify({ ok: true, updatedAt: updated.updatedAt }));
         return;
       } catch (error) {
         res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -832,13 +832,83 @@ function createShareToken() {
   return randomBytes(18).toString('hex');
 }
 
+function normalizeShareVocabList(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  const now = Date.now();
+  return items
+    .slice(0, 500)
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+      const word = typeof item.word === 'string' ? item.word.slice(0, 120) : '';
+      const reading = typeof item.reading === 'string' ? item.reading.slice(0, 120) : '';
+      const meaning = typeof item.meaning === 'string' ? item.meaning.slice(0, 400) : '';
+      const addedAt = Number.isFinite(item.addedAt) ? Math.trunc(item.addedAt) : now;
+      if (!word && !reading && !meaning) {
+        return null;
+      }
+      return {
+        word,
+        reading,
+        meaning,
+        addedAt
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeShareQuestionList(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  const now = Date.now();
+  return items
+    .slice(0, 500)
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+      const selectedText = typeof item.selectedText === 'string' ? item.selectedText.slice(0, 4000) : '';
+      const question = typeof item.question === 'string' ? item.question.slice(0, 2000) : '';
+      const answer = typeof item.answer === 'string' ? item.answer.slice(0, 20000) : '';
+      const createdAt = Number.isFinite(item.createdAt) ? Math.trunc(item.createdAt) : now;
+      if (!selectedText && !question && !answer) {
+        return null;
+      }
+      return {
+        selectedText,
+        question,
+        answer,
+        createdAt
+      };
+    })
+    .filter(Boolean);
+}
+
 function normalizeShareEntry(entry) {
   if (!entry || typeof entry !== 'object') {
     return null;
   }
   const title = typeof entry.title === 'string' ? entry.title.trim().slice(0, 200) : '';
-  const text = typeof entry.text === 'string' ? entry.text.trim().slice(0, 20000) : '';
-  if (!title && !text) {
+  const text = typeof entry.text === 'string' ? entry.text.slice(0, 20000) : '';
+  const correctionsBaseText = typeof entry.correctionsBaseText === 'string'
+    ? entry.correctionsBaseText.slice(0, 20000)
+    : text;
+  const vocab = normalizeShareVocabList(entry.vocab);
+  const questions = normalizeShareQuestionList(entry.questions);
+  const proofreadContent = typeof entry.proofreadContent === 'string'
+    ? entry.proofreadContent.slice(0, 120000)
+    : '';
+  const proofreadUpdatedAt = Number.isFinite(entry.proofreadUpdatedAt)
+    ? Math.trunc(entry.proofreadUpdatedAt)
+    : null;
+  const hasTextContent = Boolean(text.trim());
+  const hasProofreadContent = Boolean(proofreadContent.trim());
+  const hasCorrectionsBaseContent = Boolean(correctionsBaseText.trim());
+  if (!title && !hasTextContent && !vocab.length && !questions.length && !hasProofreadContent && !hasCorrectionsBaseContent) {
     return null;
   }
   const now = Date.now();
@@ -847,6 +917,11 @@ function normalizeShareEntry(entry) {
   return {
     title,
     text,
+    correctionsBaseText,
+    vocab,
+    questions,
+    proofreadContent,
+    proofreadUpdatedAt,
     createdAt,
     updatedAt
   };
@@ -880,12 +955,23 @@ function parseSqliteJson(stdout) {
 }
 
 async function writeShareEntry(dbPath, token, entry) {
-  const payload = JSON.stringify(entry);
+  const createdAt = Date.now();
+  const updatedAt = createdAt;
+  const normalizedEntry = {
+    ...entry,
+    createdAt,
+    updatedAt
+  };
+  const payload = JSON.stringify(normalizedEntry);
   const sql = `
     INSERT INTO shared_entries (token, payload, created_at, updated_at)
-    VALUES (${sqlString(token)}, ${sqlString(payload)}, ${entry.createdAt}, ${entry.updatedAt});
+    VALUES (${sqlString(token)}, ${sqlString(payload)}, ${createdAt}, ${updatedAt});
   `;
   await runSqlite(dbPath, sql);
+  return {
+    createdAt,
+    updatedAt
+  };
 }
 
 async function updateShareEntry(dbPath, token, entry) {
@@ -893,14 +979,24 @@ async function updateShareEntry(dbPath, token, entry) {
   if (!existing) {
     return false;
   }
-  const payload = JSON.stringify(entry);
+  const updatedAt = Date.now();
+  const createdAt = Number.isFinite(existing.createdAt) ? Math.trunc(existing.createdAt) : updatedAt;
+  const normalizedEntry = {
+    ...entry,
+    createdAt,
+    updatedAt
+  };
+  const payload = JSON.stringify(normalizedEntry);
   const sql = `
     UPDATE shared_entries
-    SET payload = ${sqlString(payload)}, updated_at = ${entry.updatedAt}
+    SET payload = ${sqlString(payload)}, updated_at = ${updatedAt}
     WHERE token = ${sqlString(token)};
   `;
   await runSqlite(dbPath, sql);
-  return true;
+  return {
+    createdAt,
+    updatedAt
+  };
 }
 
 async function readShareEntry(dbPath, token) {

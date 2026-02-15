@@ -64,10 +64,17 @@
             ></textarea>
             <div id="preview" class="preview overlay-preview" aria-live="polite"></div>
           </div>
+          <div class="corrections-panel" id="corrections-panel" hidden>
+            <div class="corrections-header">
+              <h3 id="corrections-title">Tracked Changes</h3>
+              <p id="corrections-subtitle">Tracked edits from the original text.</p>
+            </div>
+            <div class="corrections-list" id="corrections-list" aria-live="polite"></div>
+          </div>
           <div class="proofread-panel">
             <div class="proofread-header">
               <div>
-                <h3 id="proofread-title">Proofreading</h3>
+                <h3 id="proofread-title">AI Proofreader</h3>
                 <p id="proofread-subtitle">Send the full entry to OpenAI for JLPT feedback and corrections.</p>
               </div>
               <button class="primary" id="proofread-button" type="button">Proofread</button>

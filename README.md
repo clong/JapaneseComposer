@@ -100,6 +100,16 @@ You can override the model with `OPENAI_MODEL` (defaults to `gpt-4.1`).
 
 The "Ask" action (for selected text questions) uses the OpenAI Responses API via the local dev server proxy. Provide the same `OPENAI_API_KEY` (and optional `OPENAI_MODEL`) when running the dev server.
 
+## Sharing
+
+Share links now open the full composer workspace for recipients. The shared state includes:
+
+- Composer text
+- Corrections baseline for tracked edits
+- Saved vocabulary
+- Proofreading output
+- Questions and answers
+
 ## Dev server-only features
 
 - Translation, proofreading, and selected text Q&A require the dev server (`npm run dev`). Opening `dist/index.html` directly will not enable these API-backed features.
