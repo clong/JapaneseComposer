@@ -1,18 +1,14 @@
-const DIRECT_DICT_ENDPOINT = 'https://jisho.org/api/v1/search/words?keyword=';
 const PROXY_DICT_ENDPOINT = '/api/lookup?keyword=';
 const VOCAB_API_ENDPOINT = '/api/vocab';
-const SHARE_API_ENDPOINT = '/api/share';
-const preferProxy = typeof window !== 'undefined'
-  && window.location
-  && ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
+const SHARE_USER_API_ENDPOINT = '/api/share-user';
+const AUTH_SESSION_ENDPOINT = '/api/auth/session';
+const AUTH_GOOGLE_START_ENDPOINT = '/api/auth/google/start';
+const AUTH_LOGOUT_ENDPOINT = '/api/auth/logout';
+const WORKSPACE_ENDPOINT = '/api/workspace';
 const vocabApiEnabled = typeof window !== 'undefined'
   && window.location
   && window.location.protocol !== 'file:';
 let vocabApiAvailable = vocabApiEnabled;
-const shareApiEnabled = typeof window !== 'undefined'
-  && window.location
-  && window.location.protocol !== 'file:';
-let shareApiAvailable = shareApiEnabled;
 const STORAGE_KEYS = {
   entry: 'jc_entry',
   vocab: 'jc_vocab_list',
@@ -119,29 +115,29 @@ const i18n = {
     questionsSelectedLabel: 'Selected text',
     questionsQuestionLabel: 'Question',
     questionsAnswerLabel: 'Answer',
-    shareTitle: 'Sharing',
-    shareSubtitle: 'Create a link to collect feedback on this entry.',
-    shareCreate: 'Create link',
-    shareCopy: 'Copy link',
-    shareOpen: 'Open',
-    shareRefresh: 'Refresh',
-    shareLinkLabel: 'Share link',
-    shareLinkPlaceholder: 'Create a share link to send.',
-    shareCopied: 'Copied',
-    shareCopyError: 'Copy failed.',
-    shareCreateMissing: 'Enter some text to share.',
-    shareCreateError: 'Share failed.',
-    shareLoading: 'Loading feedback…',
-    shareEmpty: 'No feedback yet.',
-    shareDisabled: 'Sharing is unavailable in this mode.',
-    shareSyncing: 'Syncing…',
-    shareSynced: 'Last synced',
-    shareSyncError: 'Sync failed.',
-    shareAnonymous: 'Anonymous',
+    shareTitle: 'Share with Google User',
+    shareSubtitle: 'Send this entry to another signed-in user by email.',
+    shareUserLabel: 'Google account email',
+    shareUserPlaceholder: 'friend@gmail.com',
+    shareSend: 'Share with user',
+    shareRequiresAuth: 'Sign in to share with another user.',
+    shareMissingEmail: 'Enter a recipient email.',
+    shareMissingText: 'Enter some text to share.',
+    shareSuccess: 'Shared successfully.',
+    shareError: 'Sharing failed.',
     correctionsTitle: 'Tracked Changes',
     correctionsSubtitle: 'Tracked edits from the original text.',
     correctionsEmpty: 'No tracked edits yet.',
-    correctionsResetConfirm: 'Making an edit to your post after corrections have been added will clear all tracked corrections. Do you want to continue?'
+    correctionsResetConfirm: 'Making an edit to your post after corrections have been added will clear all tracked corrections. Do you want to continue?',
+    authSignIn: 'Sign in with Google',
+    authSignOut: 'Sign out',
+    authDisabled: 'Google sign-in unavailable.',
+    authUserFallback: 'Signed in',
+    authSyncLocal: 'Local-only mode.',
+    authSyncReady: 'Account sync ready.',
+    authSyncing: 'Account sync: Syncing…',
+    authSynced: 'Account sync',
+    authSyncError: 'Account sync failed.'
   },
   ja: {
     appTitle: '日本語コンポーザー',
@@ -208,29 +204,29 @@ const i18n = {
     questionsSelectedLabel: '選択テキスト',
     questionsQuestionLabel: '質問',
     questionsAnswerLabel: '回答',
-    shareTitle: '共有',
-    shareSubtitle: 'この作文を共有してフィードバックを集めます。',
-    shareCreate: '共有リンク作成',
-    shareCopy: 'コピー',
-    shareOpen: '開く',
-    shareRefresh: '更新',
-    shareLinkLabel: '共有リンク',
-    shareLinkPlaceholder: '共有リンクを作成してください。',
-    shareCopied: 'コピーしました',
-    shareCopyError: 'コピーに失敗しました。',
-    shareCreateMissing: '共有するテキストを入力してください。',
-    shareCreateError: '共有に失敗しました。',
-    shareLoading: 'フィードバック読み込み中…',
-    shareEmpty: 'まだフィードバックがありません。',
-    shareDisabled: 'このモードでは共有できません。',
-    shareSyncing: '同期中…',
-    shareSynced: '同期',
-    shareSyncError: '同期に失敗しました。',
-    shareAnonymous: '匿名',
+    shareTitle: 'Googleユーザー共有',
+    shareSubtitle: 'ログイン済みのユーザーにメールでこの作文を共有します。',
+    shareUserLabel: 'Googleアカウントのメール',
+    shareUserPlaceholder: 'friend@gmail.com',
+    shareSend: 'ユーザーへ共有',
+    shareRequiresAuth: '共有するにはログインしてください。',
+    shareMissingEmail: '共有先メールを入力してください。',
+    shareMissingText: '共有するテキストを入力してください。',
+    shareSuccess: '共有しました。',
+    shareError: '共有に失敗しました。',
     correctionsTitle: '添削履歴',
     correctionsSubtitle: '元の文章からの変更点を表示します。',
     correctionsEmpty: 'まだ変更はありません。',
-    correctionsResetConfirm: '添削履歴がある状態で投稿を編集すると、履歴はすべて消去されます。続けますか？'
+    correctionsResetConfirm: '添削履歴がある状態で投稿を編集すると、履歴はすべて消去されます。続けますか？',
+    authSignIn: 'Googleでログイン',
+    authSignOut: 'ログアウト',
+    authDisabled: 'Googleログインは利用できません。',
+    authUserFallback: 'ログイン中',
+    authSyncLocal: 'ローカル保存モードです。',
+    authSyncReady: 'アカウント同期の準備完了。',
+    authSyncing: 'アカウント同期中…',
+    authSynced: 'アカウント同期',
+    authSyncError: 'アカウント同期に失敗しました。'
   }
 };
 
@@ -245,10 +241,7 @@ const state = {
   mode: 'edit',
   vocab: [],
   questions: [],
-  correctionsBaseText: '',
-  shareToken: '',
-  shareUrl: '',
-  shareCreatedAt: null
+  correctionsBaseText: ''
 };
 
 const proofreadState = {
@@ -259,13 +252,20 @@ const proofreadState = {
 };
 
 const shareState = {
-  status: 'idle',
+  sending: false,
+  message: '',
   error: '',
-  comments: [],
+  lastSharedAt: null
+};
+
+const authState = {
+  enabled: false,
+  loading: true,
+  authenticated: false,
+  user: null,
   syncing: false,
   syncError: '',
-  lastSyncedAt: null,
-  lastFetchedAt: null
+  lastSyncedAt: null
 };
 
 const lookupCache = new Map();
@@ -274,12 +274,10 @@ let pendingRender = false;
 let pendingCorrectionsRender = false;
 let pendingCorrectionResetOnInput = false;
 let vocabSaveQueue = Promise.resolve();
-let shareSyncTimer = null;
-let shareSyncPending = null;
-let shareSyncInFlight = false;
-let shareEntryPollTimer = null;
-let shareEntryPullInFlight = false;
-const SHARE_ENTRY_POLL_INTERVAL_MS = 5000;
+let workspaceSyncTimer = null;
+let workspaceSyncPending = null;
+let workspaceSyncInFlight = false;
+let workspaceHydrating = false;
 
 function enqueueVocabApiTask(task) {
   vocabSaveQueue = vocabSaveQueue
@@ -318,19 +316,21 @@ const shareBody = document.querySelector('#share-body');
 const shareCollapse = document.querySelector('#share-collapse');
 const shareTitle = document.querySelector('#share-title');
 const shareSubtitle = document.querySelector('#share-subtitle');
-const shareCreate = document.querySelector('#share-create');
-const shareCopy = document.querySelector('#share-copy');
-const shareOpen = document.querySelector('#share-open');
-const shareRefresh = document.querySelector('#share-refresh');
-const shareLinkLabel = document.querySelector('#share-link-label');
-const shareLinkInput = document.querySelector('#share-link');
+const shareUserLabel = document.querySelector('#share-user-label');
+const shareUserEmailInput = document.querySelector('#share-user-email');
+const shareSend = document.querySelector('#share-send');
 const shareStatus = document.querySelector('#share-status');
-const shareCommentsList = document.querySelector('#share-comments-list');
 const languageToggle = document.querySelector('#language-toggle');
 const modeToggle = document.querySelector('#mode-toggle');
 const furiganaToggle = document.querySelector('#furigana-toggle');
 const vocabToggle = document.querySelector('#vocab-toggle');
 const clearVocab = document.querySelector('#clear-vocab');
+const authGoogle = document.querySelector('#auth-google');
+const authLogout = document.querySelector('#auth-logout');
+const authUser = document.querySelector('#auth-user');
+const authAvatar = document.querySelector('#auth-avatar');
+const authName = document.querySelector('#auth-name');
+const authSyncStatus = document.querySelector('#auth-sync-status');
 const proofreadTitle = document.querySelector('#proofread-title');
 const proofreadSubtitle = document.querySelector('#proofread-subtitle');
 const proofreadButton = document.querySelector('#proofread-button');
@@ -1021,11 +1021,6 @@ function normalizeDocumentEntries(entries) {
       const proofreadUpdatedAt = Number.isFinite(entry.proofreadUpdatedAt)
         ? Math.trunc(entry.proofreadUpdatedAt)
         : null;
-      const shareToken = typeof entry.shareToken === 'string' ? entry.shareToken.trim() : '';
-      const shareUrl = typeof entry.shareUrl === 'string' ? entry.shareUrl.trim() : '';
-      const shareCreatedAt = Number.isFinite(entry.shareCreatedAt)
-        ? Math.trunc(entry.shareCreatedAt)
-        : null;
       const createdAt = Number.isFinite(entry.createdAt) ? Math.trunc(entry.createdAt) : now;
       const updatedAt = Number.isFinite(entry.updatedAt) ? Math.trunc(entry.updatedAt) : createdAt;
       return {
@@ -1037,9 +1032,6 @@ function normalizeDocumentEntries(entries) {
         correctionsBaseText,
         proofreadContent,
         proofreadUpdatedAt,
-        shareToken,
-        shareUrl,
-        shareCreatedAt,
         createdAt,
         updatedAt
       };
@@ -1086,8 +1078,367 @@ function loadDocumentsFromStorage() {
   }
 }
 
-function saveDocumentsToStorage() {
+function saveDocumentsToStorage({ syncServer = true } = {}) {
   safeStorageSet(STORAGE_KEYS.documents, JSON.stringify(state.documents));
+  if (syncServer) {
+    scheduleWorkspaceSync();
+  }
+}
+
+function normalizeAuthUser(user) {
+  if (!user || typeof user !== 'object') {
+    return null;
+  }
+  const id = typeof user.id === 'string' ? user.id : '';
+  const email = typeof user.email === 'string' ? user.email : '';
+  const name = typeof user.name === 'string' ? user.name : '';
+  const picture = typeof user.picture === 'string' ? user.picture : '';
+  if (!id) {
+    return null;
+  }
+  return {
+    id,
+    email,
+    name,
+    picture
+  };
+}
+
+function buildWorkspacePayload() {
+  return {
+    documents: normalizeDocumentEntries(state.documents),
+    activeDocumentId: state.documentId || '',
+    updatedAt: Date.now()
+  };
+}
+
+function buildWorkspaceSnapshot(workspace) {
+  if (!workspace || typeof workspace !== 'object') {
+    return '';
+  }
+  const documents = normalizeDocumentEntries(workspace.documents);
+  const activeDocumentId = typeof workspace.activeDocumentId === 'string'
+    ? workspace.activeDocumentId
+    : '';
+  return JSON.stringify({ documents, activeDocumentId });
+}
+
+function mergeWorkspaceDocuments(localDocuments, remoteDocuments) {
+  const merged = new Map();
+  normalizeDocumentEntries(remoteDocuments).forEach((doc) => {
+    merged.set(doc.id, doc);
+  });
+  normalizeDocumentEntries(localDocuments).forEach((doc) => {
+    const existing = merged.get(doc.id);
+    if (!existing) {
+      merged.set(doc.id, doc);
+      return;
+    }
+    const localUpdatedAt = Number.isFinite(doc.updatedAt) ? doc.updatedAt : 0;
+    const remoteUpdatedAt = Number.isFinite(existing.updatedAt) ? existing.updatedAt : 0;
+    if (localUpdatedAt > remoteUpdatedAt) {
+      merged.set(doc.id, doc);
+    }
+  });
+  return Array.from(merged.values()).sort((a, b) => {
+    const left = Number.isFinite(a?.updatedAt) ? a.updatedAt : 0;
+    const right = Number.isFinite(b?.updatedAt) ? b.updatedAt : 0;
+    return right - left;
+  });
+}
+
+function isBootstrapDocument(doc) {
+  if (!doc || typeof doc !== 'object') {
+    return false;
+  }
+  const title = typeof doc.title === 'string' ? doc.title.trim() : '';
+  const text = typeof doc.text === 'string' ? doc.text : '';
+  const vocab = Array.isArray(doc.vocab) ? doc.vocab : [];
+  const questions = Array.isArray(doc.questions) ? doc.questions : [];
+  const proofreadContent = typeof doc.proofreadContent === 'string' ? doc.proofreadContent.trim() : '';
+  return !title
+    && text === defaultText
+    && !vocab.length
+    && !questions.length
+    && !proofreadContent;
+}
+
+function shouldIgnoreLocalBootstrapWorkspace(localDocuments, remoteDocuments) {
+  const normalizedLocal = normalizeDocumentEntries(localDocuments);
+  const normalizedRemote = normalizeDocumentEntries(remoteDocuments);
+  return normalizedRemote.length > 0
+    && normalizedLocal.length === 1
+    && isBootstrapDocument(normalizedLocal[0]);
+}
+
+function resolveWorkspaceActiveDocumentId({ preferredActiveId, fallbackActiveId, documents }) {
+  if (!Array.isArray(documents) || !documents.length) {
+    return '';
+  }
+  if (preferredActiveId && documents.some((doc) => doc.id === preferredActiveId)) {
+    return preferredActiveId;
+  }
+  if (fallbackActiveId && documents.some((doc) => doc.id === fallbackActiveId)) {
+    return fallbackActiveId;
+  }
+  return documents[0].id;
+}
+
+function applyWorkspaceState(workspace) {
+  const nextDocuments = normalizeDocumentEntries(workspace?.documents);
+  workspaceHydrating = true;
+  try {
+    state.documents = nextDocuments.length
+      ? nextDocuments
+      : [createDocument({ text: defaultText })];
+    saveDocumentsToStorage({ syncServer: false });
+
+    const nextActiveId = resolveWorkspaceActiveDocumentId({
+      preferredActiveId: typeof workspace?.activeDocumentId === 'string' ? workspace.activeDocumentId : '',
+      fallbackActiveId: state.documentId,
+      documents: state.documents
+    });
+    const nextActiveDocument = state.documents.find((doc) => doc.id === nextActiveId) || state.documents[0];
+    setActiveDocument(nextActiveDocument, { resetProofread: false });
+  } finally {
+    workspaceHydrating = false;
+  }
+}
+
+function clearWorkspaceSyncQueue() {
+  if (workspaceSyncTimer) {
+    clearTimeout(workspaceSyncTimer);
+    workspaceSyncTimer = null;
+  }
+  workspaceSyncPending = null;
+  workspaceSyncInFlight = false;
+}
+
+function renderAuthControls() {
+  const copy = i18n[state.language];
+  if (authGoogle) {
+    authGoogle.textContent = copy.authSignIn;
+    authGoogle.disabled = authState.loading || !authState.enabled || authState.authenticated;
+    authGoogle.hidden = Boolean(authState.authenticated) || !authState.enabled;
+  }
+  if (authLogout) {
+    authLogout.textContent = copy.authSignOut;
+    authLogout.hidden = !authState.authenticated;
+    authLogout.disabled = authState.loading;
+  }
+  if (authUser) {
+    const isVisible = authState.authenticated && Boolean(authState.user);
+    authUser.hidden = !isVisible;
+    if (isVisible && authName) {
+      const user = authState.user || {};
+      authName.textContent = user.name || user.email || copy.authUserFallback;
+      authName.title = user.email || user.name || '';
+    }
+    if (authAvatar) {
+      const picture = authState.user?.picture || '';
+      if (picture) {
+        authAvatar.src = picture;
+        authAvatar.alt = authState.user?.name || authState.user?.email || copy.authUserFallback;
+        authAvatar.hidden = false;
+      } else {
+        authAvatar.removeAttribute('src');
+        authAvatar.alt = '';
+        authAvatar.hidden = true;
+      }
+    }
+  }
+  if (authSyncStatus) {
+    let statusText = '';
+    if (authState.loading) {
+      statusText = '';
+    } else if (!authState.enabled) {
+      statusText = copy.authDisabled;
+    } else if (!authState.authenticated) {
+      statusText = copy.authSyncLocal;
+    } else if (authState.syncing) {
+      statusText = copy.authSyncing;
+    } else if (authState.syncError) {
+      statusText = authState.syncError;
+    } else if (authState.lastSyncedAt instanceof Date) {
+      const formatted = formatShareTimestamp(authState.lastSyncedAt);
+      statusText = formatted ? `${copy.authSynced}: ${formatted}` : copy.authSyncReady;
+    } else {
+      statusText = copy.authSyncReady;
+    }
+    authSyncStatus.textContent = statusText;
+  }
+}
+
+function scheduleWorkspaceSync({ immediate = false } = {}) {
+  if (!authState.authenticated || workspaceHydrating) {
+    return;
+  }
+  workspaceSyncPending = buildWorkspacePayload();
+  if (immediate) {
+    if (workspaceSyncTimer) {
+      clearTimeout(workspaceSyncTimer);
+      workspaceSyncTimer = null;
+    }
+    void flushWorkspaceSync();
+    return;
+  }
+  if (workspaceSyncTimer) {
+    return;
+  }
+  workspaceSyncTimer = setTimeout(() => {
+    workspaceSyncTimer = null;
+    void flushWorkspaceSync();
+  }, 1200);
+}
+
+async function flushWorkspaceSync() {
+  if (workspaceSyncInFlight || !workspaceSyncPending || !authState.authenticated) {
+    return;
+  }
+  const payload = workspaceSyncPending;
+  workspaceSyncPending = null;
+  workspaceSyncInFlight = true;
+  authState.syncing = true;
+  authState.syncError = '';
+  renderAuthControls();
+  try {
+    const result = await requestWorkspaceUpdate(payload);
+    const updatedAt = Number.isFinite(result?.updatedAt) ? Math.trunc(result.updatedAt) : Date.now();
+    authState.lastSyncedAt = new Date(updatedAt);
+    authState.syncError = '';
+  } catch (error) {
+    authState.syncError = error?.message || i18n[state.language].authSyncError;
+  } finally {
+    authState.syncing = false;
+    workspaceSyncInFlight = false;
+    renderAuthControls();
+    if (workspaceSyncPending) {
+      scheduleWorkspaceSync({ immediate: true });
+    }
+  }
+}
+
+async function requestAuthSession() {
+  const response = await fetch(AUTH_SESSION_ENDPOINT, {
+    method: 'GET',
+    credentials: 'include',
+    cache: 'no-store'
+  });
+  if (!response.ok) {
+    throw new Error('Auth session failed');
+  }
+  const data = await safeParseJson(response);
+  return data && typeof data === 'object' ? data : {};
+}
+
+async function requestWorkspace() {
+  const response = await fetch(WORKSPACE_ENDPOINT, {
+    method: 'GET',
+    credentials: 'include',
+    cache: 'no-store'
+  });
+  const data = await safeParseJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || i18n[state.language].authSyncError);
+  }
+  if (!data || typeof data.workspace !== 'object' || !data.workspace) {
+    return null;
+  }
+  return data.workspace;
+}
+
+async function requestWorkspaceUpdate(workspace) {
+  const response = await fetch(WORKSPACE_ENDPOINT, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace })
+  });
+  const data = await safeParseJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || i18n[state.language].authSyncError);
+  }
+  return data;
+}
+
+async function requestAuthLogout() {
+  const response = await fetch(AUTH_LOGOUT_ENDPOINT, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  const data = await safeParseJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || 'Logout failed');
+  }
+  return data;
+}
+
+async function hydrateAuthAndWorkspace() {
+  authState.loading = true;
+  authState.syncError = '';
+  authState.lastSyncedAt = null;
+  renderAuthControls();
+
+  let session = null;
+  try {
+    session = await requestAuthSession();
+  } catch (error) {
+    session = null;
+  }
+
+  authState.enabled = Boolean(session?.enabled);
+  authState.user = normalizeAuthUser(session?.user);
+  authState.authenticated = Boolean(session?.authenticated && authState.user);
+  authState.loading = false;
+  renderAuthControls();
+
+  if (!authState.authenticated) {
+    clearWorkspaceSyncQueue();
+    return;
+  }
+
+  try {
+    const remoteWorkspace = await requestWorkspace();
+    const localWorkspace = buildWorkspacePayload();
+    const remoteDocuments = normalizeDocumentEntries(remoteWorkspace?.documents);
+    const localDocumentsForMerge = shouldIgnoreLocalBootstrapWorkspace(localWorkspace.documents, remoteDocuments)
+      ? []
+      : localWorkspace.documents;
+    const mergedDocuments = mergeWorkspaceDocuments(localDocumentsForMerge, remoteDocuments);
+    const mergedWorkspace = {
+      documents: mergedDocuments,
+      activeDocumentId: resolveWorkspaceActiveDocumentId({
+        preferredActiveId: typeof remoteWorkspace?.activeDocumentId === 'string' ? remoteWorkspace.activeDocumentId : '',
+        fallbackActiveId: localWorkspace.activeDocumentId,
+        documents: mergedDocuments
+      })
+    };
+
+    const localSnapshot = buildWorkspaceSnapshot(localWorkspace);
+    const mergedSnapshot = buildWorkspaceSnapshot(mergedWorkspace);
+    const remoteSnapshot = buildWorkspaceSnapshot({
+      documents: remoteDocuments,
+      activeDocumentId: typeof remoteWorkspace?.activeDocumentId === 'string' ? remoteWorkspace.activeDocumentId : ''
+    });
+
+    if (mergedSnapshot && mergedSnapshot !== localSnapshot) {
+      applyWorkspaceState(mergedWorkspace);
+    }
+
+    const remoteUpdatedAt = Number.isFinite(remoteWorkspace?.updatedAt)
+      ? Math.trunc(remoteWorkspace.updatedAt)
+      : Date.now();
+    authState.lastSyncedAt = new Date(remoteUpdatedAt);
+    authState.syncError = '';
+    renderAuthControls();
+
+    if (!remoteDocuments.length || (mergedSnapshot && mergedSnapshot !== remoteSnapshot)) {
+      scheduleWorkspaceSync({ immediate: true });
+    }
+  } catch (error) {
+    authState.syncError = error?.message || i18n[state.language].authSyncError;
+    renderAuthControls();
+  }
 }
 
 async function fetchVocabFromApi() {
@@ -1114,6 +1465,9 @@ async function fetchVocabFromApi() {
 }
 
 async function hydrateVocabFromApi() {
+  if (authState.authenticated) {
+    return;
+  }
   if (state.documents.length > 1 || state.vocab.length) {
     return;
   }
@@ -1127,6 +1481,9 @@ async function hydrateVocabFromApi() {
 }
 
 async function persistVocabToApi(items) {
+  if (authState.authenticated) {
+    return;
+  }
   if (!vocabApiAvailable) {
     return;
   }
@@ -1147,6 +1504,9 @@ async function persistVocabToApi(items) {
 }
 
 async function deleteVocabEntryFromApi(entry) {
+  if (authState.authenticated) {
+    return;
+  }
   if (!vocabApiAvailable) {
     return;
   }
@@ -1182,22 +1542,12 @@ function createDocument({
   correctionsBaseText = text,
   proofreadContent = '',
   proofreadUpdatedAt = null,
-  shareToken = '',
-  shareUrl = '',
-  shareCreatedAt = null,
   createdAt = null,
   updatedAt = null
 } = {}) {
   const now = Date.now();
   const normalizedProofreadUpdatedAt = Number.isFinite(proofreadUpdatedAt)
     ? Math.trunc(proofreadUpdatedAt)
-    : null;
-  const normalizedShareToken = typeof shareToken === 'string' ? shareToken.trim() : '';
-  const normalizedShareUrl = normalizedShareToken
-    ? (typeof shareUrl === 'string' && shareUrl.trim() ? shareUrl.trim() : buildShareUrl(normalizedShareToken))
-    : '';
-  const normalizedShareCreatedAt = Number.isFinite(shareCreatedAt)
-    ? Math.trunc(shareCreatedAt)
     : null;
   const normalizedCreatedAt = Number.isFinite(createdAt) ? Math.trunc(createdAt) : now;
   const normalizedUpdatedAt = Number.isFinite(updatedAt) ? Math.trunc(updatedAt) : normalizedCreatedAt;
@@ -1210,9 +1560,6 @@ function createDocument({
     correctionsBaseText: normalizeCorrectionsBaseText(correctionsBaseText, text),
     proofreadContent: typeof proofreadContent === 'string' ? proofreadContent : '',
     proofreadUpdatedAt: normalizedProofreadUpdatedAt,
-    shareToken: normalizedShareToken,
-    shareUrl: normalizedShareUrl,
-    shareCreatedAt: normalizedShareCreatedAt,
     createdAt: normalizedCreatedAt,
     updatedAt: normalizedUpdatedAt
   };
@@ -1225,9 +1572,6 @@ function applyDocumentToState(doc) {
   state.vocab = normalizeVocabEntries(doc.vocab);
   state.questions = normalizeQuestionEntries(doc.questions);
   state.correctionsBaseText = normalizeCorrectionsBaseText(doc.correctionsBaseText, state.text);
-  state.shareToken = doc.shareToken || '';
-  state.shareUrl = state.shareToken ? buildShareUrl(state.shareToken) : '';
-  state.shareCreatedAt = Number.isFinite(doc.shareCreatedAt) ? doc.shareCreatedAt : null;
 }
 
 function hydrateProofreadFromDocument(doc, { reset = false } = {}) {
@@ -1262,20 +1606,12 @@ function hydrateProofreadFromDocument(doc, { reset = false } = {}) {
 }
 
 function hydrateShareFromDocument(doc) {
-  stopShareEntryPolling();
-  shareState.comments = [];
-  shareState.status = 'idle';
+  shareState.sending = false;
   shareState.error = '';
-  shareState.syncError = '';
-  shareState.lastFetchedAt = null;
-  shareState.lastSyncedAt = null;
-  if (doc?.shareToken && shareApiAvailable) {
-    shareState.status = 'loading';
-    renderSharePanel();
-    startShareEntryPolling();
-    void refreshShareComments();
-    void pullSharedEntry({ silent: true });
-    return;
+  shareState.message = '';
+  shareState.lastSharedAt = null;
+  if (shareUserEmailInput) {
+    shareUserEmailInput.value = '';
   }
   renderSharePanel();
 }
@@ -1308,9 +1644,6 @@ function persistActiveDocument({ updateList = false, normalize = false } = {}) {
       correctionsBaseText: normalizeCorrectionsBaseText(state.correctionsBaseText, state.text),
       proofreadContent: proofreadContent || '',
       proofreadUpdatedAt,
-      shareToken: state.shareToken,
-      shareUrl: state.shareUrl,
-      shareCreatedAt: state.shareCreatedAt,
       createdAt: now,
       updatedAt: now
     });
@@ -1321,9 +1654,6 @@ function persistActiveDocument({ updateList = false, normalize = false } = {}) {
     doc.vocab = normalizedVocab;
     doc.questions = normalizedQuestions;
     doc.correctionsBaseText = normalizeCorrectionsBaseText(state.correctionsBaseText, state.text);
-    doc.shareToken = state.shareToken;
-    doc.shareUrl = state.shareUrl;
-    doc.shareCreatedAt = state.shareCreatedAt;
     if (hasProofread) {
       doc.proofreadContent = proofreadContent || '';
       doc.proofreadUpdatedAt = proofreadUpdatedAt;
@@ -1337,8 +1667,6 @@ function persistActiveDocument({ updateList = false, normalize = false } = {}) {
   if (updateList) {
     renderDocumentSelect();
   }
-
-  scheduleShareSync();
 }
 
 function setActiveDocument(doc, { resetProofread = true } = {}) {
@@ -1442,11 +1770,8 @@ async function lookupWord(word) {
   const timeoutId = setTimeout(() => controller.abort(), 6000);
 
   try {
-    const directUrl = `${DIRECT_DICT_ENDPOINT}${encodeURIComponent(word)}`;
     const proxyUrl = `${PROXY_DICT_ENDPOINT}${encodeURIComponent(word)}`;
-    const data = preferProxy
-      ? await fetchJson(proxyUrl, controller.signal) || await fetchJson(directUrl, controller.signal)
-      : await fetchJson(directUrl, controller.signal) || await fetchJson(proxyUrl, controller.signal);
+    const data = await fetchJson(proxyUrl, controller.signal);
     const selection = selectBestEntry(data?.data, word);
     if (!selection) {
       return null;
@@ -1907,60 +2232,6 @@ function renderQuestions() {
   });
 }
 
-function buildShareUrl(token) {
-  const normalizedToken = typeof token === 'string' ? token.trim() : '';
-  if (!normalizedToken) {
-    return '';
-  }
-  try {
-    const currentUrl = new URL(window.location.href);
-    const pathParts = currentUrl.pathname.split('/').filter(Boolean);
-    const isLegacyShareRoute = (pathParts[0] === 'share' || pathParts[0] === 's')
-      && pathParts.length === 2;
-    let basePath = currentUrl.pathname;
-    if (isLegacyShareRoute) {
-      basePath = '/';
-    }
-    if (basePath.endsWith('.html')) {
-      basePath = basePath.replace(/[^/]+$/, '');
-    }
-    if (!basePath) {
-      basePath = '/';
-    }
-    const shareUrl = new URL(basePath, window.location.origin);
-    shareUrl.searchParams.set('share', normalizedToken);
-    return shareUrl.toString();
-  } catch (error) {
-    return `/?share=${encodeURIComponent(normalizedToken)}`;
-  }
-}
-
-function getShareTokenFromUrl() {
-  try {
-    const url = new URL(window.location.href);
-    const queryToken = typeof url.searchParams.get('share') === 'string'
-      ? url.searchParams.get('share').trim()
-      : '';
-    if (queryToken) {
-      return queryToken;
-    }
-    const fallbackToken = typeof url.searchParams.get('token') === 'string'
-      ? url.searchParams.get('token').trim()
-      : '';
-    if (fallbackToken) {
-      return fallbackToken;
-    }
-    const parts = url.pathname.split('/').filter(Boolean);
-    const shareIndex = parts.findIndex((part) => part === 'share' || part === 's');
-    if (shareIndex >= 0 && parts[shareIndex + 1]) {
-      return parts[shareIndex + 1].trim();
-    }
-    return '';
-  } catch (error) {
-    return '';
-  }
-}
-
 function formatShareTimestamp(date) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
     return '';
@@ -1976,6 +2247,12 @@ function formatShareTimestamp(date) {
   }
 }
 
+function normalizeShareRecipientEmail(email) {
+  return typeof email === 'string'
+    ? email.trim().toLowerCase()
+    : '';
+}
+
 function buildSharePayload() {
   const doc = state.documents.find((item) => item.id === state.documentId);
   const hasProofread = proofreadState.status === 'success' && Boolean(proofreadState.content);
@@ -1986,6 +2263,7 @@ function buildSharePayload() {
     ? (proofreadState.updatedAt instanceof Date ? proofreadState.updatedAt.getTime() : Date.now())
     : (Number.isFinite(doc?.proofreadUpdatedAt) ? Math.trunc(doc.proofreadUpdatedAt) : null);
   const payload = {
+    id: state.documentId,
     title: state.title,
     text: state.text,
     correctionsBaseText: normalizeCorrectionsBaseText(state.correctionsBaseText, state.text),
@@ -2001,376 +2279,43 @@ function buildSharePayload() {
   return payload;
 }
 
-function stopShareEntryPolling() {
-  if (shareEntryPollTimer) {
-    clearInterval(shareEntryPollTimer);
-    shareEntryPollTimer = null;
-  }
-}
-
-function startShareEntryPolling() {
-  if (shareEntryPollTimer || !state.shareToken || !shareApiAvailable) {
-    return;
-  }
-  shareEntryPollTimer = setInterval(() => {
-    void pullSharedEntry({ silent: true });
-  }, SHARE_ENTRY_POLL_INTERVAL_MS);
-}
-
-function hasPendingLocalShareSync() {
-  return Boolean(shareSyncPending) || shareSyncInFlight || shareState.syncing;
-}
-
-function buildSharedDocumentFromEntry(token, entry) {
-  const createdAt = Number.isFinite(entry?.createdAt)
-    ? Math.trunc(entry.createdAt)
-    : Date.now();
-  const updatedAt = Number.isFinite(entry?.updatedAt)
-    ? Math.trunc(entry.updatedAt)
-    : createdAt;
-  return createDocument({
-    title: typeof entry?.title === 'string' ? entry.title : '',
-    text: typeof entry?.text === 'string' ? entry.text : '',
-    correctionsBaseText: normalizeCorrectionsBaseText(entry?.correctionsBaseText, entry?.text),
-    vocab: normalizeVocabEntries(entry?.vocab),
-    questions: normalizeQuestionEntries(entry?.questions),
-    proofreadContent: typeof entry?.proofreadContent === 'string' ? entry.proofreadContent : '',
-    proofreadUpdatedAt: Number.isFinite(entry?.proofreadUpdatedAt)
-      ? Math.trunc(entry.proofreadUpdatedAt)
-      : null,
-    shareToken: token,
-    shareUrl: buildShareUrl(token),
-    shareCreatedAt: createdAt,
-    createdAt,
-    updatedAt
-  });
-}
-
-function refreshCurrentDocumentFromState() {
-  if (documentTitleInput && documentTitleInput.value !== state.title) {
-    documentTitleInput.value = state.title;
-  }
-  composerInput.value = state.text;
-  renderDocumentSelect();
-  renderPreview();
-  renderCorrections();
-  renderVocab();
-  renderQuestions();
-  renderProofread();
-  renderSharePanel();
-}
-
-function mergeSharedEntryIntoDocuments(token, entry, { force = false, activate = false } = {}) {
-  const sharedDocument = buildSharedDocumentFromEntry(token, entry);
-  const existingIndex = state.documents.findIndex((doc) => doc.shareToken === token);
-
-  if (existingIndex === -1) {
-    state.documents.unshift(sharedDocument);
-    saveDocumentsToStorage();
-    if (activate) {
-      setActiveDocument(sharedDocument, { resetProofread: false });
-    } else {
-      renderDocumentSelect();
-    }
-    return true;
-  }
-
-  const existing = state.documents[existingIndex];
-  const localUpdatedAt = Number.isFinite(existing.updatedAt) ? existing.updatedAt : 0;
-  const remoteUpdatedAt = Number.isFinite(sharedDocument.updatedAt) ? sharedDocument.updatedAt : 0;
-  if (!force && remoteUpdatedAt <= localUpdatedAt) {
-    return false;
-  }
-
-  const merged = {
-    ...existing,
-    ...sharedDocument,
-    id: existing.id,
-    createdAt: Number.isFinite(existing.createdAt) ? existing.createdAt : sharedDocument.createdAt
-  };
-  state.documents.splice(existingIndex, 1, merged);
-  saveDocumentsToStorage();
-
-  if (activate) {
-    setActiveDocument(merged, { resetProofread: false });
-    return true;
-  }
-
-  if (state.documentId === merged.id) {
-    applyDocumentToState(merged);
-    safeStorageSet(STORAGE_KEYS.activeDocument, state.documentId);
-    hydrateProofreadFromDocument(merged, { reset: false });
-    refreshCurrentDocumentFromState();
-  } else {
-    renderDocumentSelect();
-  }
-
-  return true;
-}
-
-async function pullSharedEntry({ silent = false, force = false } = {}) {
-  if (!state.shareToken || !shareApiAvailable) {
-    stopShareEntryPolling();
-    return false;
-  }
-  if (shareEntryPullInFlight) {
-    return false;
-  }
-  if (!force && hasPendingLocalShareSync()) {
-    return false;
-  }
-
-  shareEntryPullInFlight = true;
-  try {
-    const entry = await requestShareEntry(state.shareToken);
-    const didApply = mergeSharedEntryIntoDocuments(state.shareToken, entry, { force });
-    if (!silent) {
-      shareState.syncError = '';
-      renderSharePanel();
-    }
-    return didApply;
-  } catch (error) {
-    if (!shareApiAvailable) {
-      stopShareEntryPolling();
-    }
-    if (!silent) {
-      shareState.syncError = error?.message || i18n[state.language].shareSyncError;
-      renderSharePanel();
-    }
-    return false;
-  } finally {
-    shareEntryPullInFlight = false;
-  }
-}
-
-function renderShareComments() {
-  const copy = i18n[state.language];
-  shareCommentsList.replaceChildren();
-
-  if (!shareApiAvailable) {
-    const empty = document.createElement('div');
-    empty.className = 'share-empty';
-    empty.textContent = copy.shareDisabled;
-    shareCommentsList.appendChild(empty);
-    return;
-  }
-
-  if (!state.shareToken) {
-    const empty = document.createElement('div');
-    empty.className = 'share-empty';
-    empty.textContent = copy.shareLinkPlaceholder;
-    shareCommentsList.appendChild(empty);
-    return;
-  }
-
-  if (shareState.status === 'loading') {
-    const loading = document.createElement('div');
-    loading.className = 'share-empty';
-    loading.textContent = copy.shareLoading;
-    shareCommentsList.appendChild(loading);
-    return;
-  }
-
-  if (shareState.status === 'error') {
-    const error = document.createElement('div');
-    error.className = 'share-empty';
-    error.textContent = shareState.error || copy.shareSyncError;
-    shareCommentsList.appendChild(error);
-    return;
-  }
-
-  if (!shareState.comments.length) {
-    const empty = document.createElement('div');
-    empty.className = 'share-empty';
-    empty.textContent = copy.shareEmpty;
-    shareCommentsList.appendChild(empty);
-    return;
-  }
-
-  shareState.comments.forEach((comment) => {
-    const card = document.createElement('div');
-    card.className = 'share-comment-card';
-
-    const meta = document.createElement('div');
-    meta.className = 'share-comment-meta';
-    const author = comment.author || copy.shareAnonymous;
-    const timestamp = comment.createdAt ? formatShareTimestamp(new Date(comment.createdAt)) : '';
-    meta.textContent = timestamp ? `${author} · ${timestamp}` : author;
-
-    const body = document.createElement('div');
-    body.className = 'share-comment-body';
-    body.textContent = comment.body || '';
-
-    card.appendChild(meta);
-    card.appendChild(body);
-    shareCommentsList.appendChild(card);
-  });
-}
-
 function renderSharePanel() {
   const copy = i18n[state.language];
   shareTitle.textContent = copy.shareTitle;
   shareSubtitle.textContent = copy.shareSubtitle;
-  shareCreate.textContent = copy.shareCreate;
-  shareCopy.textContent = copy.shareCopy;
-  shareOpen.textContent = copy.shareOpen;
-  shareRefresh.textContent = copy.shareRefresh;
-  shareLinkLabel.textContent = copy.shareLinkLabel;
+  shareUserLabel.textContent = copy.shareUserLabel;
+  shareSend.textContent = copy.shareSend;
+  shareUserEmailInput.placeholder = copy.shareUserPlaceholder;
+  shareUserEmailInput.disabled = !authState.authenticated || shareState.sending;
+  shareSend.disabled = !authState.authenticated || shareState.sending;
 
-  const hasShare = Boolean(state.shareToken);
-  shareLinkInput.placeholder = copy.shareLinkPlaceholder;
-  if (hasShare && !state.shareUrl) {
-    state.shareUrl = buildShareUrl(state.shareToken);
+  let statusText = shareState.error || shareState.message || '';
+  if (!statusText && !authState.authenticated) {
+    statusText = copy.shareRequiresAuth;
   }
-  shareLinkInput.value = hasShare ? state.shareUrl : '';
-
-  const hasText = Boolean(state.text.trim());
-  shareCreate.disabled = !shareApiAvailable || !hasText || hasShare || shareState.syncing;
-  shareCopy.disabled = !hasShare;
-  shareOpen.disabled = !hasShare;
-  shareRefresh.disabled = !hasShare;
-
-  let statusText = '';
-  if (!shareApiAvailable) {
-    statusText = copy.shareDisabled;
-  } else if (shareState.syncing) {
-    statusText = copy.shareSyncing;
-  } else if (shareState.syncError) {
-    statusText = shareState.syncError;
-  } else if (shareState.lastSyncedAt instanceof Date) {
-    const formatted = formatShareTimestamp(shareState.lastSyncedAt);
-    statusText = formatted ? `${copy.shareSynced}: ${formatted}` : '';
+  if (!statusText && shareState.lastSharedAt instanceof Date) {
+    const formatted = formatShareTimestamp(shareState.lastSharedAt);
+    statusText = formatted ? `${copy.shareSuccess} ${formatted}` : copy.shareSuccess;
   }
-
   shareStatus.textContent = statusText;
-  renderShareComments();
 }
 
-async function refreshShareComments({ silent = false } = {}) {
-  if (!state.shareToken || !shareApiAvailable) {
-    shareState.comments = [];
-    shareState.status = 'idle';
-    shareState.error = '';
-    renderShareComments();
-    return;
-  }
-  if (!silent) {
-    shareState.status = 'loading';
-    shareState.error = '';
-    renderShareComments();
-  }
-  try {
-    const comments = await requestShareComments(state.shareToken);
-    shareState.comments = comments;
-    shareState.status = 'success';
-    shareState.error = '';
-    shareState.lastFetchedAt = new Date();
-    renderShareComments();
-  } catch (error) {
-    shareState.status = 'error';
-    shareState.error = error?.message || i18n[state.language].shareSyncError;
-    renderShareComments();
-  }
-}
-
-function scheduleShareSync() {
-  if (!state.shareToken || !shareApiAvailable) {
-    return;
-  }
-  shareSyncPending = buildSharePayload();
-  if (shareSyncTimer) {
-    return;
-  }
-  shareSyncTimer = setTimeout(async () => {
-    shareSyncTimer = null;
-    if (shareSyncInFlight || !shareSyncPending) {
-      return;
-    }
-    if (!state.shareToken || !shareApiAvailable) {
-      shareSyncPending = null;
-      return;
-    }
-    const payload = shareSyncPending;
-    shareSyncPending = null;
-    shareSyncInFlight = true;
-    shareState.syncing = true;
-    shareState.syncError = '';
-    renderSharePanel();
-    try {
-      await requestShareUpdate(state.shareToken, payload);
-      shareState.lastSyncedAt = new Date();
-    } catch (error) {
-      shareState.syncError = i18n[state.language].shareSyncError;
-    } finally {
-      shareState.syncing = false;
-      shareSyncInFlight = false;
-      renderSharePanel();
-      if (shareSyncPending) {
-        scheduleShareSync();
-      }
-    }
-  }, 1500);
-}
-
-async function requestShareCreate(entry) {
-  const response = await fetch(SHARE_API_ENDPOINT, {
+async function requestShareWithGoogleUser(recipientEmail, documentPayload) {
+  const response = await fetch(SHARE_USER_API_ENDPOINT, {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entry })
+    body: JSON.stringify({
+      recipientEmail,
+      sourceDocumentId: state.documentId,
+      document: documentPayload
+    })
   });
+  const data = await safeParseJson(response);
   if (!response.ok) {
-    if (response.status === 404 || response.status === 405) {
-      shareApiAvailable = false;
-    }
-    const data = await safeParseJson(response);
-    throw new Error(data?.error || 'Share failed');
+    throw new Error(data?.error || i18n[state.language].shareError);
   }
-  return response.json();
-}
-
-async function requestShareUpdate(token, entry) {
-  const response = await fetch(`${SHARE_API_ENDPOINT}/${encodeURIComponent(token)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entry })
-  });
-  if (!response.ok) {
-    if (response.status === 405) {
-      shareApiAvailable = false;
-    }
-    const data = await safeParseJson(response);
-    throw new Error(data?.error || 'Share update failed');
-  }
-  return response.json();
-}
-
-async function requestShareComments(token) {
-  const response = await fetch(`${SHARE_API_ENDPOINT}/${encodeURIComponent(token)}/comments`);
-  if (!response.ok) {
-    if (response.status === 405) {
-      shareApiAvailable = false;
-    }
-    const data = await safeParseJson(response);
-    throw new Error(data?.error || 'Share comments failed');
-  }
-  const data = await response.json();
-  return Array.isArray(data?.comments) ? data.comments : [];
-}
-
-async function requestShareEntry(token) {
-  const response = await fetch(`${SHARE_API_ENDPOINT}/${encodeURIComponent(token)}`);
-  if (!response.ok) {
-    if (response.status === 405) {
-      shareApiAvailable = false;
-    }
-    const data = await safeParseJson(response);
-    throw new Error(data?.error || 'Share not found');
-  }
-  const data = await response.json();
-  if (!data || typeof data.entry !== 'object' || !data.entry) {
-    throw new Error('Share not found');
-  }
-  return data.entry;
+  return data;
 }
 
 async function safeParseJson(response) {
@@ -2378,19 +2323,6 @@ async function safeParseJson(response) {
     return await response.json();
   } catch (error) {
     return null;
-  }
-}
-
-async function hydrateSharedDocumentFromUrl() {
-  const token = getShareTokenFromUrl();
-  if (!token || !shareApiAvailable) {
-    return;
-  }
-  try {
-    const entry = await requestShareEntry(token);
-    mergeSharedEntryIntoDocuments(token, entry, { force: true, activate: true });
-  } catch (error) {
-    // Ignore share import errors and keep local state.
   }
 }
 
@@ -2559,6 +2491,7 @@ function renderUI() {
   renderCorrections();
   renderProofread();
   renderSharePanel();
+  renderAuthControls();
 }
 
 function schedulePreviewRender() {
@@ -2884,6 +2817,34 @@ function bindEvents() {
     documentTitleInput?.focus();
   });
 
+  authGoogle?.addEventListener('click', () => {
+    if (!authState.enabled) {
+      return;
+    }
+    window.location.assign(AUTH_GOOGLE_START_ENDPOINT);
+  });
+
+  authLogout?.addEventListener('click', async () => {
+    if (!authState.authenticated) {
+      return;
+    }
+    authLogout.disabled = true;
+    try {
+      await requestAuthLogout();
+      authState.authenticated = false;
+      authState.user = null;
+      authState.syncing = false;
+      authState.syncError = '';
+      authState.lastSyncedAt = null;
+      clearWorkspaceSyncQueue();
+    } catch (error) {
+      authState.syncError = error?.message || i18n[state.language].authSyncError;
+    } finally {
+      authLogout.disabled = false;
+      renderAuthControls();
+    }
+  });
+
   composerInput.addEventListener('beforeinput', (event) => {
     if (state.mode === 'corrections') {
       return;
@@ -2986,82 +2947,47 @@ function bindEvents() {
     setPanelCollapsed(sharePanel, shareBody, shareCollapse, nextCollapsed);
   });
 
-  shareCreate.addEventListener('click', async () => {
+  shareSend.addEventListener('click', async () => {
     const copy = i18n[state.language];
-    if (!shareApiAvailable) {
-      shareState.syncError = copy.shareDisabled;
+    if (!authState.authenticated) {
+      shareState.error = copy.shareRequiresAuth;
+      shareState.message = '';
       renderSharePanel();
       return;
     }
-    const hasText = Boolean(state.text.trim());
-    if (!hasText) {
-      shareState.syncError = copy.shareCreateMissing;
+    const recipientEmail = normalizeShareRecipientEmail(shareUserEmailInput?.value || '');
+    if (!recipientEmail) {
+      shareState.error = copy.shareMissingEmail;
+      shareState.message = '';
       renderSharePanel();
       return;
     }
-
-    shareState.syncing = true;
-    shareState.syncError = '';
+    if (!state.text.trim()) {
+      shareState.error = copy.shareMissingText;
+      shareState.message = '';
+      renderSharePanel();
+      return;
+    }
+    shareState.sending = true;
+    shareState.error = '';
+    shareState.message = '';
     renderSharePanel();
 
     try {
-      const payload = buildSharePayload();
-      payload.correctionsBaseText = state.text;
-      const result = await requestShareCreate(payload);
-      const token = typeof result?.token === 'string' ? result.token : '';
-      if (!token) {
-        throw new Error(copy.shareCreateError);
+      await requestShareWithGoogleUser(recipientEmail, buildSharePayload());
+      shareState.message = copy.shareSuccess;
+      shareState.error = '';
+      shareState.lastSharedAt = new Date();
+      if (shareUserEmailInput) {
+        shareUserEmailInput.value = '';
       }
-      state.correctionsBaseText = payload.correctionsBaseText;
-      state.shareToken = token;
-      state.shareUrl = buildShareUrl(token);
-      state.shareCreatedAt = Number.isFinite(result?.createdAt)
-        ? Math.trunc(result.createdAt)
-        : Date.now();
-      persistActiveDocument({ updateList: true });
-      shareState.lastSyncedAt = new Date();
-      shareState.syncError = '';
-      await refreshShareComments({ silent: true });
     } catch (error) {
-      shareState.syncError = error?.message || copy.shareCreateError;
+      shareState.error = error?.message || copy.shareError;
+      shareState.message = '';
     } finally {
-      shareState.syncing = false;
+      shareState.sending = false;
       renderSharePanel();
     }
-  });
-
-  shareCopy.addEventListener('click', async () => {
-    const copy = i18n[state.language];
-    const link = state.shareUrl;
-    if (!link) {
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(link);
-      shareCopy.textContent = copy.shareCopied;
-      setTimeout(() => {
-        shareCopy.textContent = copy.shareCopy;
-      }, 1200);
-    } catch (error) {
-      shareCopy.textContent = copy.shareCopyError;
-      setTimeout(() => {
-        shareCopy.textContent = copy.shareCopy;
-      }, 1200);
-    }
-  });
-
-  shareOpen.addEventListener('click', () => {
-    if (!state.shareUrl) {
-      return;
-    }
-    window.open(state.shareUrl, '_blank', 'noopener');
-  });
-
-  shareRefresh.addEventListener('click', () => {
-    void Promise.all([
-      refreshShareComments(),
-      pullSharedEntry()
-    ]);
   });
 
   clearVocab.addEventListener('click', () => {
@@ -3330,14 +3256,16 @@ function bindEvents() {
 
 async function init() {
   loadState();
-  await hydrateSharedDocumentFromUrl();
+  await hydrateAuthAndWorkspace();
   composerInput.value = state.text;
   renderUI();
   renderPreview();
   renderVocab();
   renderQuestions();
   bindEvents();
-  void hydrateVocabFromApi();
+  if (!authState.authenticated) {
+    void hydrateVocabFromApi();
+  }
   void initKuromoji().then((tokenizer) => {
     if (tokenizer) {
       schedulePreviewRender();

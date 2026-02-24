@@ -5,7 +5,7 @@ A lightweight, runtime-dependency-free web-based Japanese/English journal compos
 ## Requirements
 
 - Node.js >= 18
-- `sqlite3` CLI (optional, only needed for vocab persistence when running the dev server)
+- `sqlite3` CLI (required for API-backed persistence/auth when running the dev server)
 
 ## Quick start
 
@@ -33,6 +33,24 @@ BASIC_AUTH_PASSWORD=your_password npm run dev
 
 Optionally override the prompt text with `BASIC_AUTH_REALM`.
 
+### Google OAuth + Account Sync
+
+To enable Google sign-in and per-user server-side workspace sync, configure:
+
+```bash
+GOOGLE_OAUTH_CLIENT_ID=your_client_id \
+GOOGLE_OAUTH_CLIENT_SECRET=your_client_secret \
+GOOGLE_OAUTH_REDIRECT_URI=https://your-domain.example/api/auth/google/callback \
+npm run dev
+```
+
+When enabled, the app syncs full workspace state (documents/posts, vocab, Q&A/proofread feedback, and corrections baseline) to the server under the signed-in user account.
+
+Optional auth/session env vars:
+
+- `SESSION_COOKIE_NAME` (default: `jc_session`)
+- `SESSION_MAX_AGE_MS` (default: 30 days)
+
 ## Tests
 
 ```bash
@@ -43,11 +61,11 @@ The tests run the build script and verify the output artifacts.
 
 ## Dictionary lookup
 
-The app uses the public Jisho API at `https://jisho.org/api/v1/search/words?keyword=` for kana readings and English meanings. If the API is unreachable, the composer still works, but kanji hover and furigana will show fallback text.
+Dictionary lookups are served by the local `/api/lookup` endpoint. If no local dictionary index is available (or no match is found), the composer still works, but kanji hover and furigana will show fallback text.
 
-### Offline dictionary (local JMdict)
+### Local dictionary (JMdict)
 
-To avoid rate limits, you can build a local JMdict index for the dev server. This runs entirely on your machine and the `/api/lookup` route will use it first.
+Build a local JMdict index for the dev server. This runs entirely on your machine and powers the `/api/lookup` route.
 
 1. Download JMdict (EDRDG) and place it at `data/JMdict_e`:
 
@@ -100,9 +118,9 @@ You can override the model with `OPENAI_MODEL` (defaults to `gpt-4.1`).
 
 The "Ask" action (for selected text questions) uses the OpenAI Responses API via the local dev server proxy. Provide the same `OPENAI_API_KEY` (and optional `OPENAI_MODEL`) when running the dev server.
 
-## Sharing
+## Sharing With Google Users
 
-Share links now open the full composer workspace for recipients. The shared state includes:
+When signed in, use the in-app "Share with Google User" panel to send the current entry to another signed-in user by email. The shared document includes:
 
 - Composer text
 - Corrections baseline for tracked edits
@@ -117,5 +135,6 @@ Share links now open the full composer workspace for recipients. The shared stat
 ## Notes
 
 - Vocabulary entries are stored in SQLite when running the dev server (`data/vocab.sqlite`, override with `VOCAB_DB_PATH`). Opening `dist/index.html` directly falls back to `localStorage` under the key `jc_vocab_list`.
+- Signed-in workspace data is stored in SQLite (`data/workspace.sqlite`, override with `WORKSPACE_DB_PATH`).
 - The dev server persistence uses the system `sqlite3` CLI; ensure it is available on your `PATH`.
 - The UI language toggle switches labels between English and Japanese.

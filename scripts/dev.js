@@ -1,6 +1,6 @@
 import http from 'node:http';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +12,7 @@ const dataDir = path.join(root, 'data');
 const localEntriesPath = process.env.JMDICT_ENTRIES_PATH || path.join(dataDir, 'jmdict-entries.json');
 const localIndexPath = process.env.JMDICT_INDEX_PATH || path.join(dataDir, 'jmdict-index.json');
 const vocabDbPath = process.env.VOCAB_DB_PATH || path.join(dataDir, 'vocab.sqlite');
-const shareDbPath = process.env.SHARE_DB_PATH || path.join(dataDir, 'shares.sqlite');
+const workspaceDbPath = process.env.WORKSPACE_DB_PATH || path.join(dataDir, 'workspace.sqlite');
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1';
 const PROOFREAD_SYSTEM_PROMPT = `System Prompt: Japanese Writing Evaluator & Tutor
 
@@ -38,6 +38,7 @@ When the user submits a large selection of Japanese text, perform the following 
   - Show the corrected or improved version
   - Include a brief explanation of the correction when helpful
   - Favor natural, native-like Japanese, not just technically correct forms.
+  - Ignore small errors, such as spacing or minor syntax errors
   3. Quality Improvement Suggestions
   - Suggest optional improvements that would raise the overall quality, such as:
   - More natural phrasing
@@ -78,6 +79,12 @@ Respond in the same language as the question when possible; otherwise respond in
 const debugEnabled = process.env.DEV_DEBUG === '1';
 const BASIC_AUTH_PASSWORD = process.env.BASIC_AUTH_PASSWORD || '';
 const BASIC_AUTH_REALM = process.env.BASIC_AUTH_REALM || 'Japanese Composer';
+const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || '';
+const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || '';
+const GOOGLE_OAUTH_REDIRECT_URI = process.env.GOOGLE_OAUTH_REDIRECT_URI || '';
+const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || 'jc_session';
+const OAUTH_STATE_COOKIE_NAME = 'jc_oauth_state';
+const SESSION_MAX_AGE_MS = Math.max(60 * 60 * 1000, Number(process.env.SESSION_MAX_AGE_MS) || (1000 * 60 * 60 * 24 * 30));
 
 function debug(...args) {
   if (!debugEnabled) {
@@ -184,14 +191,14 @@ try {
   console.error('Failed to initialize vocab database:', error);
 }
 
-let shareDbReady = false;
+let workspaceDbReady = false;
 try {
-  debug('Initializing share DB:', shareDbPath);
-  await ensureShareDb(shareDbPath);
-  shareDbReady = true;
-  debug('Share DB ready.');
+  debug('Initializing workspace DB:', workspaceDbPath);
+  await ensureWorkspaceDb(workspaceDbPath);
+  workspaceDbReady = true;
+  debug('Workspace DB ready.');
 } catch (error) {
-  console.error('Failed to initialize share database:', error);
+  console.error('Failed to initialize workspace database:', error);
 }
 
 debug('Loading local dictionary...');
@@ -215,6 +222,239 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   const requestUrl = new URL(req.url || '/', 'http://localhost');
+  if (requestUrl.pathname === '/api/auth/session') {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    let user = null;
+    if (workspaceDbReady) {
+      try {
+        user = await readSessionUserFromRequest(workspaceDbPath, req);
+      } catch (error) {
+        user = null;
+      }
+    }
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      Pragma: 'no-cache',
+      Vary: 'Cookie'
+    });
+    res.end(JSON.stringify({
+      enabled: isGoogleOauthConfigured() && workspaceDbReady,
+      authenticated: Boolean(user),
+      user: user ? {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        picture: user.picture
+      } : null
+    }));
+    return;
+  }
+  if (requestUrl.pathname === '/api/auth/google/start') {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!isGoogleOauthConfigured()) {
+      res.writeHead(501, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Google OAuth is not configured' }));
+      return;
+    }
+    if (!workspaceDbReady) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Workspace database unavailable' }));
+      return;
+    }
+    const state = createOauthStateToken();
+    const location = buildGoogleOauthUrl(state);
+    const secure = shouldUseSecureCookies(req);
+    res.writeHead(302, {
+      Location: location,
+      'Set-Cookie': serializeCookie(OAUTH_STATE_COOKIE_NAME, state, {
+        httpOnly: true,
+        secure,
+        sameSite: 'Lax',
+        path: '/',
+        maxAge: 60 * 10
+      })
+    });
+    res.end();
+    return;
+  }
+  if (requestUrl.pathname === '/api/auth/google/callback') {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!isGoogleOauthConfigured()) {
+      res.writeHead(302, { Location: buildAppUrlWithQuery(req, { auth: 'disabled' }) });
+      res.end();
+      return;
+    }
+    if (!workspaceDbReady) {
+      res.writeHead(302, { Location: buildAppUrlWithQuery(req, { auth: 'db_unavailable' }) });
+      res.end();
+      return;
+    }
+    const code = requestUrl.searchParams.get('code');
+    const state = requestUrl.searchParams.get('state');
+    const cookies = parseCookies(req);
+    const expectedState = cookies[OAUTH_STATE_COOKIE_NAME] || '';
+    if (!code || !state || !expectedState || state !== expectedState) {
+      const secure = shouldUseSecureCookies(req);
+      res.writeHead(302, {
+        Location: buildAppUrlWithQuery(req, { auth: 'state_mismatch' }),
+        'Set-Cookie': serializeCookie(OAUTH_STATE_COOKIE_NAME, '', {
+          httpOnly: true,
+          secure,
+          sameSite: 'Lax',
+          path: '/',
+          maxAge: 0
+        })
+      });
+      res.end();
+      return;
+    }
+
+    try {
+      const tokenData = await exchangeGoogleOauthCode(code);
+      const profile = await fetchGoogleUserProfile(tokenData.access_token);
+      const user = normalizeGoogleUserProfile(profile);
+      if (!user) {
+        throw new Error('Missing Google profile');
+      }
+      await upsertUser(workspaceDbPath, user);
+      const sessionToken = createSessionToken();
+      const sessionExpiry = Date.now() + SESSION_MAX_AGE_MS;
+      await createUserSession(workspaceDbPath, user.id, sessionToken, sessionExpiry);
+      const secure = shouldUseSecureCookies(req);
+      const cookiesToSet = [
+        serializeCookie(SESSION_COOKIE_NAME, sessionToken, {
+          httpOnly: true,
+          secure,
+          sameSite: 'Lax',
+          path: '/',
+          maxAge: Math.floor(SESSION_MAX_AGE_MS / 1000)
+        }),
+        serializeCookie(OAUTH_STATE_COOKIE_NAME, '', {
+          httpOnly: true,
+          secure,
+          sameSite: 'Lax',
+          path: '/',
+          maxAge: 0
+        })
+      ];
+      res.writeHead(302, {
+        Location: buildAppUrlWithQuery(req, { auth: 'success' }),
+        'Set-Cookie': cookiesToSet
+      });
+      res.end();
+      return;
+    } catch (error) {
+      const oauthFailure = classifyOauthCallbackError(error);
+      console.error('[oauth] callback_failed', {
+        reason: oauthFailure.reason,
+        message: oauthFailure.message
+      });
+      const secure = shouldUseSecureCookies(req);
+      res.writeHead(302, {
+        Location: buildAppUrlWithQuery(req, { auth: 'failed', reason: oauthFailure.reason }),
+        'Set-Cookie': serializeCookie(OAUTH_STATE_COOKIE_NAME, '', {
+          httpOnly: true,
+          secure,
+          sameSite: 'Lax',
+          path: '/',
+          maxAge: 0
+        })
+      });
+      res.end();
+      return;
+    }
+  }
+  if (requestUrl.pathname === '/api/auth/logout') {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    const secure = shouldUseSecureCookies(req);
+    const currentToken = getSessionTokenFromRequest(req);
+    if (workspaceDbReady && currentToken) {
+      try {
+        await deleteUserSession(workspaceDbPath, currentToken);
+      } catch (error) {
+        // Ignore logout cleanup failures.
+      }
+    }
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Set-Cookie': serializeCookie(SESSION_COOKIE_NAME, '', {
+        httpOnly: true,
+        secure,
+        sameSite: 'Lax',
+        path: '/',
+        maxAge: 0
+      })
+    });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  if (requestUrl.pathname === '/api/workspace') {
+    if (!workspaceDbReady) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Workspace database unavailable' }));
+      return;
+    }
+    const user = await requireAuthenticatedUser(workspaceDbPath, req, res);
+    if (!user) {
+      return;
+    }
+    if (req.method === 'GET') {
+      try {
+        const workspace = await readUserWorkspace(workspaceDbPath, user.id);
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          Pragma: 'no-cache',
+          Vary: 'Cookie'
+        });
+        res.end(JSON.stringify({ workspace }));
+        return;
+      } catch (error) {
+        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Workspace lookup failed' }));
+        return;
+      }
+    }
+    if (req.method === 'PUT') {
+      const body = await readJsonBody(req);
+      const workspace = normalizeWorkspacePayload(body?.workspace ?? body);
+      if (!workspace) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Missing workspace' }));
+        return;
+      }
+      try {
+        const result = await writeUserWorkspace(workspaceDbPath, user.id, workspace);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, updatedAt: result.updatedAt }));
+        return;
+      } catch (error) {
+        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Workspace update failed' }));
+        return;
+      }
+    }
+    res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
   if (requestUrl.pathname === '/api/vocab') {
     if (!vocabDbReady) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -274,10 +514,14 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ error: 'Method not allowed' }));
     return;
   }
-  if (requestUrl.pathname === '/api/share') {
-    if (!shareDbReady) {
+  if (requestUrl.pathname === '/api/share-user') {
+    if (!workspaceDbReady) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Share database unavailable' }));
+      res.end(JSON.stringify({ error: 'Workspace database unavailable' }));
+      return;
+    }
+    const sender = await requireAuthenticatedUser(workspaceDbPath, req, res);
+    if (!sender) {
       return;
     }
     if (req.method !== 'POST') {
@@ -286,131 +530,49 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const body = await readJsonBody(req);
-    const entry = normalizeShareEntry(body?.entry);
-    if (!entry) {
+    const request = normalizeUserShareRequest(body);
+    if (!request) {
       res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Missing entry' }));
+      res.end(JSON.stringify({ error: 'Missing recipient or document' }));
       return;
     }
-    const token = createShareToken();
+    if (normalizeEmail(sender.email) === request.recipientEmail) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'You cannot share to your own account' }));
+      return;
+    }
+    const recipient = await findUserByEmail(workspaceDbPath, request.recipientEmail);
+    if (!recipient) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        error: 'Recipient not found. They need to sign in at least once first.'
+      }));
+      return;
+    }
     try {
-      const written = await writeShareEntry(shareDbPath, token, entry);
+      const result = await shareDocumentWithGoogleUser(workspaceDbPath, {
+        sender,
+        recipient,
+        sourceDocumentId: request.sourceDocumentId,
+        document: request.document
+      });
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ token, createdAt: written.createdAt, updatedAt: written.updatedAt }));
+      res.end(JSON.stringify({
+        ok: true,
+        sharedDocumentId: result.sharedDocumentId,
+        updatedAt: result.updatedAt,
+        recipient: {
+          id: recipient.id,
+          email: recipient.email,
+          name: recipient.name
+        }
+      }));
       return;
     } catch (error) {
       res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Share create failed' }));
+      res.end(JSON.stringify({ error: 'Share failed' }));
       return;
     }
-  }
-  if (requestUrl.pathname.startsWith('/api/share/')) {
-    if (!shareDbReady) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Share database unavailable' }));
-      return;
-    }
-    const segments = requestUrl.pathname.split('/').filter(Boolean);
-    const token = segments[2];
-    const subresource = segments[3] || '';
-    if (!token) {
-      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Missing share token' }));
-      return;
-    }
-
-    if (subresource === 'comments') {
-      if (req.method === 'GET') {
-        try {
-          const comments = await readShareComments(shareDbPath, token);
-          if (comments === null) {
-            res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({ error: 'Share not found' }));
-            return;
-          }
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ comments }));
-          return;
-        } catch (error) {
-          res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: 'Share comments lookup failed' }));
-          return;
-        }
-      }
-      if (req.method === 'POST') {
-        const body = await readJsonBody(req);
-        const comment = normalizeShareComment(body);
-        if (!comment) {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: 'Missing comment' }));
-          return;
-        }
-        try {
-          const created = await insertShareComment(shareDbPath, token, comment);
-          if (!created) {
-            res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({ error: 'Share not found' }));
-            return;
-          }
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ comment: created }));
-          return;
-        } catch (error) {
-          res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: 'Share comment failed' }));
-          return;
-        }
-      }
-      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
-      return;
-    }
-
-    if (req.method === 'GET') {
-      try {
-        const entry = await readShareEntry(shareDbPath, token);
-        if (!entry) {
-          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: 'Share not found' }));
-          return;
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ entry }));
-        return;
-      } catch (error) {
-        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: 'Share lookup failed' }));
-        return;
-      }
-    }
-    if (req.method === 'PUT') {
-      const body = await readJsonBody(req);
-      const entry = normalizeShareEntry(body?.entry);
-      if (!entry) {
-        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: 'Missing entry' }));
-        return;
-      }
-      try {
-        const updated = await updateShareEntry(shareDbPath, token, entry);
-        if (!updated) {
-          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: 'Share not found' }));
-          return;
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: true, updatedAt: updated.updatedAt }));
-        return;
-      } catch (error) {
-        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: 'Share update failed' }));
-        return;
-      }
-    }
-
-    res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: 'Method not allowed' }));
-    return;
   }
   if (requestUrl.pathname === '/api/lookup') {
     const keyword = requestUrl.searchParams.get('keyword');
@@ -423,21 +585,12 @@ const server = http.createServer(async (req, res) => {
     try {
       if (localDictionary) {
         const localResults = lookupLocalDictionary(keyword);
-        if (localResults.length) {
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ data: localResults }));
-          return;
-        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ data: localResults }));
+        return;
       }
-
-      const response = await fetch(
-        `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(keyword)}`
-      );
-      const body = await response.text();
-      res.writeHead(response.ok ? 200 : response.status, {
-        'Content-Type': 'application/json; charset=utf-8'
-      });
-      res.end(body);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ data: [] }));
       return;
     } catch (error) {
       res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -636,22 +789,6 @@ const server = http.createServer(async (req, res) => {
       return;
     }
   }
-  const shareSegments = requestUrl.pathname.split('/').filter(Boolean);
-  const isShareRoute = (shareSegments[0] === 'share' || shareSegments[0] === 's')
-    && shareSegments.length === 2;
-  if (isShareRoute) {
-    try {
-      const shareHtmlPath = path.join(distDir, 'share.html');
-      const data = await fs.readFile(shareHtmlPath);
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(data);
-      return;
-    } catch (error) {
-      res.writeHead(404);
-      res.end('Not found');
-      return;
-    }
-  }
   const requestPath = decodeURIComponent(requestUrl.pathname);
   const safePath = requestPath === '/' ? '/index.html' : requestPath;
   const filePath = path.join(distDir, safePath);
@@ -696,6 +833,318 @@ async function readJsonBody(req) {
   } catch (error) {
     return null;
   }
+}
+
+async function safeParseJson(response) {
+  try {
+    return await response.json();
+  } catch (error) {
+    return null;
+  }
+}
+
+function isGoogleOauthConfigured() {
+  return Boolean(
+    GOOGLE_OAUTH_CLIENT_ID
+      && GOOGLE_OAUTH_CLIENT_SECRET
+      && GOOGLE_OAUTH_REDIRECT_URI
+  );
+}
+
+function createOauthStateToken() {
+  return randomBytes(18).toString('hex');
+}
+
+function createSessionToken() {
+  return randomBytes(32).toString('base64url');
+}
+
+function hashToken(value) {
+  return createHash('sha256').update(String(value)).digest('hex');
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  if (typeof header !== 'string' || !header.trim()) {
+    return {};
+  }
+  const cookies = {};
+  const parts = header.split(';');
+  parts.forEach((part) => {
+    const trimmed = part.trim();
+    if (!trimmed) {
+      return;
+    }
+    const separator = trimmed.indexOf('=');
+    if (separator <= 0) {
+      return;
+    }
+    const key = trimmed.slice(0, separator).trim();
+    const rawValue = trimmed.slice(separator + 1);
+    try {
+      cookies[key] = decodeURIComponent(rawValue);
+    } catch (error) {
+      cookies[key] = rawValue;
+    }
+  });
+  return cookies;
+}
+
+function serializeCookie(name, value, {
+  maxAge = null,
+  path = '/',
+  httpOnly = true,
+  secure = false,
+  sameSite = 'Lax'
+} = {}) {
+  const parts = [
+    `${name}=${encodeURIComponent(String(value))}`,
+    `Path=${path}`,
+    `SameSite=${sameSite}`
+  ];
+  if (Number.isFinite(maxAge)) {
+    parts.push(`Max-Age=${Math.max(0, Math.trunc(maxAge))}`);
+  }
+  if (httpOnly) {
+    parts.push('HttpOnly');
+  }
+  if (secure) {
+    parts.push('Secure');
+  }
+  return parts.join('; ');
+}
+
+function shouldUseSecureCookies(req) {
+  if (process.env.FORCE_SECURE_COOKIES === '1') {
+    return true;
+  }
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  if (typeof forwardedProto === 'string' && forwardedProto.toLowerCase().includes('https')) {
+    return true;
+  }
+  return Boolean(req.socket?.encrypted);
+}
+
+function getSessionTokenFromRequest(req) {
+  const cookies = parseCookies(req);
+  return typeof cookies[SESSION_COOKIE_NAME] === 'string'
+    ? cookies[SESSION_COOKIE_NAME]
+    : '';
+}
+
+function buildAppUrlWithQuery(_req, params = {}) {
+  const url = new URL('http://localhost/');
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') {
+      return;
+    }
+    url.searchParams.set(key, String(value));
+  });
+  return `${url.pathname}${url.search}`;
+}
+
+function buildGoogleOauthUrl(state) {
+  const params = new URLSearchParams({
+    client_id: GOOGLE_OAUTH_CLIENT_ID,
+    redirect_uri: GOOGLE_OAUTH_REDIRECT_URI,
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    access_type: 'offline',
+    include_granted_scopes: 'true',
+    prompt: 'select_account'
+  });
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+}
+
+async function exchangeGoogleOauthCode(code) {
+  const body = new URLSearchParams({
+    code,
+    client_id: GOOGLE_OAUTH_CLIENT_ID,
+    client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
+    redirect_uri: GOOGLE_OAUTH_REDIRECT_URI,
+    grant_type: 'authorization_code'
+  });
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: body.toString()
+  });
+  const data = await safeParseJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error_description || data?.error || 'OAuth token exchange failed');
+  }
+  if (typeof data?.access_token !== 'string' || !data.access_token) {
+    throw new Error('Missing OAuth access token');
+  }
+  return data;
+}
+
+async function fetchGoogleUserProfile(accessToken) {
+  const response = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+  const data = await safeParseJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || 'OAuth user profile failed');
+  }
+  return data;
+}
+
+function normalizeEmail(value) {
+  return typeof value === 'string'
+    ? value.trim().toLowerCase()
+    : '';
+}
+
+function normalizeGoogleUserProfile(profile) {
+  if (!profile || typeof profile !== 'object') {
+    return null;
+  }
+  const id = typeof profile.sub === 'string' ? profile.sub.trim().slice(0, 200) : '';
+  const email = normalizeEmail(profile.email).slice(0, 320);
+  const name = typeof profile.name === 'string' ? profile.name.trim().slice(0, 160) : '';
+  const picture = typeof profile.picture === 'string' ? profile.picture.trim().slice(0, 1000) : '';
+  if (!id) {
+    return null;
+  }
+  return {
+    id,
+    email,
+    name,
+    picture
+  };
+}
+
+function classifyOauthCallbackError(error) {
+  const rawMessage = typeof error?.message === 'string'
+    ? error.message
+    : 'OAuth callback failed';
+  const message = rawMessage.slice(0, 300);
+  const normalized = rawMessage.toLowerCase();
+
+  if (normalized.includes('invalid_grant')) {
+    return { reason: 'invalid_grant', message };
+  }
+  if (normalized.includes('redirect_uri')) {
+    return { reason: 'redirect_uri_mismatch', message };
+  }
+  if (normalized.includes('oauth token exchange')) {
+    return { reason: 'token_exchange_failed', message };
+  }
+  if (normalized.includes('oauth user profile')) {
+    return { reason: 'profile_fetch_failed', message };
+  }
+  if (normalized.includes('missing google profile')) {
+    return { reason: 'profile_missing', message };
+  }
+  if (normalized.includes('sqlite3')) {
+    return { reason: 'db_error', message };
+  }
+  return { reason: 'failed', message };
+}
+
+async function requireAuthenticatedUser(dbPath, req, res) {
+  let user = null;
+  try {
+    user = await readSessionUserFromRequest(dbPath, req);
+  } catch (error) {
+    res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'Authentication lookup failed' }));
+    return null;
+  }
+  if (user) {
+    return user;
+  }
+  res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify({ error: 'Authentication required' }));
+  return null;
+}
+
+async function readSessionUserFromRequest(dbPath, req) {
+  const token = getSessionTokenFromRequest(req);
+  if (!token) {
+    return null;
+  }
+  const tokenHash = hashToken(token);
+  const now = Date.now();
+  const sql = `
+    SELECT u.id, u.email, u.name, u.picture
+    FROM user_sessions s
+    INNER JOIN users u ON u.id = s.user_id
+    WHERE s.token_hash = ${sqlString(tokenHash)}
+      AND s.expires_at > ${now}
+    LIMIT 1;
+  `;
+  const stdout = await runSqlite(dbPath, sql, { json: true });
+  const rows = parseSqliteJson(stdout);
+  if (!rows.length) {
+    return null;
+  }
+  const row = rows[0] || {};
+  return {
+    id: typeof row.id === 'string' ? row.id : '',
+    email: typeof row.email === 'string' ? row.email : '',
+    name: typeof row.name === 'string' ? row.name : '',
+    picture: typeof row.picture === 'string' ? row.picture : ''
+  };
+}
+
+async function upsertUser(dbPath, user) {
+  const now = Date.now();
+  const sql = `
+    INSERT INTO users (id, email, name, picture, created_at, updated_at)
+    VALUES (
+      ${sqlString(user.id)},
+      ${sqlString(user.email || '')},
+      ${sqlString(user.name || '')},
+      ${sqlString(user.picture || '')},
+      ${now},
+      ${now}
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      email = excluded.email,
+      name = excluded.name,
+      picture = excluded.picture,
+      updated_at = excluded.updated_at;
+  `;
+  await runSqlite(dbPath, sql);
+}
+
+async function createUserSession(dbPath, userId, sessionToken, expiresAt) {
+  const now = Date.now();
+  const sessionHash = hashToken(sessionToken);
+  const sql = `
+    DELETE FROM user_sessions WHERE expires_at <= ${now};
+    INSERT INTO user_sessions (token_hash, user_id, created_at, expires_at)
+    VALUES (
+      ${sqlString(sessionHash)},
+      ${sqlString(userId)},
+      ${now},
+      ${Math.max(now + 1, Math.trunc(expiresAt))}
+    )
+    ON CONFLICT(token_hash) DO UPDATE SET
+      user_id = excluded.user_id,
+      created_at = excluded.created_at,
+      expires_at = excluded.expires_at;
+  `;
+  await runSqlite(dbPath, sql);
+}
+
+async function deleteUserSession(dbPath, sessionToken) {
+  if (!sessionToken) {
+    return;
+  }
+  const sessionHash = hashToken(sessionToken);
+  const sql = `
+    DELETE FROM user_sessions
+    WHERE token_hash = ${sqlString(sessionHash)};
+  `;
+  await runSqlite(dbPath, sql);
 }
 
 function extractOpenAiText(payload) {
@@ -806,30 +1255,35 @@ async function ensureVocabDb(dbPath) {
   await runSqlite(dbPath, sql);
 }
 
-async function ensureShareDb(dbPath) {
+async function ensureWorkspaceDb(dbPath) {
   const sql = `
     PRAGMA foreign_keys = ON;
-    CREATE TABLE IF NOT EXISTS shared_entries (
-      token TEXT PRIMARY KEY,
-      payload TEXT NOT NULL,
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      picture TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS share_comments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      token TEXT NOT NULL,
-      author TEXT,
-      body TEXT NOT NULL,
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      FOREIGN KEY (token) REFERENCES shared_entries(token) ON DELETE CASCADE
+      expires_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_share_comments_token ON share_comments(token, created_at);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions(expires_at);
+    CREATE TABLE IF NOT EXISTS user_workspaces (
+      user_id TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
   `;
   await runSqlite(dbPath, sql);
-}
-
-function createShareToken() {
-  return randomBytes(18).toString('hex');
 }
 
 function normalizeShareVocabList(items) {
@@ -888,57 +1342,203 @@ function normalizeShareQuestionList(items) {
     .filter(Boolean);
 }
 
-function normalizeShareEntry(entry) {
-  if (!entry || typeof entry !== 'object') {
-    return null;
-  }
-  const title = typeof entry.title === 'string' ? entry.title.trim().slice(0, 200) : '';
-  const text = typeof entry.text === 'string' ? entry.text.slice(0, 20000) : '';
-  const correctionsBaseText = typeof entry.correctionsBaseText === 'string'
-    ? entry.correctionsBaseText.slice(0, 20000)
-    : text;
-  const vocab = normalizeShareVocabList(entry.vocab);
-  const questions = normalizeShareQuestionList(entry.questions);
-  const proofreadContent = typeof entry.proofreadContent === 'string'
-    ? entry.proofreadContent.slice(0, 120000)
-    : '';
-  const proofreadUpdatedAt = Number.isFinite(entry.proofreadUpdatedAt)
-    ? Math.trunc(entry.proofreadUpdatedAt)
-    : null;
-  const hasTextContent = Boolean(text.trim());
-  const hasProofreadContent = Boolean(proofreadContent.trim());
-  const hasCorrectionsBaseContent = Boolean(correctionsBaseText.trim());
-  if (!title && !hasTextContent && !vocab.length && !questions.length && !hasProofreadContent && !hasCorrectionsBaseContent) {
-    return null;
+function createWorkspaceDocumentId() {
+  return `doc_${Date.now().toString(36)}_${randomBytes(8).toString('hex')}`;
+}
+
+function normalizeWorkspaceDocumentList(entries) {
+  if (!Array.isArray(entries)) {
+    return [];
   }
   const now = Date.now();
-  const createdAt = Number.isFinite(entry.createdAt) ? Math.trunc(entry.createdAt) : now;
-  const updatedAt = Number.isFinite(entry.updatedAt) ? Math.trunc(entry.updatedAt) : now;
+  const seenIds = new Set();
+  return entries
+    .slice(0, 300)
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      let id = typeof entry.id === 'string' ? entry.id.trim().slice(0, 120) : '';
+      if (!id || seenIds.has(id)) {
+        id = createWorkspaceDocumentId();
+      }
+      seenIds.add(id);
+      const title = typeof entry.title === 'string' ? entry.title.slice(0, 200) : '';
+      const text = typeof entry.text === 'string' ? entry.text.slice(0, 20000) : '';
+      const vocab = normalizeShareVocabList(entry.vocab);
+      const questions = normalizeShareQuestionList(entry.questions);
+      const correctionsBaseText = typeof entry.correctionsBaseText === 'string'
+        ? entry.correctionsBaseText.slice(0, 20000)
+        : text;
+      const proofreadContent = typeof entry.proofreadContent === 'string'
+        ? entry.proofreadContent.slice(0, 120000)
+        : '';
+      const proofreadUpdatedAt = Number.isFinite(entry.proofreadUpdatedAt)
+        ? Math.trunc(entry.proofreadUpdatedAt)
+        : null;
+      const sharedByUserId = typeof entry.sharedByUserId === 'string'
+        ? entry.sharedByUserId.trim().slice(0, 200)
+        : '';
+      const sharedByEmail = normalizeEmail(entry.sharedByEmail).slice(0, 320);
+      const sharedByName = typeof entry.sharedByName === 'string'
+        ? entry.sharedByName.trim().slice(0, 160)
+        : '';
+      const sharedSourceId = typeof entry.sharedSourceId === 'string'
+        ? entry.sharedSourceId.trim().slice(0, 120)
+        : '';
+      const sharedAt = Number.isFinite(entry.sharedAt)
+        ? Math.trunc(entry.sharedAt)
+        : null;
+      const createdAt = Number.isFinite(entry.createdAt) ? Math.trunc(entry.createdAt) : now;
+      const updatedAt = Number.isFinite(entry.updatedAt) ? Math.trunc(entry.updatedAt) : createdAt;
+      return {
+        id,
+        title,
+        text,
+        vocab,
+        questions,
+        correctionsBaseText,
+        proofreadContent,
+        proofreadUpdatedAt,
+        sharedByUserId,
+        sharedByEmail,
+        sharedByName,
+        sharedSourceId,
+        sharedAt,
+        createdAt,
+        updatedAt
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeWorkspacePayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+  const documents = normalizeWorkspaceDocumentList(payload.documents);
+  const requestedActiveId = typeof payload.activeDocumentId === 'string'
+    ? payload.activeDocumentId.trim()
+    : '';
+  const activeDocumentId = requestedActiveId && documents.some((doc) => doc.id === requestedActiveId)
+    ? requestedActiveId
+    : (documents[0]?.id || '');
+  const updatedAt = Number.isFinite(payload.updatedAt)
+    ? Math.trunc(payload.updatedAt)
+    : Date.now();
   return {
-    title,
-    text,
-    correctionsBaseText,
-    vocab,
-    questions,
-    proofreadContent,
-    proofreadUpdatedAt,
-    createdAt,
+    documents,
+    activeDocumentId,
     updatedAt
   };
 }
 
-function normalizeShareComment(body) {
+function normalizeUserShareRequest(body) {
   if (!body || typeof body !== 'object') {
     return null;
   }
-  const author = typeof body.author === 'string' ? body.author.trim().slice(0, 80) : '';
-  const text = typeof body.body === 'string' ? body.body.trim().slice(0, 2000) : '';
-  if (!text) {
+  const recipientEmail = normalizeEmail(body.recipientEmail).slice(0, 320);
+  const sourceDocumentId = typeof body.sourceDocumentId === 'string'
+    ? body.sourceDocumentId.trim().slice(0, 120)
+    : '';
+  const documentInput = body.document;
+  if (!recipientEmail || !documentInput || typeof documentInput !== 'object') {
+    return null;
+  }
+  const normalizedDocument = normalizeWorkspaceDocumentList([
+    {
+      ...documentInput,
+      id: sourceDocumentId || documentInput.id || createWorkspaceDocumentId()
+    }
+  ])[0];
+  if (!normalizedDocument) {
     return null;
   }
   return {
-    author,
-    body: text
+    recipientEmail,
+    sourceDocumentId: sourceDocumentId || normalizedDocument.id,
+    document: normalizedDocument
+  };
+}
+
+function createSharedDocumentId(senderUserId, recipientUserId, sourceDocumentId) {
+  const digest = createHash('sha256')
+    .update(`${senderUserId}:${recipientUserId}:${sourceDocumentId}`)
+    .digest('hex');
+  return `shared_${digest.slice(0, 24)}`;
+}
+
+async function findUserByEmail(dbPath, email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
+    return null;
+  }
+  const sql = `
+    SELECT id, email, name, picture
+    FROM users
+    WHERE lower(email) = ${sqlString(normalizedEmail)}
+    LIMIT 1;
+  `;
+  const stdout = await runSqlite(dbPath, sql, { json: true });
+  const rows = parseSqliteJson(stdout);
+  if (!rows.length) {
+    return null;
+  }
+  return {
+    id: typeof rows[0]?.id === 'string' ? rows[0].id : '',
+    email: typeof rows[0]?.email === 'string' ? rows[0].email : '',
+    name: typeof rows[0]?.name === 'string' ? rows[0].name : '',
+    picture: typeof rows[0]?.picture === 'string' ? rows[0].picture : ''
+  };
+}
+
+async function shareDocumentWithGoogleUser(dbPath, {
+  sender,
+  recipient,
+  sourceDocumentId,
+  document
+}) {
+  const now = Date.now();
+  const recipientWorkspace = await readUserWorkspace(dbPath, recipient.id);
+  const workspaceDocuments = normalizeWorkspaceDocumentList(recipientWorkspace?.documents);
+  const sharedDocumentId = createSharedDocumentId(sender.id, recipient.id, sourceDocumentId);
+  const existingIndex = workspaceDocuments.findIndex((entry) => entry.id === sharedDocumentId);
+  const existingCreatedAt = existingIndex >= 0 && Number.isFinite(workspaceDocuments[existingIndex]?.createdAt)
+    ? Math.trunc(workspaceDocuments[existingIndex].createdAt)
+    : now;
+  const sharedDocument = {
+    ...document,
+    id: sharedDocumentId,
+    sharedByUserId: sender.id,
+    sharedByEmail: normalizeEmail(sender.email).slice(0, 320),
+    sharedByName: typeof sender.name === 'string' ? sender.name.slice(0, 160) : '',
+    sharedSourceId: sourceDocumentId,
+    sharedAt: now,
+    createdAt: existingCreatedAt,
+    updatedAt: now
+  };
+
+  if (existingIndex === -1) {
+    workspaceDocuments.unshift(sharedDocument);
+  } else {
+    workspaceDocuments.splice(existingIndex, 1, sharedDocument);
+  }
+
+  const activeDocumentId = typeof recipientWorkspace?.activeDocumentId === 'string'
+    ? recipientWorkspace.activeDocumentId
+    : '';
+
+  await writeUserWorkspace(dbPath, recipient.id, {
+    documents: workspaceDocuments,
+    activeDocumentId: activeDocumentId && workspaceDocuments.some((entry) => entry.id === activeDocumentId)
+      ? activeDocumentId
+      : (workspaceDocuments[0]?.id || ''),
+    updatedAt: now
+  });
+
+  return {
+    sharedDocumentId,
+    updatedAt: now
   };
 }
 
@@ -954,56 +1554,11 @@ function parseSqliteJson(stdout) {
   }
 }
 
-async function writeShareEntry(dbPath, token, entry) {
-  const createdAt = Date.now();
-  const updatedAt = createdAt;
-  const normalizedEntry = {
-    ...entry,
-    createdAt,
-    updatedAt
-  };
-  const payload = JSON.stringify(normalizedEntry);
+async function readUserWorkspace(dbPath, userId) {
   const sql = `
-    INSERT INTO shared_entries (token, payload, created_at, updated_at)
-    VALUES (${sqlString(token)}, ${sqlString(payload)}, ${createdAt}, ${updatedAt});
-  `;
-  await runSqlite(dbPath, sql);
-  return {
-    createdAt,
-    updatedAt
-  };
-}
-
-async function updateShareEntry(dbPath, token, entry) {
-  const existing = await readShareEntry(dbPath, token);
-  if (!existing) {
-    return false;
-  }
-  const updatedAt = Date.now();
-  const createdAt = Number.isFinite(existing.createdAt) ? Math.trunc(existing.createdAt) : updatedAt;
-  const normalizedEntry = {
-    ...entry,
-    createdAt,
-    updatedAt
-  };
-  const payload = JSON.stringify(normalizedEntry);
-  const sql = `
-    UPDATE shared_entries
-    SET payload = ${sqlString(payload)}, updated_at = ${updatedAt}
-    WHERE token = ${sqlString(token)};
-  `;
-  await runSqlite(dbPath, sql);
-  return {
-    createdAt,
-    updatedAt
-  };
-}
-
-async function readShareEntry(dbPath, token) {
-  const sql = `
-    SELECT payload, created_at, updated_at
-    FROM shared_entries
-    WHERE token = ${sqlString(token)}
+    SELECT payload, updated_at
+    FROM user_workspaces
+    WHERE user_id = ${sqlString(userId)}
     LIMIT 1;
   `;
   const stdout = await runSqlite(dbPath, sql, { json: true });
@@ -1015,57 +1570,50 @@ async function readShareEntry(dbPath, token) {
   if (typeof payload !== 'string') {
     return null;
   }
+  let parsed = null;
   try {
-    const parsed = JSON.parse(payload);
-    return {
-      ...parsed,
-      createdAt: Number(rows[0]?.created_at) || parsed?.createdAt || null,
-      updatedAt: Number(rows[0]?.updated_at) || parsed?.updatedAt || null
-    };
+    parsed = JSON.parse(payload);
   } catch (error) {
+    parsed = null;
+  }
+  const normalized = normalizeWorkspacePayload(parsed);
+  if (!normalized) {
     return null;
   }
+  const rowUpdatedAt = Number(rows[0]?.updated_at);
+  if (Number.isFinite(rowUpdatedAt)) {
+    normalized.updatedAt = Math.trunc(rowUpdatedAt);
+  }
+  return normalized;
 }
 
-async function readShareComments(dbPath, token) {
-  const entry = await readShareEntry(dbPath, token);
-  if (!entry) {
-    return null;
+async function writeUserWorkspace(dbPath, userId, workspace) {
+  const normalized = normalizeWorkspacePayload(workspace);
+  if (!normalized) {
+    throw new Error('Invalid workspace payload');
   }
+  const now = Date.now();
+  const updatedAt = Number.isFinite(normalized.updatedAt)
+    ? Math.trunc(normalized.updatedAt)
+    : now;
+  const payload = JSON.stringify({
+    ...normalized,
+    updatedAt
+  });
   const sql = `
-    SELECT id, author, body, created_at
-    FROM share_comments
-    WHERE token = ${sqlString(token)}
-    ORDER BY created_at DESC
-    LIMIT 200;
-  `;
-  const stdout = await runSqlite(dbPath, sql, { json: true });
-  const rows = parseSqliteJson(stdout);
-  return rows.map((row) => ({
-    id: Number(row.id),
-    author: row.author || '',
-    body: row.body || '',
-    createdAt: Number(row.created_at) || null
-  }));
-}
-
-async function insertShareComment(dbPath, token, comment) {
-  const entry = await readShareEntry(dbPath, token);
-  if (!entry) {
-    return null;
-  }
-  const createdAt = Date.now();
-  const sql = `
-    INSERT INTO share_comments (token, author, body, created_at)
-    VALUES (${sqlString(token)}, ${sqlString(comment.author || '')}, ${sqlString(comment.body)}, ${createdAt});
+    INSERT INTO user_workspaces (user_id, payload, created_at, updated_at)
+    VALUES (
+      ${sqlString(userId)},
+      ${sqlString(payload)},
+      ${now},
+      ${updatedAt}
+    )
+    ON CONFLICT(user_id) DO UPDATE SET
+      payload = excluded.payload,
+      updated_at = excluded.updated_at;
   `;
   await runSqlite(dbPath, sql);
-  return {
-    id: null,
-    author: comment.author || '',
-    body: comment.body,
-    createdAt
-  };
+  return { updatedAt };
 }
 
 function normalizeVocabList(items, { defaultAddedAt } = {}) {

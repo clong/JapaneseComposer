@@ -14,6 +14,7 @@ COPY . .
 ENV NODE_ENV=production
 ENV PORT=5173
 ENV VOCAB_DB_PATH=/data/vocab.sqlite
+ENV WORKSPACE_DB_PATH=/data/workspace.sqlite
 
 EXPOSE 5173
 

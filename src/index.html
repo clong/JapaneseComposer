@@ -28,6 +28,15 @@
             Vocab: On
           </button>
         </div>
+        <div class="account-controls">
+          <button class="ghost" id="auth-google" type="button">Sign in with Google</button>
+          <div class="account-user" id="auth-user" hidden>
+            <img class="account-avatar" id="auth-avatar" src="" alt="" referrerpolicy="no-referrer" />
+            <span class="account-name" id="auth-name"></span>
+          </div>
+          <button class="ghost" id="auth-logout" type="button" hidden>Sign out</button>
+          <div class="account-sync-status" id="auth-sync-status"></div>
+        </div>
       </header>
 
       <main class="app-main">
@@ -133,8 +142,8 @@
           <section class="panel share-panel" id="share-panel">
             <div class="panel-header panel-header-actions">
               <div>
-                <h2 id="share-title">Sharing</h2>
-                <p id="share-subtitle">Create a link to collect feedback on this entry.</p>
+                <h2 id="share-title">Share with Google User</h2>
+                <p id="share-subtitle">Send this entry to another signed-in user by email.</p>
               </div>
               <div class="panel-actions">
                 <button
@@ -149,18 +158,12 @@
               </div>
             </div>
             <div class="panel-body" id="share-body">
-              <div class="share-controls">
-                <button class="primary" id="share-create" type="button">Create link</button>
-                <button class="ghost" id="share-copy" type="button">Copy link</button>
-                <button class="ghost" id="share-open" type="button">Open</button>
-                <button class="ghost" id="share-refresh" type="button">Refresh</button>
-              </div>
               <div class="share-field">
-                <label id="share-link-label" for="share-link">Share link</label>
-                <input id="share-link" class="share-link-input" type="text" readonly />
+                <label id="share-user-label" for="share-user-email">Google account email</label>
+                <input id="share-user-email" class="share-user-input" type="email" inputmode="email" autocomplete="email" />
               </div>
+              <button class="primary" id="share-send" type="button">Share with user</button>
               <div class="share-status" id="share-status"></div>
-              <div class="share-comments" id="share-comments-list"></div>
             </div>
           </section>
         </aside>
