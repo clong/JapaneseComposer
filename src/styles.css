@@ -160,6 +160,166 @@ body::before {
   grid-template-columns: minmax(520px, 2.4fr) minmax(360px, 1.6fr);
   gap: 20px;
   align-items: stretch;
+<<<<<<< Updated upstream
+=======
+  transition: grid-template-columns 0.2s ease;
+}
+
+.app.document-drawer-collapsed .app-main {
+  grid-template-columns: minmax(64px, 64px) minmax(460px, 2.2fr) minmax(340px, 1.5fr);
+}
+
+.document-drawer {
+  min-width: 0;
+  min-height: auto;
+  transition: width 0.2s ease, min-width 0.2s ease, max-width 0.2s ease;
+  width: 100%;
+}
+
+.document-drawer.is-collapsed {
+  width: 64px;
+  min-width: 64px;
+  max-width: 64px;
+  overflow: hidden;
+  justify-self: stretch;
+}
+
+.document-drawer.is-collapsed .document-drawer-header-copy,
+.document-drawer.is-collapsed #document-new {
+  display: none;
+}
+
+.document-drawer.is-collapsed .panel-header {
+  margin-bottom: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.document-drawer.is-collapsed .panel-actions {
+  width: 100%;
+  justify-content: center;
+}
+
+.document-drawer.is-collapsed .panel-toggle {
+  width: 100%;
+}
+
+.document-drawer .panel-header {
+  margin-bottom: 14px;
+}
+
+.document-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(70vh - 160px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+
+.document-list-empty {
+  color: var(--ink-muted);
+  font-size: 13px;
+  border: 1px dashed rgba(30, 22, 20, 0.2);
+  border-radius: var(--radius-small);
+  padding: 12px;
+  text-align: center;
+}
+
+.document-row {
+  width: 100%;
+  appearance: none;
+  border: 1px solid rgba(30, 22, 20, 0.12);
+  border-radius: 12px;
+  background: var(--paper-strong);
+  padding: 8px 10px;
+  text-align: left;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-left: 4px solid transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.document-row:hover {
+  border-color: rgba(217, 95, 76, 0.35);
+  background: rgba(217, 95, 76, 0.05);
+}
+
+.document-row:focus-visible {
+  outline: 2px solid rgba(217, 95, 76, 0.55);
+  outline-offset: 2px;
+}
+
+.document-row.is-active {
+  border-left-color: var(--accent);
+  border-color: rgba(217, 95, 76, 0.45);
+  background: rgba(217, 95, 76, 0.08);
+}
+
+.document-row-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.document-row-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.document-row-meta {
+  font-size: 11px;
+  color: var(--ink-muted);
+  line-height: 1.25;
+  white-space: pre-line;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.document-row-delete {
+  border: none;
+  border-radius: 8px;
+  background: rgba(217, 95, 76, 0.08);
+  color: #d95f4c;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  font-size: 15px;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.document-row-delete svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.document-row-delete:hover {
+  background: rgba(217, 95, 76, 0.22);
+  color: #b54434;
+  transform: scale(1.02);
+}
+
+.document-row-delete:focus-visible {
+  outline: 2px solid rgba(217, 95, 76, 0.45);
+  outline-offset: 2px;
+>>>>>>> Stashed changes
 }
 
 .side-panel {
