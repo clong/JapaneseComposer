@@ -85,12 +85,32 @@ const GOOGLE_OAUTH_REDIRECT_URI = process.env.GOOGLE_OAUTH_REDIRECT_URI || '';
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || 'jc_session';
 const OAUTH_STATE_COOKIE_NAME = 'jc_oauth_state';
 const SESSION_MAX_AGE_MS = Math.max(60 * 60 * 1000, Number(process.env.SESSION_MAX_AGE_MS) || (1000 * 60 * 60 * 24 * 30));
+const WORKFLOW_ROLES = new Set(['student', 'teacher']);
+const WORKFLOW_STATUSES = new Set(['draft', 'submitted', 'reviewed', 'revision_requested', 'final']);
+const WORKFLOW_TRANSITION_ACTIONS = new Set(['submit', 'return_review', 'mark_final']);
+const WORKFLOW_EVENT_ACTIONS = new Set(['share_start', 'share_update', 'submit', 'return_review', 'mark_final']);
+const STUDENT_WORKFLOW_ACTIONS = new Set(['submit', 'mark_final']);
+const TEACHER_WORKFLOW_ACTIONS = new Set(['return_review']);
+const AUTH_AUDIT_THROTTLE_MS = Math.max(1000, Number(process.env.AUTH_AUDIT_THROTTLE_MS || '5000'));
+const NOISY_AUTH_PATHS = new Set(['/api/auth/session', '/api/workspace']);
+const authAuditEventLogState = new Map();
 
 function debug(...args) {
   if (!debugEnabled) {
     return;
   }
   console.log('[dev]', ...args);
+}
+
+function getRequestPath(req) {
+  if (!req || typeof req.url !== 'string') {
+    return '/';
+  }
+  try {
+    return new URL(req.url, 'http://localhost').pathname;
+  } catch (error) {
+    return req.url || '/';
+  }
 }
 
 function getClientIp(req) {
@@ -130,10 +150,21 @@ function parseBasicAuth(header) {
 }
 
 function auditAuthEvent({ ok, reason, username, req }) {
+  const now = Date.now();
+  const path = getRequestPath(req);
+  const method = req?.method || 'UNKNOWN';
+  const user = username || 'unknown';
+  if (ok && reason === 'ok' && NOISY_AUTH_PATHS.has(path)) {
+    const throttleKey = `${method}:${path}:${user}`;
+    const lastLog = authAuditEventLogState.get(throttleKey) || 0;
+    if (now - lastLog < AUTH_AUDIT_THROTTLE_MS) {
+      return;
+    }
+    authAuditEventLogState.set(throttleKey, now);
+  }
+
   const timestamp = new Date().toISOString();
   const ip = getClientIp(req);
-  const method = req.method || 'UNKNOWN';
-  const path = req.url || '/';
   const userAgent = typeof req.headers['user-agent'] === 'string'
     ? req.headers['user-agent']
     : '';
@@ -560,6 +591,9 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({
         ok: true,
         sharedDocumentId: result.sharedDocumentId,
+        workflowId: result.workflowId,
+        status: result.status,
+        senderDocument: result.senderDocument,
         updatedAt: result.updatedAt,
         recipient: {
           id: recipient.id,
@@ -571,6 +605,50 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ error: 'Share failed' }));
+      return;
+    }
+  }
+  if (requestUrl.pathname === '/api/workflow-transition') {
+    if (!workspaceDbReady) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Workspace database unavailable' }));
+      return;
+    }
+    const actor = await requireAuthenticatedUser(workspaceDbPath, req, res);
+    if (!actor) {
+      return;
+    }
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    const body = await readJsonBody(req);
+    const request = normalizeWorkflowTransitionRequest(body);
+    if (!request) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Missing workflow action or document' }));
+      return;
+    }
+    try {
+      const result = await transitionSharedWorkflow(workspaceDbPath, {
+        actor,
+        action: request.action,
+        sourceDocumentId: request.sourceDocumentId,
+        document: request.document
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        ok: true,
+        status: result.status,
+        updatedAt: result.updatedAt,
+        document: result.actorDocument
+      }));
+      return;
+    } catch (error) {
+      const statusCode = Number.isFinite(error?.status) ? Math.trunc(error.status) : 502;
+      res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: error?.message || 'Workflow update failed' }));
       return;
     }
   }
@@ -1342,6 +1420,199 @@ function normalizeShareQuestionList(items) {
     .filter(Boolean);
 }
 
+function createHttpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function normalizeWorkflowRole(role, fallback = '') {
+  if (typeof role !== 'string') {
+    return fallback;
+  }
+  const normalized = role.trim();
+  if (WORKFLOW_ROLES.has(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizeWorkflowStatus(status, fallback = 'draft') {
+  if (typeof status !== 'string') {
+    return fallback;
+  }
+  const normalized = status.trim();
+  if (WORKFLOW_STATUSES.has(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizeWorkflowAction(action, fallback = '') {
+  if (typeof action !== 'string') {
+    return fallback;
+  }
+  const normalized = action.trim();
+  if (WORKFLOW_TRANSITION_ACTIONS.has(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizeWorkflowEventAction(action, fallback = '') {
+  if (typeof action !== 'string') {
+    return fallback;
+  }
+  const normalized = action.trim();
+  if (WORKFLOW_EVENT_ACTIONS.has(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizeWorkflowEvents(entries) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  const now = Date.now();
+  return entries
+    .slice(-80)
+    .map((entry, index) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const action = normalizeWorkflowEventAction(entry.action);
+      if (!action) {
+        return null;
+      }
+      const createdAt = Number.isFinite(entry.createdAt)
+        ? Math.trunc(entry.createdAt)
+        : now;
+      return {
+        id: typeof entry.id === 'string' && entry.id.trim()
+          ? entry.id.trim().slice(0, 80)
+          : `event_${createdAt}_${index}`,
+        action,
+        status: normalizeWorkflowStatus(entry.status, 'draft'),
+        actorUserId: typeof entry.actorUserId === 'string'
+          ? entry.actorUserId.trim().slice(0, 200)
+          : '',
+        actorEmail: normalizeEmail(entry.actorEmail).slice(0, 320),
+        actorName: typeof entry.actorName === 'string'
+          ? entry.actorName.trim().slice(0, 160)
+          : '',
+        actorRole: normalizeWorkflowRole(entry.actorRole, ''),
+        createdAt
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeDocumentWorkflow(workflow) {
+  if (!workflow || typeof workflow !== 'object') {
+    return null;
+  }
+  const id = typeof workflow.id === 'string'
+    ? workflow.id.trim().slice(0, 120)
+    : '';
+  if (!id) {
+    return null;
+  }
+  const lastTransitionAt = Number.isFinite(workflow.lastTransitionAt)
+    ? Math.trunc(workflow.lastTransitionAt)
+    : null;
+  const version = Number.isFinite(workflow.version)
+    ? Math.max(1, Math.trunc(workflow.version))
+    : 1;
+  return {
+    id,
+    role: normalizeWorkflowRole(workflow.role, ''),
+    status: normalizeWorkflowStatus(workflow.status, 'draft'),
+    ownerUserId: typeof workflow.ownerUserId === 'string'
+      ? workflow.ownerUserId.trim().slice(0, 200)
+      : '',
+    ownerEmail: normalizeEmail(workflow.ownerEmail).slice(0, 320),
+    ownerName: typeof workflow.ownerName === 'string'
+      ? workflow.ownerName.trim().slice(0, 160)
+      : '',
+    partnerUserId: typeof workflow.partnerUserId === 'string'
+      ? workflow.partnerUserId.trim().slice(0, 200)
+      : '',
+    partnerEmail: normalizeEmail(workflow.partnerEmail).slice(0, 320),
+    partnerName: typeof workflow.partnerName === 'string'
+      ? workflow.partnerName.trim().slice(0, 160)
+      : '',
+    lastTransitionAt,
+    lastActorUserId: typeof workflow.lastActorUserId === 'string'
+      ? workflow.lastActorUserId.trim().slice(0, 200)
+      : '',
+    lastActorEmail: normalizeEmail(workflow.lastActorEmail).slice(0, 320),
+    lastActorName: typeof workflow.lastActorName === 'string'
+      ? workflow.lastActorName.trim().slice(0, 160)
+      : '',
+    lastActorRole: normalizeWorkflowRole(workflow.lastActorRole, ''),
+    version,
+    events: normalizeWorkflowEvents(workflow.events)
+  };
+}
+
+function createWorkflowId(leftUserId, rightUserId, sourceDocumentId) {
+  const users = [String(leftUserId || ''), String(rightUserId || '')].sort();
+  const digest = createHash('sha256')
+    .update(`${users[0]}:${users[1]}:${String(sourceDocumentId || '')}`)
+    .digest('hex');
+  return `workflow_${digest.slice(0, 24)}`;
+}
+
+function createWorkflowParticipantDocumentId(workflowId, userId) {
+  const digest = createHash('sha256')
+    .update(`${String(workflowId || '')}:${String(userId || '')}`)
+    .digest('hex');
+  return `shared_${digest.slice(0, 24)}`;
+}
+
+function createWorkflowEvent({
+  action,
+  status,
+  actor,
+  actorRole,
+  createdAt
+}) {
+  const now = Number.isFinite(createdAt) ? Math.trunc(createdAt) : Date.now();
+  return {
+    id: `event_${randomBytes(6).toString('hex')}`,
+    action: normalizeWorkflowEventAction(action),
+    status: normalizeWorkflowStatus(status, 'draft'),
+    actorUserId: typeof actor?.id === 'string' ? actor.id.slice(0, 200) : '',
+    actorEmail: normalizeEmail(actor?.email).slice(0, 320),
+    actorName: typeof actor?.name === 'string' ? actor.name.slice(0, 160) : '',
+    actorRole: normalizeWorkflowRole(actorRole, ''),
+    createdAt: now
+  };
+}
+
+function appendWorkflowEvent(existingEvents, event) {
+  const events = normalizeWorkflowEvents(existingEvents);
+  if (!event || !event.action) {
+    return events;
+  }
+  const next = [...events, event];
+  return next.slice(-80);
+}
+
+function resolveWorkflowStatusForAction(action) {
+  if (action === 'submit') {
+    return 'submitted';
+  }
+  if (action === 'return_review') {
+    return 'reviewed';
+  }
+  if (action === 'mark_final') {
+    return 'final';
+  }
+  return 'draft';
+}
+
 function createWorkspaceDocumentId() {
   return `doc_${Date.now().toString(36)}_${randomBytes(8).toString('hex')}`;
 }
@@ -1376,6 +1647,7 @@ function normalizeWorkspaceDocumentList(entries) {
       const proofreadUpdatedAt = Number.isFinite(entry.proofreadUpdatedAt)
         ? Math.trunc(entry.proofreadUpdatedAt)
         : null;
+      const workflow = normalizeDocumentWorkflow(entry.workflow);
       const sharedByUserId = typeof entry.sharedByUserId === 'string'
         ? entry.sharedByUserId.trim().slice(0, 200)
         : '';
@@ -1400,6 +1672,7 @@ function normalizeWorkspaceDocumentList(entries) {
         correctionsBaseText,
         proofreadContent,
         proofreadUpdatedAt,
+        workflow,
         sharedByUserId,
         sharedByEmail,
         sharedByName,
@@ -1461,6 +1734,34 @@ function normalizeUserShareRequest(body) {
   };
 }
 
+function normalizeWorkflowTransitionRequest(body) {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const action = normalizeWorkflowAction(body.action);
+  const sourceDocumentId = typeof body.sourceDocumentId === 'string'
+    ? body.sourceDocumentId.trim().slice(0, 120)
+    : '';
+  const documentInput = body.document;
+  if (!action || !sourceDocumentId || !documentInput || typeof documentInput !== 'object') {
+    return null;
+  }
+  const normalizedDocument = normalizeWorkspaceDocumentList([
+    {
+      ...documentInput,
+      id: sourceDocumentId
+    }
+  ])[0];
+  if (!normalizedDocument) {
+    return null;
+  }
+  return {
+    action,
+    sourceDocumentId,
+    document: normalizedDocument
+  };
+}
+
 function createSharedDocumentId(senderUserId, recipientUserId, sourceDocumentId) {
   const digest = createHash('sha256')
     .update(`${senderUserId}:${recipientUserId}:${sourceDocumentId}`)
@@ -1492,6 +1793,30 @@ async function findUserByEmail(dbPath, email) {
   };
 }
 
+async function findUserById(dbPath, id) {
+  const userId = typeof id === 'string' ? id.trim() : '';
+  if (!userId) {
+    return null;
+  }
+  const sql = `
+    SELECT id, email, name, picture
+    FROM users
+    WHERE id = ${sqlString(userId)}
+    LIMIT 1;
+  `;
+  const stdout = await runSqlite(dbPath, sql, { json: true });
+  const rows = parseSqliteJson(stdout);
+  if (!rows.length) {
+    return null;
+  }
+  return {
+    id: typeof rows[0]?.id === 'string' ? rows[0].id : '',
+    email: typeof rows[0]?.email === 'string' ? rows[0].email : '',
+    name: typeof rows[0]?.name === 'string' ? rows[0].name : '',
+    picture: typeof rows[0]?.picture === 'string' ? rows[0].picture : ''
+  };
+}
+
 async function shareDocumentWithGoogleUser(dbPath, {
   sender,
   recipient,
@@ -1499,46 +1824,357 @@ async function shareDocumentWithGoogleUser(dbPath, {
   document
 }) {
   const now = Date.now();
+  const normalizedDocument = normalizeWorkspaceDocumentList([
+    { ...document, id: sourceDocumentId }
+  ])[0];
+  if (!normalizedDocument) {
+    throw createHttpError(400, 'Invalid document payload');
+  }
+
+  const incomingWorkflow = normalizeDocumentWorkflow(normalizedDocument.workflow);
+  const workflowId = incomingWorkflow?.id || createWorkflowId(sender.id, recipient.id, sourceDocumentId);
+  const ownerUserId = incomingWorkflow?.ownerUserId || sender.id;
+  const ownerEmail = (incomingWorkflow?.ownerEmail || normalizeEmail(sender.email)).slice(0, 320);
+  const ownerName = (incomingWorkflow?.ownerName || (typeof sender.name === 'string' ? sender.name : '')).slice(0, 160);
+  const senderRole = ownerUserId === sender.id ? 'student' : 'teacher';
+  const recipientRole = senderRole === 'student' ? 'teacher' : 'student';
+  const nextStatus = senderRole === 'student'
+    ? 'submitted'
+    : normalizeWorkflowStatus(incomingWorkflow?.status, 'reviewed');
+  const nextVersion = Number.isFinite(incomingWorkflow?.version)
+    ? Math.max(1, Math.trunc(incomingWorkflow.version) + 1)
+    : 1;
+  const workflowEvent = createWorkflowEvent({
+    action: incomingWorkflow?.id ? 'share_update' : 'share_start',
+    status: nextStatus,
+    actor: sender,
+    actorRole: senderRole,
+    createdAt: now
+  });
+  const workflowEvents = appendWorkflowEvent(incomingWorkflow?.events, workflowEvent);
+
+  const senderWorkflow = normalizeDocumentWorkflow({
+    id: workflowId,
+    role: senderRole,
+    status: nextStatus,
+    ownerUserId,
+    ownerEmail,
+    ownerName,
+    partnerUserId: recipient.id,
+    partnerEmail: normalizeEmail(recipient.email).slice(0, 320),
+    partnerName: typeof recipient.name === 'string' ? recipient.name.slice(0, 160) : '',
+    lastTransitionAt: now,
+    lastActorUserId: sender.id,
+    lastActorEmail: normalizeEmail(sender.email).slice(0, 320),
+    lastActorName: typeof sender.name === 'string' ? sender.name.slice(0, 160) : '',
+    lastActorRole: senderRole,
+    version: nextVersion,
+    events: workflowEvents
+  });
+
+  const recipientWorkflow = normalizeDocumentWorkflow({
+    ...senderWorkflow,
+    role: recipientRole,
+    partnerUserId: sender.id,
+    partnerEmail: normalizeEmail(sender.email).slice(0, 320),
+    partnerName: typeof sender.name === 'string' ? sender.name.slice(0, 160) : ''
+  });
+
+  const senderWorkspace = await readUserWorkspace(dbPath, sender.id);
+  const senderDocuments = normalizeWorkspaceDocumentList(senderWorkspace?.documents);
+  const senderIndex = senderDocuments.findIndex((entry) => entry.id === sourceDocumentId);
+  const senderCreatedAt = senderIndex >= 0 && Number.isFinite(senderDocuments[senderIndex]?.createdAt)
+    ? Math.trunc(senderDocuments[senderIndex].createdAt)
+    : now;
+  const senderDocument = {
+    ...normalizedDocument,
+    id: sourceDocumentId,
+    workflow: senderWorkflow,
+    sharedSourceId: sourceDocumentId,
+    sharedAt: now,
+    createdAt: senderCreatedAt,
+    updatedAt: now
+  };
+  if (senderRole === 'student') {
+    senderDocument.correctionsBaseText = senderDocument.text;
+  }
+  if (senderIndex === -1) {
+    senderDocuments.unshift(senderDocument);
+  } else {
+    senderDocuments.splice(senderIndex, 1, senderDocument);
+  }
+
+  const senderActiveDocumentId = typeof senderWorkspace?.activeDocumentId === 'string'
+    ? senderWorkspace.activeDocumentId
+    : '';
+  await writeUserWorkspace(dbPath, sender.id, {
+    documents: senderDocuments,
+    activeDocumentId: senderActiveDocumentId && senderDocuments.some((entry) => entry.id === senderActiveDocumentId)
+      ? senderActiveDocumentId
+      : sourceDocumentId,
+    updatedAt: now
+  });
+
   const recipientWorkspace = await readUserWorkspace(dbPath, recipient.id);
-  const workspaceDocuments = normalizeWorkspaceDocumentList(recipientWorkspace?.documents);
-  const sharedDocumentId = createSharedDocumentId(sender.id, recipient.id, sourceDocumentId);
-  const existingIndex = workspaceDocuments.findIndex((entry) => entry.id === sharedDocumentId);
-  const existingCreatedAt = existingIndex >= 0 && Number.isFinite(workspaceDocuments[existingIndex]?.createdAt)
-    ? Math.trunc(workspaceDocuments[existingIndex].createdAt)
+  const recipientDocuments = normalizeWorkspaceDocumentList(recipientWorkspace?.documents);
+  const recipientIndex = recipientDocuments.findIndex((entry) => entry.workflow?.id === workflowId);
+  const sharedDocumentId = recipientIndex >= 0
+    ? recipientDocuments[recipientIndex].id
+    : createWorkflowParticipantDocumentId(workflowId, recipient.id);
+  const recipientCreatedAt = recipientIndex >= 0 && Number.isFinite(recipientDocuments[recipientIndex]?.createdAt)
+    ? Math.trunc(recipientDocuments[recipientIndex].createdAt)
     : now;
   const sharedDocument = {
-    ...document,
+    ...normalizedDocument,
     id: sharedDocumentId,
+    workflow: recipientWorkflow,
     sharedByUserId: sender.id,
     sharedByEmail: normalizeEmail(sender.email).slice(0, 320),
     sharedByName: typeof sender.name === 'string' ? sender.name.slice(0, 160) : '',
     sharedSourceId: sourceDocumentId,
     sharedAt: now,
-    createdAt: existingCreatedAt,
+    createdAt: recipientCreatedAt,
     updatedAt: now
   };
-
-  if (existingIndex === -1) {
-    workspaceDocuments.unshift(sharedDocument);
-  } else {
-    workspaceDocuments.splice(existingIndex, 1, sharedDocument);
+  if (senderRole === 'student') {
+    sharedDocument.correctionsBaseText = sharedDocument.text;
   }
 
-  const activeDocumentId = typeof recipientWorkspace?.activeDocumentId === 'string'
+  if (recipientIndex === -1) {
+    recipientDocuments.unshift(sharedDocument);
+  } else {
+    recipientDocuments.splice(recipientIndex, 1, sharedDocument);
+  }
+
+  const recipientActiveDocumentId = typeof recipientWorkspace?.activeDocumentId === 'string'
     ? recipientWorkspace.activeDocumentId
     : '';
-
   await writeUserWorkspace(dbPath, recipient.id, {
-    documents: workspaceDocuments,
-    activeDocumentId: activeDocumentId && workspaceDocuments.some((entry) => entry.id === activeDocumentId)
-      ? activeDocumentId
-      : (workspaceDocuments[0]?.id || ''),
+    documents: recipientDocuments,
+    activeDocumentId: recipientActiveDocumentId && recipientDocuments.some((entry) => entry.id === recipientActiveDocumentId)
+      ? recipientActiveDocumentId
+      : (recipientDocuments[0]?.id || ''),
     updatedAt: now
   });
 
   return {
     sharedDocumentId,
+    workflowId,
+    status: nextStatus,
+    senderDocument,
     updatedAt: now
+  };
+}
+
+async function transitionSharedWorkflow(dbPath, {
+  actor,
+  action,
+  sourceDocumentId,
+  document
+}) {
+  const now = Date.now();
+  const normalizedAction = normalizeWorkflowAction(action);
+  if (!normalizedAction) {
+    throw createHttpError(400, 'Invalid workflow action');
+  }
+  const actorInputDocument = normalizeWorkspaceDocumentList([
+    { ...document, id: sourceDocumentId }
+  ])[0];
+  if (!actorInputDocument) {
+    throw createHttpError(400, 'Invalid document payload');
+  }
+
+  const actorWorkspace = await readUserWorkspace(dbPath, actor.id);
+  const actorDocuments = normalizeWorkspaceDocumentList(actorWorkspace?.documents);
+  const actorIndex = actorDocuments.findIndex((entry) => entry.id === sourceDocumentId);
+  const existingActorDocument = actorIndex >= 0 ? actorDocuments[actorIndex] : null;
+  if (!existingActorDocument) {
+    throw createHttpError(404, 'Document not found');
+  }
+
+  const actorDocument = {
+    ...existingActorDocument,
+    ...actorInputDocument,
+    id: sourceDocumentId,
+    createdAt: actorIndex >= 0 && Number.isFinite(existingActorDocument?.createdAt)
+      ? Math.trunc(existingActorDocument.createdAt)
+      : now,
+    updatedAt: now
+  };
+  const workflow = normalizeDocumentWorkflow(existingActorDocument?.workflow || actorInputDocument.workflow);
+  if (!workflow || !workflow.id) {
+    throw createHttpError(400, 'This document is not in a shared workflow');
+  }
+
+  const declaredActorRole = normalizeWorkflowRole(workflow.role, '');
+  let actorIsOwner = workflow.ownerUserId && workflow.ownerUserId === actor.id;
+  let actorIsPartner = workflow.partnerUserId && workflow.partnerUserId === actor.id;
+  if (!actorIsOwner && !actorIsPartner && declaredActorRole === 'student') {
+    actorIsOwner = true;
+  }
+  if (!actorIsOwner && !actorIsPartner && declaredActorRole === 'teacher') {
+    actorIsPartner = true;
+  }
+  if (!actorIsOwner && !actorIsPartner && actorInputDocument) {
+    const sharedByUserId = actorInputDocument.sharedByUserId || workflow.lastActorUserId || '';
+    if (sharedByUserId) {
+      if (sharedByUserId === actor.id) {
+        actorIsPartner = true;
+      } else if (!declaredActorRole) {
+        actorIsOwner = true;
+      }
+    }
+  }
+  if (!actorIsOwner && !actorIsPartner) {
+    throw createHttpError(403, 'You are not part of this workflow');
+  }
+
+  const actorRole = actorIsOwner ? 'student' : 'teacher';
+  if (actorRole === 'student' && !STUDENT_WORKFLOW_ACTIONS.has(normalizedAction)) {
+    throw createHttpError(403, 'Only submit/finalize actions are allowed for students');
+  }
+  if (actorRole === 'teacher' && !TEACHER_WORKFLOW_ACTIONS.has(normalizedAction)) {
+    throw createHttpError(403, 'Only teacher return action is allowed');
+  }
+
+  const partnerUserId = actorIsOwner
+    ? (workflow.partnerUserId || workflow.lastActorUserId || actorInputDocument?.sharedByUserId || '')
+    : (workflow.ownerUserId || actorInputDocument?.sharedByUserId || '');
+  if (!partnerUserId) {
+    throw createHttpError(400, 'Workflow partner is missing');
+  }
+  const partner = await findUserById(dbPath, partnerUserId);
+  if (!partner) {
+    throw createHttpError(404, 'Workflow partner not found');
+  }
+
+  const ownerUserId = actorRole === 'student'
+    ? actor.id
+    : (workflow.ownerUserId || partner.id);
+  const ownerEmail = actorRole === 'student'
+    ? normalizeEmail(actor.email).slice(0, 320)
+    : (workflow.ownerEmail || normalizeEmail(partner.email)).slice(0, 320);
+  const ownerName = actorRole === 'student'
+    ? (typeof actor.name === 'string' ? actor.name.slice(0, 160) : '')
+    : (workflow.ownerName || (typeof partner.name === 'string' ? partner.name.slice(0, 160) : '')).slice(0, 160);
+  const nextStatus = resolveWorkflowStatusForAction(normalizedAction);
+  const nextVersion = Number.isFinite(workflow.version)
+    ? Math.max(1, Math.trunc(workflow.version) + 1)
+    : 1;
+  const workflowEvent = createWorkflowEvent({
+    action: normalizedAction,
+    status: nextStatus,
+    actor,
+    actorRole,
+    createdAt: now
+  });
+  const workflowEvents = appendWorkflowEvent(workflow.events, workflowEvent);
+
+  const actorWorkflow = normalizeDocumentWorkflow({
+    id: workflow.id,
+    role: actorRole,
+    status: nextStatus,
+    ownerUserId,
+    ownerEmail,
+    ownerName,
+    partnerUserId: partner.id,
+    partnerEmail: normalizeEmail(partner.email).slice(0, 320),
+    partnerName: typeof partner.name === 'string' ? partner.name.slice(0, 160) : '',
+    lastTransitionAt: now,
+    lastActorUserId: actor.id,
+    lastActorEmail: normalizeEmail(actor.email).slice(0, 320),
+    lastActorName: typeof actor.name === 'string' ? actor.name.slice(0, 160) : '',
+    lastActorRole: actorRole,
+    version: nextVersion,
+    events: workflowEvents
+  });
+
+  const partnerRole = actorRole === 'student' ? 'teacher' : 'student';
+  const partnerWorkflow = normalizeDocumentWorkflow({
+    ...actorWorkflow,
+    role: partnerRole,
+    partnerUserId: actor.id,
+    partnerEmail: normalizeEmail(actor.email).slice(0, 320),
+    partnerName: typeof actor.name === 'string' ? actor.name.slice(0, 160) : ''
+  });
+
+  actorDocument.workflow = actorWorkflow;
+  actorDocument.sharedByUserId = actorRole === 'teacher' ? actor.id : (actorDocument.sharedByUserId || '');
+  actorDocument.sharedByEmail = actorRole === 'teacher'
+    ? normalizeEmail(actor.email).slice(0, 320)
+    : (actorDocument.sharedByEmail || '');
+  actorDocument.sharedByName = actorRole === 'teacher'
+    ? (typeof actor.name === 'string' ? actor.name.slice(0, 160) : '')
+    : (actorDocument.sharedByName || '');
+  actorDocument.sharedSourceId = sourceDocumentId;
+  actorDocument.sharedAt = now;
+  if (actorRole === 'student') {
+    actorDocument.correctionsBaseText = actorDocument.text;
+  }
+
+  if (actorIndex === -1) {
+    actorDocuments.unshift(actorDocument);
+  } else {
+    actorDocuments.splice(actorIndex, 1, actorDocument);
+  }
+
+  const actorActiveDocumentId = typeof actorWorkspace?.activeDocumentId === 'string'
+    ? actorWorkspace.activeDocumentId
+    : '';
+  await writeUserWorkspace(dbPath, actor.id, {
+    documents: actorDocuments,
+    activeDocumentId: actorActiveDocumentId && actorDocuments.some((entry) => entry.id === actorActiveDocumentId)
+      ? actorActiveDocumentId
+      : sourceDocumentId,
+    updatedAt: now
+  });
+
+  const partnerWorkspace = await readUserWorkspace(dbPath, partner.id);
+  const partnerDocuments = normalizeWorkspaceDocumentList(partnerWorkspace?.documents);
+  const partnerIndex = partnerDocuments.findIndex((entry) => entry.workflow?.id === workflow.id);
+  const partnerDocumentId = partnerIndex >= 0
+    ? partnerDocuments[partnerIndex].id
+    : createWorkflowParticipantDocumentId(workflow.id, partner.id);
+  const partnerCreatedAt = partnerIndex >= 0 && Number.isFinite(partnerDocuments[partnerIndex]?.createdAt)
+    ? Math.trunc(partnerDocuments[partnerIndex].createdAt)
+    : now;
+  const partnerDocument = {
+    ...actorDocument,
+    id: partnerDocumentId,
+    workflow: partnerWorkflow,
+    sharedByUserId: actor.id,
+    sharedByEmail: normalizeEmail(actor.email).slice(0, 320),
+    sharedByName: typeof actor.name === 'string' ? actor.name.slice(0, 160) : '',
+    sharedSourceId: sourceDocumentId,
+    sharedAt: now,
+    createdAt: partnerCreatedAt,
+    updatedAt: now
+  };
+  if (actorRole === 'student') {
+    partnerDocument.correctionsBaseText = partnerDocument.text;
+  }
+
+  if (partnerIndex === -1) {
+    partnerDocuments.unshift(partnerDocument);
+  } else {
+    partnerDocuments.splice(partnerIndex, 1, partnerDocument);
+  }
+
+  const partnerActiveDocumentId = typeof partnerWorkspace?.activeDocumentId === 'string'
+    ? partnerWorkspace.activeDocumentId
+    : '';
+  await writeUserWorkspace(dbPath, partner.id, {
+    documents: partnerDocuments,
+    activeDocumentId: partnerActiveDocumentId && partnerDocuments.some((entry) => entry.id === partnerActiveDocumentId)
+      ? partnerActiveDocumentId
+      : (partnerDocuments[0]?.id || ''),
+    updatedAt: now
+  });
+
+  return {
+    status: nextStatus,
+    updatedAt: now,
+    actorDocument
   };
 }
 
