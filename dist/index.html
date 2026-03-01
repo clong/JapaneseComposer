@@ -40,6 +40,30 @@
       </header>
 
       <main class="app-main">
+        <aside class="document-drawer panel is-open" id="documents-drawer">
+          <div class="panel-header panel-header-actions">
+            <div class="document-drawer-header-copy">
+              <h2 id="documents-drawer-title">Saved documents</h2>
+              <p id="documents-drawer-subtitle">Open a saved document</p>
+            </div>
+            <div class="panel-actions document-drawer-actions">
+              <button
+                class="ghost panel-toggle"
+                id="documents-drawer-toggle"
+                type="button"
+                aria-expanded="true"
+                aria-controls="documents-drawer-body"
+              >
+                Collapse
+              </button>
+              <button class="ghost" id="document-new" type="button">New</button>
+            </div>
+          </div>
+          <div class="panel-body" id="documents-drawer-body">
+            <div class="document-list" id="document-list"></div>
+          </div>
+        </aside>
+
         <section class="panel editor-panel">
           <div class="panel-header">
             <h2 id="editor-title">Composer</h2>
@@ -56,13 +80,7 @@
               />
             </div>
             <div class="document-actions">
-              <div class="document-field">
-                <label for="document-select" id="document-select-label">Saved documents</label>
-                <select id="document-select" class="document-select"></select>
-              </div>
-              <button class="ghost" id="document-new" type="button">New</button>
               <button class="primary" id="document-save" type="button">Save</button>
-              <button class="ghost danger" id="document-delete" type="button">Delete</button>
             </div>
           </div>
           <div class="composer-surface">
@@ -158,11 +176,38 @@
               </div>
             </div>
             <div class="panel-body" id="share-body">
-              <div class="share-field">
-                <label id="share-user-label" for="share-user-email">Google account email</label>
-                <input id="share-user-email" class="share-user-input" type="email" inputmode="email" autocomplete="email" />
+              <div class="share-form" id="share-form">
+                <div class="share-field">
+                  <label id="share-user-label" for="share-user-email">Google account email</label>
+                  <input id="share-user-email" class="share-user-input" type="email" inputmode="email" autocomplete="email" />
+                </div>
+                <button class="primary" id="share-send" type="button">Share with user</button>
               </div>
-              <button class="primary" id="share-send" type="button">Share with user</button>
+              <div class="workflow-card" id="workflow-card" hidden>
+                <div class="workflow-meta">
+                  <div class="workflow-row">
+                    <span class="workflow-label" id="workflow-role-label">Your role</span>
+                    <span class="workflow-value" id="workflow-role-value">Student</span>
+                  </div>
+                  <div class="workflow-row">
+                    <span class="workflow-label" id="workflow-partner-label">Partner</span>
+                    <span class="workflow-value" id="workflow-partner-value">-</span>
+                  </div>
+                  <div class="workflow-row">
+                    <span class="workflow-label" id="workflow-status-label">Status</span>
+                    <span class="workflow-value" id="workflow-status-value">Draft</span>
+                  </div>
+                  <div class="workflow-row">
+                    <span class="workflow-label" id="workflow-updated-label">Last transition</span>
+                    <span class="workflow-value" id="workflow-updated-value">-</span>
+                  </div>
+                </div>
+                <div class="workflow-actions" id="workflow-actions"></div>
+                <div class="workflow-history">
+                  <div class="workflow-history-title" id="workflow-history-title">History</div>
+                  <div class="workflow-history-list" id="workflow-history-list"></div>
+                </div>
+              </div>
               <div class="share-status" id="share-status"></div>
             </div>
           </section>
@@ -170,11 +215,8 @@
       </main>
 
       <footer class="app-footer">
-<<<<<<< Updated upstream
-        <span id="build-stamp">Build 2026-02-24T06:15:04.293Z</span>
-=======
         <span id="build-stamp">Build 2026-03-01T06:33:55.607Z</span>
->>>>>>> Stashed changes
+        <span id="build-stamp">Build 2026-03-01T00:59:38.670Z</span>
       </footer>
     </div>
 

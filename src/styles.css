@@ -157,11 +157,9 @@ body::before {
 
 .app-main {
   display: grid;
-  grid-template-columns: minmax(520px, 2.4fr) minmax(360px, 1.6fr);
+  grid-template-columns: minmax(280px, 320px) minmax(460px, 2.2fr) minmax(340px, 1.5fr);
   gap: 20px;
   align-items: stretch;
-<<<<<<< Updated upstream
-=======
   transition: grid-template-columns 0.2s ease;
 }
 
@@ -282,7 +280,7 @@ body::before {
   font-size: 11px;
   color: var(--ink-muted);
   line-height: 1.25;
-  white-space: pre-line;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -319,7 +317,6 @@ body::before {
 .document-row-delete:focus-visible {
   outline: 2px solid rgba(217, 95, 76, 0.45);
   outline-offset: 2px;
->>>>>>> Stashed changes
 }
 
 .side-panel {
@@ -416,8 +413,7 @@ body::before {
   color: var(--ink-muted);
 }
 
-.document-input,
-.document-select {
+.document-input {
   border-radius: 12px;
   border: 1px solid rgba(30, 22, 20, 0.15);
   background: var(--paper-strong);
@@ -427,8 +423,15 @@ body::before {
   color: var(--ink);
 }
 
+.document-input.is-read-only {
+  border-color: rgba(30, 22, 20, 0.12);
+  background: rgba(30, 22, 20, 0.06);
+  color: var(--ink-muted);
+  cursor: not-allowed;
+}
+
 .document-input:focus,
-.document-select:focus {
+.document-row:focus-visible {
   outline: 2px solid rgba(217, 95, 76, 0.35);
 }
 
@@ -924,6 +927,12 @@ textarea#composer-input::placeholder {
   min-height: 260px;
 }
 
+.share-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .share-field {
   display: flex;
   flex-direction: column;
@@ -949,6 +958,93 @@ textarea#composer-input::placeholder {
 
 .share-status {
   font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.workflow-card {
+  border: 1px solid rgba(30, 22, 20, 0.14);
+  border-radius: 14px;
+  background: var(--paper-strong);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.workflow-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.workflow-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.workflow-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.workflow-value {
+  font-size: 13px;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workflow-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workflow-history-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.workflow-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workflow-history-empty {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.workflow-event {
+  border: 1px solid rgba(30, 22, 20, 0.12);
+  background: var(--paper);
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.workflow-event-title {
+  font-size: 13px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.workflow-event-meta {
+  font-size: 11px;
   color: var(--ink-muted);
 }
 
