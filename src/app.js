@@ -1,6 +1,7 @@
 const PROXY_DICT_ENDPOINT = '/api/lookup?keyword=';
 const VOCAB_API_ENDPOINT = '/api/vocab';
 const SHARE_USER_API_ENDPOINT = '/api/share-user';
+const WORKFLOW_TRANSITION_API_ENDPOINT = '/api/workflow-transition';
 const AUTH_SESSION_ENDPOINT = '/api/auth/session';
 const AUTH_GOOGLE_START_ENDPOINT = '/api/auth/google/start';
 const AUTH_LOGOUT_ENDPOINT = '/api/auth/logout';
@@ -14,7 +15,8 @@ const STORAGE_KEYS = {
   vocab: 'jc_vocab_list',
   questions: 'jc_questions',
   documents: 'jc_documents',
-  activeDocument: 'jc_active_document'
+  activeDocument: 'jc_active_document',
+  deletedDocuments: 'jc_deleted_documents'
 };
 
 const kanjiRegex = /[\u3400-\u9fff]/;
@@ -30,6 +32,17 @@ const smallTsuRegex = /[っッ]/;
 const monthTokenRegex = /^[0-9\uFF10-\uFF19]+月$/;
 const tokenizableCharRange = `${japaneseCharRange}0-9\uFF10-\uFF19`;
 const tokenizableRunRegex = new RegExp(`[${tokenizableCharRange}]+`, 'g');
+const WORKFLOW_ROLES = new Set(['student', 'teacher']);
+const WORKFLOW_STATUSES = new Set(['draft', 'submitted', 'reviewed', 'revision_requested', 'final']);
+const WORKFLOW_TRANSITION_ACTIONS = new Set(['submit', 'return_review', 'mark_final']);
+const WORKFLOW_EVENT_ACTIONS = new Set(['share_start', 'share_update', 'submit', 'return_review', 'mark_final']);
+const WORKSPACE_POLL_INTERVAL_MS = 1200;
+function getDefaultDocumentTitle() {
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const day = now.getDate();
+  return `${month}\u6708${day}\u65e5`;
+}
 const segmenter = typeof Intl !== 'undefined' && Intl.Segmenter
   ? new Intl.Segmenter('ja', { granularity: 'word' })
   : null;
@@ -58,10 +71,12 @@ const i18n = {
     editorPlaceholder: 'Write your journal entry here...',
     documentTitleLabel: 'Document title',
     documentTitlePlaceholder: 'Give this entry a title...',
-    documentSelectLabel: 'Saved documents',
-    documentSelectPlaceholder: 'Choose a document',
+    documentDrawerTitle: 'Saved documents',
+    documentDrawerSubtitle: 'Open a saved document',
+    documentListEmpty: 'No documents yet.',
     documentNew: 'New',
     documentSave: 'Save',
+    documentSaved: 'Saved',
     documentDelete: 'Delete',
     documentDeleteConfirm: 'Delete this document? This cannot be undone.',
     documentUntitled: 'Untitled entry',
@@ -119,12 +134,45 @@ const i18n = {
     shareSubtitle: 'Send this entry to another signed-in user by email.',
     shareUserLabel: 'Google account email',
     shareUserPlaceholder: 'friend@gmail.com',
-    shareSend: 'Share with user',
+    shareSend: 'Start shared review',
     shareRequiresAuth: 'Sign in to share with another user.',
     shareMissingEmail: 'Enter a recipient email.',
     shareMissingText: 'Enter some text to share.',
-    shareSuccess: 'Shared successfully.',
+    shareSuccess: 'Shared review started.',
     shareError: 'Sharing failed.',
+    workflowPanelTitle: 'Shared Review Workflow',
+    workflowPanelSubtitle: 'Submit and return this entry without creating renamed copies.',
+    workflowRoleLabel: 'Your role',
+    workflowPartnerLabel: 'Partner',
+    workflowStatusLabel: 'Status',
+    workflowUpdatedLabel: 'Last transition',
+    workflowHistoryTitle: 'History',
+    workflowRoleStudent: 'Student',
+    workflowRoleTeacher: 'Teacher',
+    workflowStatusDraft: 'Draft',
+    workflowStatusSubmitted: 'Submitted',
+    workflowStatusReviewed: 'Reviewed',
+    workflowStatusRevisionRequested: 'Revision requested',
+    workflowStatusFinal: 'Final',
+    workflowActionSubmit: 'Submit for review',
+    workflowActionReturnReview: 'Return to student',
+    workflowActionMarkFinal: 'Mark final',
+    workflowNoHistory: 'No transitions yet.',
+    workflowHintSubmittedStudent: 'Waiting for the teacher to return feedback.',
+    workflowHintSubmittedTeacher: 'Review in Corrections mode, then return to student.',
+    workflowHintRevisionStudent: 'Teacher requested another revision.',
+    workflowHintReviewedStudent: 'Teacher returned edits. Revise and submit again or mark final.',
+    workflowHintReviewedTeacher: 'Returned to student.',
+    workflowHintFinal: 'Review workflow complete.',
+    workflowStartError: 'Start shared review first.',
+    workflowTransitionError: 'Workflow update failed.',
+    workflowTransitionSuccess: 'Workflow updated.',
+    workflowEventShared: 'Shared and submitted',
+    workflowEventSubmit: 'Submitted for review',
+    workflowEventReturnReview: 'Returned review',
+    workflowEventMarkFinal: 'Marked final',
+    workflowEventTo: 'to',
+    workflowActorUnknown: 'User',
     correctionsTitle: 'Tracked Changes',
     correctionsSubtitle: 'Tracked edits from the original text.',
     correctionsEmpty: 'No tracked edits yet.',
@@ -147,10 +195,12 @@ const i18n = {
     editorPlaceholder: 'ここに日記を書いてください…',
     documentTitleLabel: 'タイトル',
     documentTitlePlaceholder: 'この作文のタイトルを入力…',
-    documentSelectLabel: '保存した作文',
-    documentSelectPlaceholder: '作文を選択',
+    documentDrawerTitle: '保存した作文',
+    documentDrawerSubtitle: '保存した作文を開く',
+    documentListEmpty: 'まだ作文がありません。',
     documentNew: '新規',
     documentSave: '保存',
+    documentSaved: '保存済み',
     documentDelete: '削除',
     documentDeleteConfirm: 'この作文を削除しますか？元に戻せません。',
     documentUntitled: '無題',
@@ -208,12 +258,45 @@ const i18n = {
     shareSubtitle: 'ログイン済みのユーザーにメールでこの作文を共有します。',
     shareUserLabel: 'Googleアカウントのメール',
     shareUserPlaceholder: 'friend@gmail.com',
-    shareSend: 'ユーザーへ共有',
+    shareSend: '添削ワークフロー開始',
     shareRequiresAuth: '共有するにはログインしてください。',
     shareMissingEmail: '共有先メールを入力してください。',
     shareMissingText: '共有するテキストを入力してください。',
-    shareSuccess: '共有しました。',
+    shareSuccess: 'ワークフローを開始しました。',
     shareError: '共有に失敗しました。',
+    workflowPanelTitle: '共有添削ワークフロー',
+    workflowPanelSubtitle: '名前を変えたコピーを作らずに提出と返却を行います。',
+    workflowRoleLabel: 'あなたの役割',
+    workflowPartnerLabel: '相手',
+    workflowStatusLabel: 'ステータス',
+    workflowUpdatedLabel: '最終遷移',
+    workflowHistoryTitle: '履歴',
+    workflowRoleStudent: '学習者',
+    workflowRoleTeacher: '先生',
+    workflowStatusDraft: '下書き',
+    workflowStatusSubmitted: '提出済み',
+    workflowStatusReviewed: '返却済み',
+    workflowStatusRevisionRequested: '再提出依頼',
+    workflowStatusFinal: '完了',
+    workflowActionSubmit: '添削を依頼',
+    workflowActionReturnReview: '学習者へ返却',
+    workflowActionMarkFinal: '完了にする',
+    workflowNoHistory: 'まだ遷移履歴がありません。',
+    workflowHintSubmittedStudent: '先生の返却を待っています。',
+    workflowHintSubmittedTeacher: '添削モードで編集して返却してください。',
+    workflowHintRevisionStudent: '先生から再提出依頼があります。',
+    workflowHintReviewedStudent: '先生が返却しました。修正して再提出するか完了にしてください。',
+    workflowHintReviewedTeacher: '学習者へ返却済みです。',
+    workflowHintFinal: 'ワークフローは完了しました。',
+    workflowStartError: '先に共有ワークフローを開始してください。',
+    workflowTransitionError: 'ワークフロー更新に失敗しました。',
+    workflowTransitionSuccess: 'ワークフローを更新しました。',
+    workflowEventShared: '共有して提出',
+    workflowEventSubmit: '添削依頼',
+    workflowEventReturnReview: '返却',
+    workflowEventMarkFinal: '完了',
+    workflowEventTo: 'へ',
+    workflowActorUnknown: 'ユーザー',
     correctionsTitle: '添削履歴',
     correctionsSubtitle: '元の文章からの変更点を表示します。',
     correctionsEmpty: 'まだ変更はありません。',
@@ -241,7 +324,8 @@ const state = {
   mode: 'edit',
   vocab: [],
   questions: [],
-  correctionsBaseText: ''
+  correctionsBaseText: '',
+  workflow: null
 };
 
 const proofreadState = {
@@ -277,7 +361,10 @@ let vocabSaveQueue = Promise.resolve();
 let workspaceSyncTimer = null;
 let workspaceSyncPending = null;
 let workspaceSyncInFlight = false;
+let workspaceRefreshTimer = null;
+let workspaceRefreshInFlight = false;
 let workspaceHydrating = false;
+let workspaceDeletedDocumentIds = new Set();
 
 function enqueueVocabApiTask(task) {
   vocabSaveQueue = vocabSaveQueue
@@ -291,11 +378,14 @@ const app = document.querySelector('#app');
 const composerInput = document.querySelector('#composer-input');
 const documentTitleInput = document.querySelector('#document-title');
 const documentTitleLabel = document.querySelector('#document-title-label');
-const documentSelect = document.querySelector('#document-select');
-const documentSelectLabel = document.querySelector('#document-select-label');
+const documentsDrawer = document.querySelector('#documents-drawer');
+const documentsDrawerBody = document.querySelector('#documents-drawer-body');
+const documentsDrawerTitle = document.querySelector('#documents-drawer-title');
+const documentsDrawerSubtitle = document.querySelector('#documents-drawer-subtitle');
+const documentsDrawerToggle = document.querySelector('#documents-drawer-toggle');
+const documentsList = document.querySelector('#document-list');
 const documentSave = document.querySelector('#document-save');
 const documentNew = document.querySelector('#document-new');
-const documentDelete = document.querySelector('#document-delete');
 const preview = document.querySelector('#preview');
 const correctionsPanel = document.querySelector('#corrections-panel');
 const correctionsTitle = document.querySelector('#corrections-title');
@@ -316,9 +406,22 @@ const shareBody = document.querySelector('#share-body');
 const shareCollapse = document.querySelector('#share-collapse');
 const shareTitle = document.querySelector('#share-title');
 const shareSubtitle = document.querySelector('#share-subtitle');
+const shareForm = document.querySelector('#share-form');
 const shareUserLabel = document.querySelector('#share-user-label');
 const shareUserEmailInput = document.querySelector('#share-user-email');
 const shareSend = document.querySelector('#share-send');
+const workflowCard = document.querySelector('#workflow-card');
+const workflowRoleLabel = document.querySelector('#workflow-role-label');
+const workflowRoleValue = document.querySelector('#workflow-role-value');
+const workflowPartnerLabel = document.querySelector('#workflow-partner-label');
+const workflowPartnerValue = document.querySelector('#workflow-partner-value');
+const workflowStatusLabel = document.querySelector('#workflow-status-label');
+const workflowStatusValue = document.querySelector('#workflow-status-value');
+const workflowUpdatedLabel = document.querySelector('#workflow-updated-label');
+const workflowUpdatedValue = document.querySelector('#workflow-updated-value');
+const workflowActions = document.querySelector('#workflow-actions');
+const workflowHistoryTitle = document.querySelector('#workflow-history-title');
+const workflowHistoryList = document.querySelector('#workflow-history-list');
 const shareStatus = document.querySelector('#share-status');
 const languageToggle = document.querySelector('#language-toggle');
 const modeToggle = document.querySelector('#mode-toggle');
@@ -986,6 +1089,131 @@ function normalizeQuestionEntries(entries) {
     .filter(Boolean);
 }
 
+function normalizeEmailValue(email) {
+  return typeof email === 'string'
+    ? email.trim().toLowerCase()
+    : '';
+}
+
+function normalizeWorkflowRole(role, fallback = '') {
+  if (typeof role !== 'string') {
+    return fallback;
+  }
+  const normalized = role.trim();
+  if (WORKFLOW_ROLES.has(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizeWorkflowStatus(status, fallback = 'draft') {
+  if (typeof status !== 'string') {
+    return fallback;
+  }
+  const normalized = status.trim();
+  if (WORKFLOW_STATUSES.has(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizeWorkflowEventAction(action, fallback = '') {
+  if (typeof action !== 'string') {
+    return fallback;
+  }
+  const normalized = action.trim();
+  if (WORKFLOW_EVENT_ACTIONS.has(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizeWorkflowEvents(entries) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  const now = Date.now();
+  return entries
+    .slice(-80)
+    .map((entry, index) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const action = normalizeWorkflowEventAction(entry.action);
+      if (!action) {
+        return null;
+      }
+      const createdAt = Number.isFinite(entry.createdAt)
+        ? Math.trunc(entry.createdAt)
+        : now;
+      return {
+        id: typeof entry.id === 'string' && entry.id.trim()
+          ? entry.id.trim().slice(0, 80)
+          : `event_${createdAt}_${index}`,
+        action,
+        status: normalizeWorkflowStatus(entry.status, 'draft'),
+        actorUserId: typeof entry.actorUserId === 'string'
+          ? entry.actorUserId.trim().slice(0, 200)
+          : '',
+        actorEmail: normalizeEmailValue(entry.actorEmail).slice(0, 320),
+        actorName: typeof entry.actorName === 'string'
+          ? entry.actorName.trim().slice(0, 160)
+          : '',
+        actorRole: normalizeWorkflowRole(entry.actorRole, ''),
+        createdAt
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeDocumentWorkflow(workflow) {
+  if (!workflow || typeof workflow !== 'object') {
+    return null;
+  }
+  const id = typeof workflow.id === 'string'
+    ? workflow.id.trim().slice(0, 120)
+    : '';
+  if (!id) {
+    return null;
+  }
+  const lastTransitionAt = Number.isFinite(workflow.lastTransitionAt)
+    ? Math.trunc(workflow.lastTransitionAt)
+    : null;
+  const version = Number.isFinite(workflow.version)
+    ? Math.max(1, Math.trunc(workflow.version))
+    : 1;
+  return {
+    id,
+    role: normalizeWorkflowRole(workflow.role, ''),
+    status: normalizeWorkflowStatus(workflow.status, 'draft'),
+    ownerUserId: typeof workflow.ownerUserId === 'string'
+      ? workflow.ownerUserId.trim().slice(0, 200)
+      : '',
+    ownerEmail: normalizeEmailValue(workflow.ownerEmail).slice(0, 320),
+    ownerName: typeof workflow.ownerName === 'string'
+      ? workflow.ownerName.trim().slice(0, 160)
+      : '',
+    partnerUserId: typeof workflow.partnerUserId === 'string'
+      ? workflow.partnerUserId.trim().slice(0, 200)
+      : '',
+    partnerEmail: normalizeEmailValue(workflow.partnerEmail).slice(0, 320),
+    partnerName: typeof workflow.partnerName === 'string'
+      ? workflow.partnerName.trim().slice(0, 160)
+      : '',
+    lastTransitionAt,
+    lastActorUserId: typeof workflow.lastActorUserId === 'string'
+      ? workflow.lastActorUserId.trim().slice(0, 200)
+      : '',
+    lastActorEmail: normalizeEmailValue(workflow.lastActorEmail).slice(0, 320),
+    lastActorName: typeof workflow.lastActorName === 'string'
+      ? workflow.lastActorName.trim().slice(0, 160)
+      : '',
+    lastActorRole: normalizeWorkflowRole(workflow.lastActorRole, ''),
+    version,
+    events: normalizeWorkflowEvents(workflow.events)
+  };
+}
+
 function normalizeCorrectionsBaseText(value, fallback = '') {
   if (typeof value === 'string') {
     return value;
@@ -1021,8 +1249,10 @@ function normalizeDocumentEntries(entries) {
       const proofreadUpdatedAt = Number.isFinite(entry.proofreadUpdatedAt)
         ? Math.trunc(entry.proofreadUpdatedAt)
         : null;
+      const workflow = normalizeDocumentWorkflow(entry.workflow);
       const createdAt = Number.isFinite(entry.createdAt) ? Math.trunc(entry.createdAt) : now;
       const updatedAt = Number.isFinite(entry.updatedAt) ? Math.trunc(entry.updatedAt) : createdAt;
+      const isSaved = entry.isSaved !== false;
       return {
         id,
         title,
@@ -1032,6 +1262,8 @@ function normalizeDocumentEntries(entries) {
         correctionsBaseText,
         proofreadContent,
         proofreadUpdatedAt,
+        workflow,
+        isSaved,
         createdAt,
         updatedAt
       };
@@ -1076,6 +1308,82 @@ function loadDocumentsFromStorage() {
   } catch (error) {
     return [];
   }
+}
+
+function normalizeDeletedDocumentIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((id) => (typeof id === 'string' ? id.trim() : ''))
+    .filter(Boolean);
+}
+
+function loadWorkspaceDeletedDocumentIds() {
+  const storedDeleted = safeStorageGet(STORAGE_KEYS.deletedDocuments);
+  if (!storedDeleted) {
+    return new Set();
+  }
+  try {
+    const parsed = JSON.parse(storedDeleted);
+    const normalized = normalizeDeletedDocumentIds(parsed);
+    return new Set(normalized);
+  } catch (error) {
+    return new Set();
+  }
+}
+
+function saveWorkspaceDeletedDocumentIds() {
+  if (!workspaceDeletedDocumentIds.size) {
+    safeStorageSet(STORAGE_KEYS.deletedDocuments, JSON.stringify([]));
+    return;
+  }
+  safeStorageSet(
+    STORAGE_KEYS.deletedDocuments,
+    JSON.stringify(Array.from(workspaceDeletedDocumentIds))
+  );
+}
+
+function markWorkspaceDocumentDeleted(documentId) {
+  if (typeof documentId !== 'string') {
+    return;
+  }
+  const normalized = documentId.trim();
+  if (!normalized) {
+    return;
+  }
+  workspaceDeletedDocumentIds.add(normalized);
+  saveWorkspaceDeletedDocumentIds();
+}
+
+function getWorkspaceFilteredDocuments(documents) {
+  const normalized = normalizeDocumentEntries(documents);
+  if (!workspaceDeletedDocumentIds.size) {
+    return normalized;
+  }
+  return normalized.filter((doc) => !workspaceDeletedDocumentIds.has(doc.id));
+}
+
+function clearWorkspaceDocumentDeletionMarkers(syncWorkspace) {
+  if (!workspaceDeletedDocumentIds.size) {
+    return;
+  }
+  if (!syncWorkspace || !Array.isArray(syncWorkspace.documents)) {
+    workspaceDeletedDocumentIds.clear();
+    saveWorkspaceDeletedDocumentIds();
+    return;
+  }
+  const syncedDocumentIds = new Set(
+    normalizeDocumentEntries(syncWorkspace?.documents).map((doc) => doc.id)
+  );
+  const nextDeletedIds = Array.from(workspaceDeletedDocumentIds).filter(
+    (id) => syncedDocumentIds.has(id)
+  );
+  if (nextDeletedIds.length === workspaceDeletedDocumentIds.size) {
+    return;
+  }
+  workspaceDeletedDocumentIds = new Set(nextDeletedIds);
+  saveWorkspaceDeletedDocumentIds();
 }
 
 function saveDocumentsToStorage({ syncServer = true } = {}) {
@@ -1134,9 +1442,16 @@ function mergeWorkspaceDocuments(localDocuments, remoteDocuments) {
       merged.set(doc.id, doc);
       return;
     }
+    const localIsSaved = doc.isSaved !== false;
+    const remoteIsSaved = existing.isSaved !== false;
+    if (!localIsSaved && remoteIsSaved) {
+      merged.set(doc.id, doc);
+      return;
+    }
+
     const localUpdatedAt = Number.isFinite(doc.updatedAt) ? doc.updatedAt : 0;
     const remoteUpdatedAt = Number.isFinite(existing.updatedAt) ? existing.updatedAt : 0;
-    if (localUpdatedAt > remoteUpdatedAt) {
+    if (localUpdatedAt >= remoteUpdatedAt) {
       merged.set(doc.id, doc);
     }
   });
@@ -1156,11 +1471,13 @@ function isBootstrapDocument(doc) {
   const vocab = Array.isArray(doc.vocab) ? doc.vocab : [];
   const questions = Array.isArray(doc.questions) ? doc.questions : [];
   const proofreadContent = typeof doc.proofreadContent === 'string' ? doc.proofreadContent.trim() : '';
+  const workflowId = typeof doc.workflow?.id === 'string' ? doc.workflow.id.trim() : '';
   return !title
     && text === defaultText
     && !vocab.length
     && !questions.length
-    && !proofreadContent;
+    && !proofreadContent
+    && !workflowId;
 }
 
 function shouldIgnoreLocalBootstrapWorkspace(localDocuments, remoteDocuments) {
@@ -1175,6 +1492,10 @@ function resolveWorkspaceActiveDocumentId({ preferredActiveId, fallbackActiveId,
   if (!Array.isArray(documents) || !documents.length) {
     return '';
   }
+  const currentActiveId = state?.documentId;
+  if (currentActiveId && documents.some((doc) => doc.id === currentActiveId)) {
+    return currentActiveId;
+  }
   if (preferredActiveId && documents.some((doc) => doc.id === preferredActiveId)) {
     return preferredActiveId;
   }
@@ -1185,7 +1506,7 @@ function resolveWorkspaceActiveDocumentId({ preferredActiveId, fallbackActiveId,
 }
 
 function applyWorkspaceState(workspace) {
-  const nextDocuments = normalizeDocumentEntries(workspace?.documents);
+  const nextDocuments = getWorkspaceFilteredDocuments(workspace?.documents);
   workspaceHydrating = true;
   try {
     state.documents = nextDocuments.length
@@ -1203,6 +1524,86 @@ function applyWorkspaceState(workspace) {
   } finally {
     workspaceHydrating = false;
   }
+}
+
+function getMergedWorkspaceStateFromRemote(remoteWorkspace) {
+  const remoteDocuments = getWorkspaceFilteredDocuments(remoteWorkspace?.documents);
+  const localWorkspace = buildWorkspacePayload();
+  const localDocumentsForMerge = shouldIgnoreLocalBootstrapWorkspace(localWorkspace.documents, remoteDocuments)
+    ? []
+    : localWorkspace.documents;
+  const mergedDocuments = mergeWorkspaceDocuments(localDocumentsForMerge, remoteDocuments);
+  const mergedWorkspace = {
+    documents: mergedDocuments,
+    activeDocumentId: resolveWorkspaceActiveDocumentId({
+      preferredActiveId: localWorkspace.activeDocumentId
+        || (typeof remoteWorkspace?.activeDocumentId === 'string' ? remoteWorkspace.activeDocumentId : ''),
+      fallbackActiveId: localWorkspace.activeDocumentId,
+      documents: mergedDocuments
+    })
+  };
+  return {
+    localWorkspace,
+    mergedWorkspace,
+    remoteDocuments,
+    localSnapshot: buildWorkspaceSnapshot(localWorkspace),
+    mergedSnapshot: buildWorkspaceSnapshot(mergedWorkspace),
+    remoteSnapshot: buildWorkspaceSnapshot({
+      documents: remoteDocuments,
+      activeDocumentId: typeof remoteWorkspace?.activeDocumentId === 'string'
+        ? remoteWorkspace.activeDocumentId
+        : ''
+    })
+  };
+}
+
+async function refreshWorkspaceFromServer() {
+  if (!authState.authenticated || workspaceHydrating) {
+    return null;
+  }
+  const remoteWorkspace = await requestWorkspace();
+  const merged = getMergedWorkspaceStateFromRemote(remoteWorkspace || {});
+  if (merged.mergedSnapshot && merged.mergedSnapshot !== merged.localSnapshot) {
+    applyWorkspaceState(merged.mergedWorkspace);
+  }
+  if (Number.isFinite(remoteWorkspace?.updatedAt)) {
+    authState.lastSyncedAt = new Date(Math.trunc(remoteWorkspace.updatedAt));
+  }
+  return merged;
+}
+
+function stopWorkspaceRefreshLoop() {
+  if (workspaceRefreshTimer) {
+    clearTimeout(workspaceRefreshTimer);
+    workspaceRefreshTimer = null;
+  }
+  workspaceRefreshInFlight = false;
+}
+
+function runWorkspaceRefreshLoop() {
+  if (!authState.authenticated) {
+    return;
+  }
+  stopWorkspaceRefreshLoop();
+  workspaceRefreshTimer = setTimeout(() => {
+    workspaceRefreshTimer = null;
+    void (async () => {
+      if (workspaceHydrating || workspaceRefreshInFlight || !authState.authenticated) {
+        return;
+      }
+      workspaceRefreshInFlight = true;
+      try {
+        await refreshWorkspaceFromServer();
+      } catch (error) {
+        // Polling failures should not interrupt editing or display state.
+      } finally {
+        workspaceRefreshInFlight = false;
+        if (authState.authenticated) {
+          runWorkspaceRefreshLoop();
+        }
+      }
+    })();
+  }, WORKSPACE_POLL_INTERVAL_MS);
 }
 
 function clearWorkspaceSyncQueue() {
@@ -1303,6 +1704,7 @@ async function flushWorkspaceSync() {
   renderAuthControls();
   try {
     const result = await requestWorkspaceUpdate(payload);
+    clearWorkspaceDocumentDeletionMarkers(result?.workspace || null);
     const updatedAt = Number.isFinite(result?.updatedAt) ? Math.trunc(result.updatedAt) : Date.now();
     authState.lastSyncedAt = new Date(updatedAt);
     authState.syncError = '';
@@ -1394,35 +1796,15 @@ async function hydrateAuthAndWorkspace() {
 
   if (!authState.authenticated) {
     clearWorkspaceSyncQueue();
+    stopWorkspaceRefreshLoop();
     return;
   }
 
   try {
     const remoteWorkspace = await requestWorkspace();
-    const localWorkspace = buildWorkspacePayload();
-    const remoteDocuments = normalizeDocumentEntries(remoteWorkspace?.documents);
-    const localDocumentsForMerge = shouldIgnoreLocalBootstrapWorkspace(localWorkspace.documents, remoteDocuments)
-      ? []
-      : localWorkspace.documents;
-    const mergedDocuments = mergeWorkspaceDocuments(localDocumentsForMerge, remoteDocuments);
-    const mergedWorkspace = {
-      documents: mergedDocuments,
-      activeDocumentId: resolveWorkspaceActiveDocumentId({
-        preferredActiveId: typeof remoteWorkspace?.activeDocumentId === 'string' ? remoteWorkspace.activeDocumentId : '',
-        fallbackActiveId: localWorkspace.activeDocumentId,
-        documents: mergedDocuments
-      })
-    };
-
-    const localSnapshot = buildWorkspaceSnapshot(localWorkspace);
-    const mergedSnapshot = buildWorkspaceSnapshot(mergedWorkspace);
-    const remoteSnapshot = buildWorkspaceSnapshot({
-      documents: remoteDocuments,
-      activeDocumentId: typeof remoteWorkspace?.activeDocumentId === 'string' ? remoteWorkspace.activeDocumentId : ''
-    });
-
-    if (mergedSnapshot && mergedSnapshot !== localSnapshot) {
-      applyWorkspaceState(mergedWorkspace);
+    const merged = getMergedWorkspaceStateFromRemote(remoteWorkspace || {});
+    if (merged.mergedSnapshot && merged.mergedSnapshot !== merged.localSnapshot) {
+      applyWorkspaceState(merged.mergedWorkspace);
     }
 
     const remoteUpdatedAt = Number.isFinite(remoteWorkspace?.updatedAt)
@@ -1431,8 +1813,9 @@ async function hydrateAuthAndWorkspace() {
     authState.lastSyncedAt = new Date(remoteUpdatedAt);
     authState.syncError = '';
     renderAuthControls();
+    runWorkspaceRefreshLoop();
 
-    if (!remoteDocuments.length || (mergedSnapshot && mergedSnapshot !== remoteSnapshot)) {
+    if (!merged.remoteDocuments.length || (merged.mergedSnapshot && merged.mergedSnapshot !== merged.remoteSnapshot)) {
       scheduleWorkspaceSync({ immediate: true });
     }
   } catch (error) {
@@ -1535,13 +1918,15 @@ function enqueueVocabDelete(entry) {
 }
 
 function createDocument({
-  title = '',
+  title = getDefaultDocumentTitle(),
   text = '',
   vocab = [],
   questions = [],
   correctionsBaseText = text,
   proofreadContent = '',
   proofreadUpdatedAt = null,
+  workflow = null,
+  isSaved = false,
   createdAt = null,
   updatedAt = null
 } = {}) {
@@ -1560,6 +1945,8 @@ function createDocument({
     correctionsBaseText: normalizeCorrectionsBaseText(correctionsBaseText, text),
     proofreadContent: typeof proofreadContent === 'string' ? proofreadContent : '',
     proofreadUpdatedAt: normalizedProofreadUpdatedAt,
+    workflow: normalizeDocumentWorkflow(workflow),
+    isSaved,
     createdAt: normalizedCreatedAt,
     updatedAt: normalizedUpdatedAt
   };
@@ -1572,6 +1959,8 @@ function applyDocumentToState(doc) {
   state.vocab = normalizeVocabEntries(doc.vocab);
   state.questions = normalizeQuestionEntries(doc.questions);
   state.correctionsBaseText = normalizeCorrectionsBaseText(doc.correctionsBaseText, state.text);
+  state.workflow = normalizeDocumentWorkflow(getActiveDocumentFromState()?.workflow || doc.workflow);
+  enforceTeacherWorkflowMode();
 }
 
 function hydrateProofreadFromDocument(doc, { reset = false } = {}) {
@@ -1605,6 +1994,36 @@ function hydrateProofreadFromDocument(doc, { reset = false } = {}) {
   }
 }
 
+function getActiveDocumentFromState() {
+  return state.documents.find((entry) => entry.id === state.documentId) || null;
+}
+
+function isActiveDocumentSavedState() {
+  return getActiveDocumentFromState()?.isSaved !== false;
+}
+
+function setActiveDocumentSavedState(isSaved) {
+  const activeDocument = getActiveDocumentFromState();
+  if (!activeDocument) {
+    return;
+  }
+  activeDocument.isSaved = Boolean(isSaved);
+}
+
+function updateDocumentSaveControls() {
+  if (!documentSave) {
+    return;
+  }
+  const isSaved = isActiveDocumentSavedState();
+  const copy = i18n[state.language];
+  documentSave.textContent = isSaved ? copy.documentSaved : copy.documentSave;
+  documentSave.disabled = isSaved;
+  if (documentTitleInput) {
+    documentTitleInput.readOnly = isSaved;
+    documentTitleInput.classList.toggle('is-read-only', isSaved);
+  }
+}
+
 function hydrateShareFromDocument(doc) {
   shareState.sending = false;
   shareState.error = '';
@@ -1616,16 +2035,22 @@ function hydrateShareFromDocument(doc) {
   renderSharePanel();
 }
 
-function persistActiveDocument({ updateList = false, normalize = false } = {}) {
+function persistActiveDocument({
+  updateList = false,
+  normalize = false,
+  markSaved = false
+} = {}) {
   if (!state.documentId) {
     return;
   }
   const now = Date.now();
   const normalizedVocab = normalize ? normalizeVocabEntries(state.vocab) : state.vocab;
   const normalizedQuestions = normalize ? normalizeQuestionEntries(state.questions) : state.questions;
+  const normalizedWorkflow = normalizeDocumentWorkflow(state.workflow);
   if (normalize) {
     state.vocab = normalizedVocab;
     state.questions = normalizedQuestions;
+    state.workflow = normalizedWorkflow;
   }
 
   const index = state.documents.findIndex((doc) => doc.id === state.documentId);
@@ -1644,6 +2069,8 @@ function persistActiveDocument({ updateList = false, normalize = false } = {}) {
       correctionsBaseText: normalizeCorrectionsBaseText(state.correctionsBaseText, state.text),
       proofreadContent: proofreadContent || '',
       proofreadUpdatedAt,
+      workflow: normalizedWorkflow,
+      isSaved: markSaved,
       createdAt: now,
       updatedAt: now
     });
@@ -1654,9 +2081,13 @@ function persistActiveDocument({ updateList = false, normalize = false } = {}) {
     doc.vocab = normalizedVocab;
     doc.questions = normalizedQuestions;
     doc.correctionsBaseText = normalizeCorrectionsBaseText(state.correctionsBaseText, state.text);
+    doc.workflow = normalizedWorkflow;
     if (hasProofread) {
       doc.proofreadContent = proofreadContent || '';
       doc.proofreadUpdatedAt = proofreadUpdatedAt;
+    }
+    if (markSaved) {
+      doc.isSaved = true;
     }
     doc.updatedAt = now;
   }
@@ -1665,24 +2096,26 @@ function persistActiveDocument({ updateList = false, normalize = false } = {}) {
   safeStorageSet(STORAGE_KEYS.activeDocument, state.documentId);
 
   if (updateList) {
-    renderDocumentSelect();
+    renderDocumentList();
+    updateDocumentSaveControls();
   }
 }
 
-function setActiveDocument(doc, { resetProofread = true } = {}) {
+function setActiveDocument(doc, { resetProofread = false } = {}) {
   applyDocumentToState(doc);
   safeStorageSet(STORAGE_KEYS.activeDocument, state.documentId);
   if (documentTitleInput && documentTitleInput.value !== state.title) {
     documentTitleInput.value = state.title;
   }
   composerInput.value = state.text;
-  renderDocumentSelect();
+  renderDocumentList();
   renderPreview();
   renderCorrections();
   renderVocab();
   renderQuestions();
   hydrateProofreadFromDocument(doc, { reset: resetProofread });
   hydrateShareFromDocument(doc);
+  updateDocumentSaveControls();
   clearActiveHover();
   hideTooltip();
   hideSelectionTooltip();
@@ -1704,14 +2137,19 @@ function buildLegacyDocument() {
     questions: legacyQuestions,
     proofreadContent: '',
     proofreadUpdatedAt: null,
+    isSaved: true,
+    workflow: null,
     createdAt: Date.now(),
     updatedAt: Date.now()
   };
 }
 
 function loadState() {
-  state.documents = loadDocumentsFromStorage();
-  if (!state.documents.length) {
+  workspaceDeletedDocumentIds = loadWorkspaceDeletedDocumentIds();
+  const storedDocuments = getWorkspaceFilteredDocuments(loadDocumentsFromStorage());
+  if (storedDocuments.length) {
+    state.documents = storedDocuments;
+  } else {
     const legacyDocument = buildLegacyDocument();
     state.documents = legacyDocument ? [legacyDocument] : [createDocument({ text: defaultText })];
     saveDocumentsToStorage();
@@ -1731,6 +2169,8 @@ function saveEntry() {
 function saveVocab({ persist = true } = {}) {
   const normalized = normalizeVocabEntries(state.vocab);
   state.vocab = normalized;
+  setActiveDocumentSavedState(false);
+  updateDocumentSaveControls();
   persistActiveDocument();
   if (!persist) {
     return;
@@ -1741,24 +2181,37 @@ function saveVocab({ persist = true } = {}) {
 function saveQuestions() {
   const normalized = normalizeQuestionEntries(state.questions);
   state.questions = normalized;
+  setActiveDocumentSavedState(false);
+  updateDocumentSaveControls();
   persistActiveDocument();
 }
 
-function deleteActiveDocument() {
-  if (!state.documentId || !state.documents.length) {
+function deleteDocumentById(targetDocumentId = state.documentId) {
+  if (!targetDocumentId || !state.documents.length) {
     return;
   }
-  const index = state.documents.findIndex((doc) => doc.id === state.documentId);
+  const index = state.documents.findIndex((doc) => doc.id === targetDocumentId);
   if (index === -1) {
     return;
   }
+  const isActive = state.documentId === targetDocumentId;
+  markWorkspaceDocumentDeleted(targetDocumentId);
   state.documents.splice(index, 1);
   if (!state.documents.length) {
     state.documents = [createDocument()];
   }
   saveDocumentsToStorage();
+  scheduleWorkspaceSync({ immediate: true });
+  if (!isActive) {
+    renderDocumentList();
+    return;
+  }
   const nextIndex = Math.min(index, state.documents.length - 1);
   setActiveDocument(state.documents[nextIndex]);
+}
+
+function deleteActiveDocument() {
+  deleteDocumentById(state.documentId);
 }
 
 async function lookupWord(word) {
@@ -2248,13 +2701,20 @@ function formatShareTimestamp(date) {
 }
 
 function normalizeShareRecipientEmail(email) {
-  return typeof email === 'string'
-    ? email.trim().toLowerCase()
-    : '';
+  return normalizeEmailValue(email);
 }
 
 function buildSharePayload() {
+  if (!state.documentId) {
+    throw new Error(i18n[state.language].workflowStartError);
+  }
   const doc = state.documents.find((item) => item.id === state.documentId);
+  if (!doc) {
+    throw new Error(i18n[state.language].workflowStartError);
+  }
+  if (!state.text.trim()) {
+    throw new Error(i18n[state.language].shareMissingText);
+  }
   const hasProofread = proofreadState.status === 'success' && Boolean(proofreadState.content);
   const proofreadContent = hasProofread
     ? proofreadState.content
@@ -2262,6 +2722,7 @@ function buildSharePayload() {
   const proofreadUpdatedAt = hasProofread
     ? (proofreadState.updatedAt instanceof Date ? proofreadState.updatedAt.getTime() : Date.now())
     : (Number.isFinite(doc?.proofreadUpdatedAt) ? Math.trunc(doc.proofreadUpdatedAt) : null);
+  const workflow = normalizeDocumentWorkflow(doc.workflow);
   const payload = {
     id: state.documentId,
     title: state.title,
@@ -2271,6 +2732,7 @@ function buildSharePayload() {
     questions: normalizeQuestionEntries(state.questions),
     proofreadContent,
     proofreadUpdatedAt,
+    workflow,
     updatedAt: Date.now()
   };
   if (Number.isFinite(doc?.createdAt)) {
@@ -2279,19 +2741,351 @@ function buildSharePayload() {
   return payload;
 }
 
+function getWorkflowRoleLabel(copy, role) {
+  if (role === 'student') {
+    return copy.workflowRoleStudent;
+  }
+  if (role === 'teacher') {
+    return copy.workflowRoleTeacher;
+  }
+  return '-';
+}
+
+function isTeacherWorkflowWorkflow(workflow) {
+  const normalized = normalizeDocumentWorkflow(workflow);
+  return normalized?.role === 'teacher';
+}
+
+function enforceTeacherWorkflowMode() {
+  if (isTeacherWorkflowWorkflow(state.workflow) && state.mode === 'edit') {
+    state.mode = 'read';
+  }
+}
+
+function getWorkflowStatusLabel(copy, status) {
+  if (status === 'submitted') {
+    return copy.workflowStatusSubmitted;
+  }
+  if (status === 'reviewed') {
+    return copy.workflowStatusReviewed;
+  }
+  if (status === 'revision_requested') {
+    return copy.workflowStatusRevisionRequested;
+  }
+  if (status === 'final') {
+    return copy.workflowStatusFinal;
+  }
+  return copy.workflowStatusDraft;
+}
+
+function getWorkflowEventLabel(copy, action) {
+  if (action === 'share_start' || action === 'share_update') {
+    return copy.workflowEventShared;
+  }
+  if (action === 'submit') {
+    return copy.workflowEventSubmit;
+  }
+  if (action === 'return_review') {
+    return copy.workflowEventReturnReview;
+  }
+  if (action === 'mark_final') {
+    return copy.workflowEventMarkFinal;
+  }
+  return copy.workflowEventShared;
+}
+
+function getWorkflowHint(copy, workflow) {
+  if (!workflow) {
+    return '';
+  }
+  if (workflow.status === 'final') {
+    return copy.workflowHintFinal;
+  }
+  if (workflow.role === 'student') {
+    if (workflow.status === 'submitted') {
+      return copy.workflowHintSubmittedStudent;
+    }
+    if (workflow.status === 'revision_requested') {
+      return copy.workflowHintRevisionStudent;
+    }
+    if (workflow.status === 'reviewed') {
+      return copy.workflowHintReviewedStudent;
+    }
+    return '';
+  }
+  if (workflow.role === 'teacher') {
+    if (workflow.status === 'submitted') {
+      return copy.workflowHintSubmittedTeacher;
+    }
+    if (workflow.status === 'reviewed') {
+      return copy.workflowHintReviewedTeacher;
+    }
+    return '';
+  }
+  return '';
+}
+
+function listWorkflowActions(workflow) {
+  if (!workflow || !workflow.id) {
+    return [];
+  }
+  if (workflow.status === 'final') {
+    return [];
+  }
+  if (workflow.role === 'student') {
+    const actions = [];
+    if (workflow.status !== 'submitted') {
+      actions.push({ action: 'submit', primary: true });
+    }
+    if (workflow.status === 'reviewed') {
+      actions.push({ action: 'mark_final', primary: false });
+    }
+    return actions;
+  }
+  if (workflow.role === 'teacher') {
+    return [
+      { action: 'return_review', primary: true }
+    ];
+  }
+  return [];
+}
+
+function getWorkflowActionLabel(copy, action) {
+  if (action === 'submit') {
+    return copy.workflowActionSubmit;
+  }
+  if (action === 'return_review') {
+    return copy.workflowActionReturnReview;
+  }
+  if (action === 'mark_final') {
+    return copy.workflowActionMarkFinal;
+  }
+  return action;
+}
+
+function getWorkflowActorLabel(copy, event) {
+  const email = normalizeEmailValue(event?.actorEmail);
+  if (email) {
+    return email;
+  }
+  if (typeof event?.actorName === 'string' && event.actorName.trim()) {
+    return event.actorName.trim();
+  }
+  return copy.workflowActorUnknown;
+}
+
+function getWorkflowEventActorDisplay(copy, event) {
+  const email = normalizeEmailValue(event?.actorEmail);
+  if (email) {
+    return email;
+  }
+  return getWorkflowActorLabel(copy, event);
+}
+
+function getWorkflowEventTargetEmail(workflow, event) {
+  const ownerEmail = normalizeEmailValue(workflow?.ownerEmail);
+  const partnerEmail = normalizeEmailValue(workflow?.partnerEmail);
+  const actorEmail = normalizeEmailValue(event?.actorEmail);
+  if (!ownerEmail && !partnerEmail) {
+    return '';
+  }
+  if (actorEmail) {
+    if (ownerEmail && actorEmail === ownerEmail) {
+      return partnerEmail;
+    }
+    if (partnerEmail && actorEmail === partnerEmail) {
+      return ownerEmail;
+    }
+  }
+  return partnerEmail || ownerEmail;
+}
+
+function getWorkflowEventTitle(copy, workflow, event) {
+  const actor = getWorkflowEventActorDisplay(copy, event);
+  const action = getWorkflowEventLabel(copy, event?.action);
+  const status = getWorkflowStatusLabel(copy, event?.status);
+  const targetEmail = getWorkflowEventTargetEmail(workflow, event);
+  if (targetEmail && event?.action !== 'mark_final') {
+    return `${actor} ${action} ${copy.workflowEventTo} ${targetEmail} · ${status}`;
+  }
+  return `${actor} ${action} · ${status}`;
+}
+
+function mergeDocumentFromServer(documentPayload) {
+  const normalized = normalizeDocumentEntries([documentPayload])[0];
+  if (!normalized) {
+    return null;
+  }
+  const index = state.documents.findIndex((doc) => doc.id === normalized.id);
+  if (index === -1) {
+    state.documents.unshift(normalized);
+  } else {
+    state.documents[index] = normalized;
+  }
+  if (state.documentId === normalized.id) {
+    applyDocumentToState(normalized);
+    if (documentTitleInput && documentTitleInput.value !== state.title) {
+      documentTitleInput.value = state.title;
+    }
+    composerInput.value = state.text;
+    renderPreview();
+    renderCorrections();
+    renderVocab();
+    renderQuestions();
+    hydrateProofreadFromDocument(normalized, { reset: false });
+    hydrateShareFromDocument(normalized);
+    updateDocumentSaveControls();
+  }
+  saveDocumentsToStorage({ syncServer: false });
+  if (authState.authenticated) {
+    clearWorkspaceSyncQueue();
+    scheduleWorkspaceSync({ immediate: true });
+  }
+  renderDocumentList();
+  return normalized;
+}
+
+async function handleWorkflowTransition(action) {
+  const copy = i18n[state.language];
+  if (!WORKFLOW_TRANSITION_ACTIONS.has(action)) {
+    return;
+  }
+  if (!authState.authenticated) {
+    shareState.error = copy.shareRequiresAuth;
+    shareState.message = '';
+    renderSharePanel();
+    return;
+  }
+  const activeDocument = getActiveDocumentFromState();
+  const workflow = normalizeDocumentWorkflow(activeDocument?.workflow || state.workflow);
+  if (!workflow || !workflow.id) {
+    shareState.error = copy.workflowStartError;
+    shareState.message = '';
+    renderSharePanel();
+    return;
+  }
+  shareState.sending = true;
+  shareState.error = '';
+  shareState.message = '';
+  renderSharePanel();
+  try {
+    const result = await requestWorkflowTransition(action, buildSharePayload());
+    if (result?.document) {
+      mergeDocumentFromServer(result.document);
+    }
+    await refreshWorkspaceFromServer().catch(() => {});
+    shareState.message = copy.workflowTransitionSuccess;
+    shareState.error = '';
+    shareState.lastSharedAt = new Date();
+  } catch (error) {
+    shareState.error = error?.message || copy.workflowTransitionError;
+    shareState.message = '';
+  } finally {
+    shareState.sending = false;
+    renderSharePanel();
+  }
+}
+
 function renderSharePanel() {
   const copy = i18n[state.language];
-  shareTitle.textContent = copy.shareTitle;
-  shareSubtitle.textContent = copy.shareSubtitle;
+  const activeDocument = getActiveDocumentFromState();
+  const workflow = normalizeDocumentWorkflow(activeDocument?.workflow || state.workflow);
+  const hasWorkflow = Boolean(workflow?.id);
+  const isTeacherWorkflowRole = workflow?.role === 'teacher';
+  const hasSharedOrigin = Boolean(
+    activeDocument?.workflow
+    || activeDocument?.sharedByUserId
+    || activeDocument?.sharedByEmail
+    || activeDocument?.sharedSourceId
+  );
+  const showShareForm = !hasSharedOrigin && !isTeacherWorkflowRole;
+  shareTitle.textContent = hasWorkflow ? copy.workflowPanelTitle : copy.shareTitle;
+  shareSubtitle.textContent = hasWorkflow ? copy.workflowPanelSubtitle : copy.shareSubtitle;
   shareUserLabel.textContent = copy.shareUserLabel;
   shareSend.textContent = copy.shareSend;
+  shareSend.hidden = isTeacherWorkflowRole;
   shareUserEmailInput.placeholder = copy.shareUserPlaceholder;
-  shareUserEmailInput.disabled = !authState.authenticated || shareState.sending;
-  shareSend.disabled = !authState.authenticated || shareState.sending;
+  shareUserEmailInput.disabled = !authState.authenticated || shareState.sending || !showShareForm;
+  shareSend.disabled = !authState.authenticated || shareState.sending || !showShareForm;
+  if (shareForm) {
+    shareForm.hidden = !showShareForm;
+  }
+
+  if (workflowCard) {
+    workflowCard.hidden = !hasWorkflow;
+  }
+  if (workflowActions) {
+    workflowActions.replaceChildren();
+  }
+  if (workflowHistoryList) {
+    workflowHistoryList.replaceChildren();
+  }
+  if (hasWorkflow && workflowRoleLabel && workflowRoleValue && workflowPartnerLabel && workflowPartnerValue
+    && workflowStatusLabel && workflowStatusValue && workflowUpdatedLabel && workflowUpdatedValue
+    && workflowActions && workflowHistoryTitle && workflowHistoryList) {
+    workflowRoleLabel.textContent = copy.workflowRoleLabel;
+    workflowPartnerLabel.textContent = copy.workflowPartnerLabel;
+    workflowStatusLabel.textContent = copy.workflowStatusLabel;
+    workflowUpdatedLabel.textContent = copy.workflowUpdatedLabel;
+    workflowHistoryTitle.textContent = copy.workflowHistoryTitle;
+    workflowRoleValue.textContent = getWorkflowRoleLabel(copy, workflow.role);
+    workflowPartnerValue.textContent = workflow.partnerName || workflow.partnerEmail || '-';
+    workflowStatusValue.textContent = getWorkflowStatusLabel(copy, workflow.status);
+    workflowUpdatedValue.textContent = Number.isFinite(workflow.lastTransitionAt)
+      ? formatShareTimestamp(new Date(workflow.lastTransitionAt))
+      : '-';
+
+    listWorkflowActions(workflow).forEach((entry) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = entry.primary ? 'primary' : 'ghost';
+      button.textContent = getWorkflowActionLabel(copy, entry.action);
+      button.disabled = !authState.authenticated || shareState.sending;
+      button.addEventListener('click', () => {
+        void handleWorkflowTransition(entry.action);
+      });
+      workflowActions.appendChild(button);
+    });
+
+    const entries = Array.isArray(workflow.events) ? workflow.events.slice(-6).reverse() : [];
+    if (!entries.length) {
+      const empty = document.createElement('div');
+      empty.className = 'workflow-history-empty';
+      empty.textContent = copy.workflowNoHistory;
+      workflowHistoryList.appendChild(empty);
+    } else {
+      entries.forEach((entry) => {
+        const card = document.createElement('div');
+        card.className = 'workflow-event';
+        const title = document.createElement('div');
+        title.className = 'workflow-event-title';
+        title.textContent = getWorkflowEventTitle(copy, workflow, entry);
+        const meta = document.createElement('div');
+        meta.className = 'workflow-event-meta';
+        const actor = getWorkflowActorLabel(copy, entry);
+        const timestamp = Number.isFinite(entry.createdAt)
+          ? formatShareTimestamp(new Date(entry.createdAt))
+          : '';
+        meta.textContent = timestamp ? `${actor} · ${timestamp}` : actor;
+        card.appendChild(title);
+        card.appendChild(meta);
+        workflowHistoryList.appendChild(card);
+      });
+    }
+  }
 
   let statusText = shareState.error || shareState.message || '';
   if (!statusText && !authState.authenticated) {
     statusText = copy.shareRequiresAuth;
+  }
+  if (!statusText && hasWorkflow) {
+    statusText = getWorkflowHint(copy, workflow);
+  }
+  if (!hasWorkflow && workflowHistoryList && !workflowHistoryList.children.length) {
+    const empty = document.createElement('div');
+    empty.className = 'workflow-history-empty';
+    empty.textContent = copy.workflowNoHistory;
+    workflowHistoryList.appendChild(empty);
   }
   if (!statusText && shareState.lastSharedAt instanceof Date) {
     const formatted = formatShareTimestamp(shareState.lastSharedAt);
@@ -2301,19 +3095,47 @@ function renderSharePanel() {
 }
 
 async function requestShareWithGoogleUser(recipientEmail, documentPayload) {
+  const body = {
+    recipientEmail,
+    sourceDocumentId: documentPayload?.id || state.documentId || '',
+    document: documentPayload
+  };
   const response = await fetch(SHARE_USER_API_ENDPOINT, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await safeParseJson(response);
+  if (!response.ok) {
+    let message = i18n[state.language].shareError;
+    if (data && typeof data.error === 'string' && data.error.trim()) {
+      message = data.error.trim();
+    } else {
+      const fallback = await response.text();
+      if (fallback && fallback.trim()) {
+        message = fallback.trim();
+      }
+    }
+    throw new Error(`${message}`);
+  }
+  return data;
+}
+
+async function requestWorkflowTransition(action, documentPayload) {
+  const response = await fetch(WORKFLOW_TRANSITION_API_ENDPOINT, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      recipientEmail,
+      action,
       sourceDocumentId: state.documentId,
       document: documentPayload
     })
   });
   const data = await safeParseJson(response);
   if (!response.ok) {
-    throw new Error(data?.error || i18n[state.language].shareError);
+    throw new Error(data?.error || i18n[state.language].workflowTransitionError);
   }
   return data;
 }
@@ -2343,40 +3165,112 @@ function formatDocumentUpdatedAt(doc, locale) {
   }
 }
 
-function buildDocumentOptionLabel(doc, copy, locale) {
+function buildDocumentListMeta(doc, copy, locale) {
   const title = buildDocumentLabel(doc, copy);
+  const workflow = normalizeDocumentWorkflow(doc.workflow);
+  const workflowStatus = workflow ? getWorkflowStatusLabel(copy, workflow.status) : '';
   const updatedAt = formatDocumentUpdatedAt(doc, locale);
-  if (!updatedAt) {
-    return title;
+  const parts = [title];
+  if (workflowStatus) {
+    parts.push(workflowStatus);
   }
-  return `${title} — ${updatedAt}`;
+  if (updatedAt) {
+    parts.push(updatedAt);
+  }
+  return parts.join(' · ');
 }
 
-function renderDocumentSelect() {
-  if (!documentSelect) {
+function buildDocumentListRow(doc, copy, locale) {
+  const title = buildDocumentLabel(doc, copy);
+  const row = document.createElement('div');
+  row.className = 'document-row';
+  row.setAttribute('role', 'button');
+  row.tabIndex = 0;
+  row.dataset.documentId = doc.id;
+  row.setAttribute('aria-label', `${copy.documentDrawerTitle}: ${title}`);
+  const isActive = doc.id === state.documentId;
+  row.setAttribute('aria-current', isActive ? 'true' : 'false');
+  row.classList.toggle('is-active', isActive);
+
+  const content = document.createElement('div');
+  content.className = 'document-row-content';
+
+  const titleElement = document.createElement('div');
+  titleElement.className = 'document-row-title';
+  titleElement.textContent = title;
+  titleElement.title = title;
+
+  const meta = document.createElement('div');
+  meta.className = 'document-row-meta';
+  meta.textContent = buildDocumentListMeta(doc, copy, locale);
+
+  content.appendChild(titleElement);
+  content.appendChild(meta);
+
+  const deleteButton = document.createElement('button');
+  deleteButton.type = 'button';
+  deleteButton.className = 'document-row-delete';
+  deleteButton.setAttribute('aria-label', `${copy.documentDelete}: ${title}`);
+  deleteButton.setAttribute('title', copy.documentDelete);
+  deleteButton.innerHTML = `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M9 3h6l1 2h4v2h-1.2l-1.1 13.2a2 2 0 0 1-2 1.8H8.3a2 2 0 0 1-2-1.8L5.2 7H4V5h4l1-2zm-1.6 4 1 12.1c.1.2.2.4.5.4h6.2c.3 0 .4-.2.5-.4L16.6 7H7.4zm3 2h2v8h-2V9zm-3 0h2v8h-2V9zm8 0h2v8h-2V9z"/>
+    </svg>
+  `;
+
+  row.appendChild(content);
+  row.appendChild(deleteButton);
+
+  row.addEventListener('click', () => {
+    if (doc.id === state.documentId) {
+      return;
+    }
+    const nextDocument = state.documents.find((entry) => entry.id === doc.id);
+    if (nextDocument) {
+      setActiveDocument(nextDocument);
+    }
+  });
+
+  row.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') {
+      return;
+    }
+    event.preventDefault();
+    row.click();
+  });
+
+  deleteButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const confirmMessage = i18n[state.language].documentDeleteConfirm;
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+    deleteDocumentById(doc.id);
+  });
+
+  return row;
+}
+
+function renderDocumentList() {
+  if (!documentsList) {
     return;
   }
   const copy = i18n[state.language];
   const locale = state.language === 'ja' ? 'ja-JP' : 'en-US';
-  documentSelect.replaceChildren();
+  documentsList.replaceChildren();
+
   if (!state.documents.length) {
-    const option = document.createElement('option');
-    option.value = '';
-    option.textContent = copy.documentSelectPlaceholder;
-    documentSelect.appendChild(option);
-    documentSelect.disabled = true;
+    const empty = document.createElement('div');
+    empty.className = 'document-list-empty';
+    empty.textContent = copy.documentListEmpty;
+    documentsList.appendChild(empty);
     return;
   }
-  documentSelect.disabled = false;
+
   state.documents.forEach((doc) => {
-    const option = document.createElement('option');
-    option.value = doc.id;
-    option.textContent = buildDocumentOptionLabel(doc, copy, locale);
-    documentSelect.appendChild(option);
+    documentsList.appendChild(buildDocumentListRow(doc, copy, locale));
   });
-  if (state.documentId) {
-    documentSelect.value = state.documentId;
-  }
 }
 
 function renderDocumentControls() {
@@ -2384,25 +3278,28 @@ function renderDocumentControls() {
   if (documentTitleLabel) {
     documentTitleLabel.textContent = copy.documentTitleLabel;
   }
-  if (documentSelectLabel) {
-    documentSelectLabel.textContent = copy.documentSelectLabel;
+  if (documentsDrawerTitle) {
+    documentsDrawerTitle.textContent = copy.documentDrawerTitle;
+  }
+  if (documentsDrawerSubtitle) {
+    documentsDrawerSubtitle.textContent = copy.documentDrawerSubtitle;
   }
   if (documentTitleInput) {
     documentTitleInput.placeholder = copy.documentTitlePlaceholder;
     if (documentTitleInput.value !== state.title) {
       documentTitleInput.value = state.title;
     }
+    documentTitleInput.readOnly = isActiveDocumentSavedState();
+    documentTitleInput.classList.toggle('is-read-only', isActiveDocumentSavedState());
   }
   if (documentSave) {
-    documentSave.textContent = copy.documentSave;
+    documentSave.textContent = isActiveDocumentSavedState() ? copy.documentSaved : copy.documentSave;
+    documentSave.disabled = isActiveDocumentSavedState();
   }
   if (documentNew) {
     documentNew.textContent = copy.documentNew;
   }
-  if (documentDelete) {
-    documentDelete.textContent = copy.documentDelete;
-  }
-  renderDocumentSelect();
+  renderDocumentList();
 }
 
 function buildVocabCell(text) {
@@ -2419,6 +3316,10 @@ function syncPanelToggle(panel, body, button, copy) {
   const isCollapsed = panel.classList.contains('is-collapsed');
   body.setAttribute('aria-hidden', String(isCollapsed));
   button.setAttribute('aria-expanded', String(!isCollapsed));
+  if (panel === documentsDrawer) {
+    button.textContent = isCollapsed ? '+' : '−';
+    return;
+  }
   button.textContent = isCollapsed ? copy.expand : copy.collapse;
 }
 
@@ -2427,6 +3328,9 @@ function setPanelCollapsed(panel, body, button, collapsed) {
     return;
   }
   panel.classList.toggle('is-collapsed', collapsed);
+  if (panel === documentsDrawer && app) {
+    app.classList.toggle('document-drawer-collapsed', collapsed);
+  }
   syncPanelToggle(panel, body, button, i18n[state.language]);
 }
 
@@ -2434,6 +3338,7 @@ function renderUI() {
   const copy = i18n[state.language];
   const isReadingMode = state.mode === 'read';
   const isCorrectionsMode = state.mode === 'corrections';
+  const isTeacherWorkflow = isTeacherWorkflowWorkflow(state.workflow);
 
   document.documentElement.lang = state.language;
 
@@ -2463,6 +3368,7 @@ function renderUI() {
   syncPanelToggle(vocabPanel, vocabBody, vocabCollapse, copy);
   syncPanelToggle(questionsPanel, questionsBody, questionsCollapse, copy);
   syncPanelToggle(sharePanel, shareBody, shareCollapse, copy);
+  syncPanelToggle(documentsDrawer, documentsDrawerBody, documentsDrawerToggle, copy);
   clearVocab.textContent = copy.clear;
   tooltipAdd.textContent = copy.addToVocab;
   selectionTitle.textContent = copy.selectionTitle;
@@ -2482,7 +3388,7 @@ function renderUI() {
   questionsTitle.textContent = copy.questionsTitle;
   questionsSubtitle.textContent = copy.questionsSubtitle;
   composerInput.placeholder = copy.editorPlaceholder;
-  composerInput.readOnly = state.mode === 'read';
+  composerInput.readOnly = state.mode === 'read' || (isTeacherWorkflow && state.mode === 'edit');
   if (correctionsPanel) {
     correctionsPanel.hidden = !isCorrectionsMode;
   }
@@ -2778,23 +3684,18 @@ function clearActiveHover() {
 function bindEvents() {
   documentTitleInput?.addEventListener('input', (event) => {
     state.title = event.target.value;
+    setActiveDocumentSavedState(false);
+    updateDocumentSaveControls();
     persistActiveDocument({ updateList: true });
-  });
-
-  documentSelect?.addEventListener('change', (event) => {
-    const target = event.target;
-    if (!(target instanceof HTMLSelectElement)) {
-      return;
-    }
-    const nextId = target.value;
-    const nextDocument = state.documents.find((doc) => doc.id === nextId);
-    if (nextDocument) {
-      setActiveDocument(nextDocument);
-    }
   });
 
   documentSave?.addEventListener('click', () => {
-    persistActiveDocument({ updateList: true });
+    persistActiveDocument({ updateList: true, markSaved: true });
+  });
+
+  documentsDrawerToggle?.addEventListener('click', () => {
+    const nextCollapsed = !documentsDrawer?.classList.contains('is-collapsed');
+    setPanelCollapsed(documentsDrawer, documentsDrawerBody, documentsDrawerToggle, nextCollapsed);
   });
 
   documentNew?.addEventListener('click', () => {
@@ -2802,18 +3703,6 @@ function bindEvents() {
     state.documents.unshift(newDocument);
     saveDocumentsToStorage();
     setActiveDocument(newDocument);
-    documentTitleInput?.focus();
-  });
-
-  documentDelete?.addEventListener('click', () => {
-    if (!state.documentId) {
-      return;
-    }
-    const confirmMessage = i18n[state.language].documentDeleteConfirm;
-    if (!window.confirm(confirmMessage)) {
-      return;
-    }
-    deleteActiveDocument();
     documentTitleInput?.focus();
   });
 
@@ -2837,6 +3726,7 @@ function bindEvents() {
       authState.syncError = '';
       authState.lastSyncedAt = null;
       clearWorkspaceSyncQueue();
+      stopWorkspaceRefreshLoop();
     } catch (error) {
       authState.syncError = error?.message || i18n[state.language].authSyncError;
     } finally {
@@ -2869,6 +3759,8 @@ function bindEvents() {
 
   composerInput.addEventListener('input', (event) => {
     state.text = event.target.value;
+    setActiveDocumentSavedState(false);
+    updateDocumentSaveControls();
     if (state.mode !== 'corrections') {
       state.correctionsBaseText = state.text;
       pendingCorrectionResetOnInput = false;
@@ -2908,12 +3800,16 @@ function bindEvents() {
   });
 
   modeToggle.addEventListener('click', () => {
-    if (state.mode === 'edit') {
-      state.mode = 'read';
-    } else if (state.mode === 'read') {
-      state.mode = 'corrections';
+    if (isTeacherWorkflowWorkflow(state.workflow)) {
+      state.mode = state.mode === 'read' ? 'corrections' : 'read';
     } else {
-      state.mode = 'edit';
+      if (state.mode === 'edit') {
+        state.mode = 'read';
+      } else if (state.mode === 'read') {
+        state.mode = 'corrections';
+      } else {
+        state.mode = 'edit';
+      }
     }
 
     renderUI();
@@ -2974,7 +3870,11 @@ function bindEvents() {
     renderSharePanel();
 
     try {
-      await requestShareWithGoogleUser(recipientEmail, buildSharePayload());
+      const result = await requestShareWithGoogleUser(recipientEmail, buildSharePayload());
+      if (result?.senderDocument) {
+        mergeDocumentFromServer(result.senderDocument);
+      }
+      await refreshWorkspaceFromServer().catch(() => {});
       shareState.message = copy.shareSuccess;
       shareState.error = '';
       shareState.lastSharedAt = new Date();
@@ -3251,6 +4151,20 @@ function bindEvents() {
     clearActiveHover();
     hideTooltip();
     hideSelectionTooltip();
+  });
+
+  window.addEventListener('focus', () => {
+    if (authState.authenticated) {
+      runWorkspaceRefreshLoop();
+      void refreshWorkspaceFromServer().catch(() => {});
+    }
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && authState.authenticated) {
+      runWorkspaceRefreshLoop();
+      void refreshWorkspaceFromServer().catch(() => {});
+    }
   });
 }
 
