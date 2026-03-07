@@ -1455,7 +1455,11 @@ function mergeWorkspaceDocuments(localDocuments, remoteDocuments) {
       merged.set(doc.id, doc);
     }
   });
-  return sortDocumentsByCreatedAtDescending(Array.from(merged.values()));
+  return Array.from(merged.values()).sort((a, b) => {
+    const left = Number.isFinite(a?.updatedAt) ? a.updatedAt : 0;
+    const right = Number.isFinite(b?.updatedAt) ? b.updatedAt : 0;
+    return right - left;
+  });
 }
 
 function isBootstrapDocument(doc) {
@@ -2070,7 +2074,6 @@ function persistActiveDocument({
       createdAt: now,
       updatedAt: now
     });
-    sortDocumentsByCreatedAtDescending(state.documents);
   } else {
     const doc = state.documents[index];
     doc.title = state.title;
@@ -2112,8 +2115,6 @@ function setActiveDocument(doc, { resetProofread = false } = {}) {
   renderQuestions();
   hydrateProofreadFromDocument(doc, { reset: resetProofread });
   hydrateShareFromDocument(doc);
-  updateDocumentSaveControls();
-  renderUI();
   updateDocumentSaveControls();
   clearActiveHover();
   hideTooltip();
@@ -3152,8 +3153,8 @@ function buildDocumentLabel(doc, copy) {
   return title || copy.documentUntitled;
 }
 
-function formatDocumentCreatedAt(doc, locale) {
-  const timestamp = Number.isFinite(doc.createdAt) ? doc.createdAt : null;
+function formatDocumentUpdatedAt(doc, locale) {
+  const timestamp = Number.isFinite(doc.updatedAt) ? doc.updatedAt : null;
   if (!timestamp) {
     return '';
   }
@@ -3173,18 +3174,6 @@ function buildDocumentListMeta(doc, copy, locale) {
   if (workflowStatus) {
     parts.push(workflowStatus);
   }
-function buildDocumentListMeta(doc, copy, locale) {
-  const workflow = normalizeDocumentWorkflow(doc.workflow);
-  const workflowStatus = workflow ? getWorkflowStatusLabel(copy, workflow.status) : '';
-  const createdAt = formatDocumentCreatedAt(doc, locale);
-  const parts = [];
-  if (workflowStatus) {
-    parts.push(workflowStatus);
-  }
-  if (createdAt) {
-    parts.push(`Created: ${createdAt}`);
-  }
-  return parts.join('\n');
   if (updatedAt) {
     parts.push(updatedAt);
   }
@@ -3347,11 +3336,8 @@ function setPanelCollapsed(panel, body, button, collapsed) {
 
 function renderUI() {
   const copy = i18n[state.language];
-  enforceTeacherWorkflowMode();
   const isReadingMode = state.mode === 'read';
   const isCorrectionsMode = state.mode === 'corrections';
-  const isTeacherWorkflow = isTeacherWorkflowWorkflow(state.workflow);
-  const isSubmittedTeacherWorkflow = isTeacherWorkflow && state.workflow?.status === 'submitted';
   const isTeacherWorkflow = isTeacherWorkflowWorkflow(state.workflow);
 
   document.documentElement.lang = state.language;
@@ -3402,7 +3388,6 @@ function renderUI() {
   questionsTitle.textContent = copy.questionsTitle;
   questionsSubtitle.textContent = copy.questionsSubtitle;
   composerInput.placeholder = copy.editorPlaceholder;
-  composerInput.readOnly = state.mode === 'read' || (isSubmittedTeacherWorkflow && state.mode === 'edit');
   composerInput.readOnly = state.mode === 'read' || (isTeacherWorkflow && state.mode === 'edit');
   if (correctionsPanel) {
     correctionsPanel.hidden = !isCorrectionsMode;
@@ -3716,7 +3701,6 @@ function bindEvents() {
   documentNew?.addEventListener('click', () => {
     const newDocument = createDocument();
     state.documents.unshift(newDocument);
-    sortDocumentsByCreatedAtDescending(state.documents);
     saveDocumentsToStorage();
     setActiveDocument(newDocument);
     documentTitleInput?.focus();
@@ -3818,13 +3802,6 @@ function bindEvents() {
   modeToggle.addEventListener('click', () => {
     if (isTeacherWorkflowWorkflow(state.workflow)) {
       state.mode = state.mode === 'read' ? 'corrections' : 'read';
-      renderUI();
-      clearActiveHover();
-      hideTooltip();
-      hideSelectionTooltip();
-      return;
-    if (isTeacherWorkflowWorkflow(state.workflow)) {
-      state.mode = state.mode === 'read' ? 'corrections' : 'read';
     } else {
       if (state.mode === 'edit') {
         state.mode = 'read';
@@ -3835,7 +3812,6 @@ function bindEvents() {
       }
     }
 
-    state.mode = state.mode === 'edit' ? 'read' : 'edit';
     renderUI();
     clearActiveHover();
     hideTooltip();
