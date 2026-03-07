@@ -780,7 +780,7 @@ textarea#composer-input::placeholder {
 
 .vocab-row {
   display: grid;
-  grid-template-columns: 1.6fr 0.8fr 0.8fr 72px;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.95fr) minmax(0, 0.95fr) 84px;
   gap: 10px;
   align-items: start;
   padding: 10px 12px;
@@ -805,7 +805,7 @@ textarea#composer-input::placeholder {
   word-break: break-word;
 }
 
-.vocab-row .vocab-cell:nth-child(3) {
+.vocab-row:not(.vocab-head) .vocab-cell:nth-child(3) {
   font-family: 'Noto Serif JP', 'DM Serif Display', serif;
   font-size: 15px;
 }
@@ -814,15 +814,47 @@ textarea#composer-input::placeholder {
   text-align: right;
 }
 
-.vocab-delete {
-  align-self: center;
+.vocab-row.vocab-head .vocab-cell {
+  font-family: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vocab-head-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.vocab-row.vocab-head {
+  letter-spacing: 0.05em;
+}
+
+.vocab-action.vocab-add {
+  background: rgba(31, 157, 85, 0.12);
+  color: #1f9d55;
+}
+
+.vocab-action.vocab-add:hover {
+  background: rgba(31, 157, 85, 0.22);
+  color: #157b3f;
+}
+
+.vocab-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  align-items: center;
   justify-self: end;
+}
+
+.vocab-action {
   width: 28px;
   height: 28px;
   border: none;
   border-radius: 8px;
-  background: rgba(217, 95, 76, 0.12);
-  color: #d95f4c;
+  background: transparent;
+  color: inherit;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -830,16 +862,62 @@ textarea#composer-input::placeholder {
   cursor: pointer;
 }
 
-.vocab-delete svg {
+.vocab-action svg {
   width: 16px;
   height: 16px;
   fill: currentColor;
 }
 
+.vocab-action:hover {
+  transform: scale(1.02);
+}
+
+.vocab-delete {
+  background: rgba(217, 95, 76, 0.12);
+  color: #d95f4c;
+}
+
 .vocab-delete:hover {
   background: rgba(217, 95, 76, 0.22);
   color: #b54434;
-  transform: scale(1.02);
+}
+
+.vocab-edit {
+  background: rgba(88, 125, 196, 0.12);
+  color: #5f76c7;
+}
+
+.vocab-edit:hover {
+  background: rgba(88, 125, 196, 0.24);
+  color: #4d62b0;
+}
+
+.vocab-save {
+  background: rgba(31, 157, 85, 0.12);
+  color: #1f9d55;
+}
+
+.vocab-save:hover {
+  background: rgba(31, 157, 85, 0.22);
+  color: #157b3f;
+}
+
+.vocab-input {
+  width: 100%;
+  border: 1px solid rgba(30, 22, 20, 0.18);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 5px 8px;
+  font-family: inherit;
+}
+
+.vocab-input:focus {
+  outline: none;
+  border-color: rgba(217, 95, 76, 0.5);
+  box-shadow: 0 0 0 2px rgba(217, 95, 76, 0.12);
 }
 
 .vocab-card {
