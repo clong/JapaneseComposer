@@ -76,6 +76,40 @@ If the question is about Japanese language usage, briefly explain and include a 
 Respond in the same language as the question when possible; otherwise respond in English.
 `;
 
+const SYNTHETIC_DOCUMENT_SYSTEM_PROMPT = `System Prompt: JLPT-Level Synthetic Document Generator
+
+You are a Japanese-language writing tutor who creates original prose for learners.
+You will receive a list of target vocabulary words with a selected JLPT level and a writing category.
+
+Generate a single coherent yet interesting piece of Japanese text that:
+- matches the specified difficulty,
+- stylistically follows the specified category,
+- naturally incorporates every vocabulary item provided (at least once each), and
+- is about 2 to 3 minutes of reading time.
+
+Ensure the topic of the text is sufficiently random, such that newly generated documents
+would be very different in terms of their content.
+
+Keep the output to approximately 220 to 330 Japanese words
+to stay within the 2 to 3 minute reading window.
+
+Do not include inline kana annotations in the text (for example: 漢字（かんじ） or 漢字(かんじ)).
+If you need to show readings, leave them to the application's furigana rendering and do not add parenthetical readings.
+
+Do not include headings, notes, or instructions in your output.
+Return only the requested text.
+`;
+
+const SYNTHETIC_DIFFICULTIES = ['N5', 'N4', 'N3', 'N2', 'N1'];
+const SYNTHETIC_CATEGORIES = [
+  'News Article',
+  'Fiction Novel',
+  'Technical Writing',
+  'Poetry',
+  'Essay',
+  'Diary'
+];
+
 const debugEnabled = process.env.DEV_DEBUG === '1';
 const BASIC_AUTH_PASSWORD = process.env.BASIC_AUTH_PASSWORD || '';
 const BASIC_AUTH_REALM = process.env.BASIC_AUTH_REALM || 'Japanese Composer';
@@ -867,6 +901,125 @@ const server = http.createServer(async (req, res) => {
       return;
     }
   }
+
+  if (requestUrl.pathname === '/api/synthetic-document') {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      res.writeHead(501, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Missing OPENAI_API_KEY' }));
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const readingDifficulty = typeof body?.readingDifficulty === 'string'
+      ? body.readingDifficulty.trim()
+      : '';
+    const textCategory = typeof body?.textCategory === 'string'
+      ? body.textCategory.trim()
+      : '';
+    const vocabularyEntries = Array.isArray(body?.vocabulary)
+      ? body.vocabulary
+      : [];
+
+    const vocabulary = vocabularyEntries
+      .map((entry, index) => {
+        if (!entry || typeof entry !== 'object') {
+          return null;
+        }
+        const word = typeof entry.word === 'string' ? entry.word.trim() : '';
+        const reading = typeof entry.reading === 'string' ? entry.reading.trim() : '';
+        const meaning = typeof entry.meaning === 'string' ? entry.meaning.trim() : '';
+        const source = typeof entry.source === 'string' ? entry.source.trim() : '';
+        const sourceDocumentId = typeof entry.sourceDocumentId === 'string'
+          ? entry.sourceDocumentId.trim()
+          : '';
+        if (!word && !reading && !meaning) {
+          return null;
+        }
+        return {
+          id: String(index),
+          word,
+          reading,
+          meaning,
+          source,
+          sourceDocumentId
+        };
+      })
+      .filter(Boolean);
+
+    if (!vocabulary.length) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Missing vocabulary' }));
+      return;
+    }
+
+    const model = process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
+    const safeReadingDifficulty = SYNTHETIC_DIFFICULTIES.includes(readingDifficulty)
+      ? readingDifficulty
+      : SYNTHETIC_DIFFICULTIES[0];
+    const safeTextCategory = SYNTHETIC_CATEGORIES.includes(textCategory)
+      ? textCategory
+      : SYNTHETIC_CATEGORIES[0];
+
+    const vocabularyText = vocabulary
+      .map((item, index) => `${index + 1}. ${item.word} ${item.reading ? `(${item.reading})` : ''} — ${item.meaning}`)
+      .join('\n');
+
+    try {
+      const response = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          max_output_tokens: 850,
+          instructions: SYNTHETIC_DOCUMENT_SYSTEM_PROMPT,
+          input: [
+            `Reading difficulty: ${safeReadingDifficulty}`,
+            `Text category: ${safeTextCategory}`,
+            'Target vocabulary:',
+            vocabularyText
+          ].join('\n\n')
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        res.writeHead(response.status, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: data?.error?.message || 'Synthetic document generation failed' }));
+        return;
+      }
+
+      const output = extractOpenAiText(data);
+      if (!output) {
+        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Synthetic document generation failed' }));
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        output,
+        model,
+        readingDifficulty: safeReadingDifficulty,
+        textCategory: safeTextCategory
+      }));
+      return;
+    } catch (error) {
+      res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Synthetic document generation failed' }));
+      return;
+    }
+  }
+
   const requestPath = decodeURIComponent(requestUrl.pathname);
   const safePath = requestPath === '/' ? '/index.html' : requestPath;
   const filePath = path.join(distDir, safePath);
