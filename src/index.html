@@ -10,36 +10,46 @@
   <body>
     <div class="app" id="app">
       <header class="app-header">
-        <div class="brand">
-          <span class="brand-title" id="app-title">Japanese Composer</span>
-          <span class="brand-subtitle" id="app-subtitle">Journal workspace with furigana and vocab support</span>
-        </div>
-        <div class="controls">
-          <button class="chip" id="language-toggle" type="button" aria-pressed="false">
-            日本語 UI
-          </button>
-          <button class="chip" id="mode-toggle" type="button" aria-pressed="false">
-            Mode: Edit
-          </button>
-          <button class="chip" id="furigana-toggle" type="button" aria-pressed="true">
-            Furigana: On
-          </button>
-          <button class="chip" id="vocab-toggle" type="button" aria-pressed="true">
-            Vocab: On
-          </button>
-        </div>
-        <div class="account-controls">
-          <button class="ghost" id="auth-google" type="button">Sign in with Google</button>
-          <div class="account-user" id="auth-user" hidden>
-            <img class="account-avatar" id="auth-avatar" src="" alt="" referrerpolicy="no-referrer" />
-            <span class="account-name" id="auth-name"></span>
+        <div class="app-header-top">
+          <div class="brand">
+            <span class="brand-title" id="app-title">Japanese Composer</span>
+            <span class="brand-subtitle" id="app-subtitle">Journal workspace with furigana and vocab support</span>
           </div>
-          <button class="ghost" id="auth-logout" type="button" hidden>Sign out</button>
-          <div class="account-sync-status" id="auth-sync-status"></div>
+          <div class="controls">
+            <button class="chip" id="language-toggle" type="button" aria-pressed="false">
+              日本語 UI
+            </button>
+            <button class="chip" id="mode-toggle" type="button" aria-pressed="false">
+              Mode: Edit
+            </button>
+            <button class="chip" id="furigana-toggle" type="button" aria-pressed="true">
+              Furigana: On
+            </button>
+            <button class="chip" id="vocab-toggle" type="button" aria-pressed="true">
+              Vocab: On
+            </button>
+          </div>
+          <div class="account-controls">
+            <button class="ghost" id="auth-google" type="button">Sign in with Google</button>
+            <div class="account-user" id="auth-user" hidden>
+              <img class="account-avatar" id="auth-avatar" src="" alt="" referrerpolicy="no-referrer" />
+              <span class="account-name" id="auth-name"></span>
+            </div>
+            <button class="ghost" id="auth-logout" type="button" hidden>Sign out</button>
+            <div class="account-sync-status" id="auth-sync-status"></div>
+          </div>
+        </div>
+        <div class="page-nav">
+          <button class="chip" id="page-nav-compose" type="button" aria-pressed="true">
+            Compose
+          </button>
+          <button class="chip" id="page-nav-vocabulary" type="button" aria-pressed="false">
+            Vocabulary
+          </button>
         </div>
       </header>
 
-      <main class="app-main">
+      <main class="app-main page-view compose-page is-active" id="compose-page">
         <aside class="document-drawer panel is-open" id="documents-drawer">
           <div class="panel-header panel-header-actions">
             <div class="document-drawer-header-copy">
@@ -212,6 +222,87 @@
             </div>
           </section>
         </aside>
+      </main>
+
+      <main class="app-main page-view vocabulary-page" id="vocabulary-page">
+        <section class="panel vocabulary-panel">
+          <div class="panel-header">
+            <h2 id="vocabulary-page-title">Vocabulary</h2>
+            <p id="vocabulary-page-subtitle">Saved words from all your posts.</p>
+          </div>
+          <div class="synthetic-generator">
+            <div class="synthetic-controls">
+              <div class="synthetic-field" id="vocab-review-mode-field">
+                <label for="vocab-review-mode" id="vocab-review-mode-label">Review mode</label>
+                <select class="synthetic-select" id="vocab-review-mode" name="vocab-review-mode">
+                  <option value="synthetic">Synthetic document</option>
+                  <option value="flashcard">Flashcard review</option>
+                </select>
+              </div>
+              <div class="synthetic-field" id="synthetic-difficulty-field">
+                <label for="synthetic-difficulty" id="synthetic-difficulty-label">Reading difficulty</label>
+                <select class="synthetic-select" id="synthetic-difficulty" name="synthetic-difficulty">
+                  <option value="N5">N5</option>
+                  <option value="N4">N4</option>
+                  <option value="N3">N3</option>
+                  <option value="N2">N2</option>
+                  <option value="N1">N1</option>
+                </select>
+              </div>
+              <div class="synthetic-field" id="synthetic-category-field">
+                <label for="synthetic-category" id="synthetic-category-label">Text category</label>
+                <select class="synthetic-select" id="synthetic-category" name="synthetic-category">
+                  <option value="News Article">News Article</option>
+                  <option value="Fiction Novel">Fiction Novel</option>
+                  <option value="Technical Writing">Technical Writing</option>
+                  <option value="Poetry">Poetry</option>
+                  <option value="Essay">Essay</option>
+                  <option value="Diary">Diary</option>
+                </select>
+              </div>
+              <button class="primary synthetic-generate" id="synthetic-generate" type="button">Generate</button>
+            </div>
+            <div class="synthetic-status" id="synthetic-status" role="status" aria-live="polite"></div>
+          </div>
+          <div class="vocab-list vocabulary-list" id="all-vocab-list"></div>
+          <div class="synthetic-result-section">
+            <div class="synthetic-result-title" id="synthetic-result-title">Generated text</div>
+            <div id="synthetic-result" class="synthetic-result"></div>
+            <div id="flashcard-review" class="flashcard-review" hidden>
+              <div class="flashcard-review-header">
+                <div>
+                  <div class="flashcard-review-title" id="flashcard-review-title">Flashcard review</div>
+                  <div class="flashcard-review-subtitle" id="flashcard-review-subtitle"></div>
+                </div>
+                <button class="flashcard-exit" id="flashcard-exit" type="button" aria-label="Exit flashcard review">×</button>
+              </div>
+              <button class="primary flashcard-start" id="flashcard-start" type="button">Start review</button>
+              <div id="flashcard-card" class="flashcard-card" hidden>
+                <div class="flashcard-card-back flashcard-card-back-lower" aria-hidden="true"></div>
+                <div class="flashcard-card-back flashcard-card-back-upper" aria-hidden="true"></div>
+                <div class="flashcard-card-inner">
+                <div class="flashcard-meta-row">
+                    <div class="flashcard-progress" id="flashcard-progress"></div>
+                    <span class="flashcard-chip" id="flashcard-chip"></span>
+                  </div>
+                  <div class="flashcard-prompt-shell">
+                    <div class="flashcard-prompt-label" id="flashcard-prompt-label">Meaning</div>
+                    <div class="flashcard-prompt" id="flashcard-prompt"></div>
+                  </div>
+                  <form id="flashcard-answer-form" class="flashcard-answer-form" autocomplete="off">
+                    <label for="flashcard-answer" id="flashcard-answer-label" class="flashcard-answer-label">Type kana or kanji</label>
+                    <div class="flashcard-answer-row">
+                      <input class="flashcard-answer-input" id="flashcard-answer" type="text" />
+                      <button class="primary flashcard-check" id="flashcard-check" type="submit">Check</button>
+                    </div>
+                  </form>
+                  <div class="flashcard-feedback" id="flashcard-feedback" role="status" aria-live="polite"></div>
+                </div>
+              </div>
+              <div id="flashcard-summary" class="flashcard-summary" hidden></div>
+            </div>
+          </div>
+        </section>
       </main>
 
       <footer class="app-footer">

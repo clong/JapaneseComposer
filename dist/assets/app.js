@@ -6,6 +6,7 @@ const AUTH_SESSION_ENDPOINT = '/api/auth/session';
 const AUTH_GOOGLE_START_ENDPOINT = '/api/auth/google/start';
 const AUTH_LOGOUT_ENDPOINT = '/api/auth/logout';
 const WORKSPACE_ENDPOINT = '/api/workspace';
+const SYNTHETIC_DOCUMENT_ENDPOINT = '/api/synthetic-document';
 const vocabApiEnabled = typeof window !== 'undefined'
   && window.location
   && window.location.protocol !== 'file:';
@@ -67,7 +68,51 @@ const i18n = {
     appTitle: 'Japanese Composer',
     appSubtitle: 'Journal workspace with furigana and vocab support',
     editorTitle: 'Composer',
-    editorSubtitle: 'Write in English or Japanese — switch to Reading Mode for furigana and kanji details.',
+  editorSubtitle: 'Write in English or Japanese — switch to Reading Mode for furigana and kanji details.',
+    vocabularyTitle: 'Vocabulary',
+    vocabularySubtitle: 'Saved words from all your posts.',
+    pageCompose: 'Compose',
+    pageVocabulary: 'Vocabulary',
+    vocabPostTitle: 'Source post',
+    allVocabEmpty: 'No vocabulary found in saved posts.',
+    syntheticTitle: 'Synthetic document',
+    syntheticDifficultyLabel: 'Reading difficulty',
+    syntheticCategoryLabel: 'Text category',
+    reviewModeLabel: 'Review mode',
+    reviewModeSynthetic: 'Synthetic document',
+    reviewModeFlashcard: 'Flashcard review',
+    syntheticSelectLabel: 'Select',
+    syntheticGenerate: 'Generate',
+    syntheticGenerating: 'Generating synthetic document…',
+    syntheticNoSelection: 'Select at least one vocab item to generate.',
+    syntheticSelectCount: 'Selected',
+    flashcardReviewTitle: 'Flashcard review',
+    flashcardReviewSubtitle: 'Type the kana or kanji for this meaning.',
+    flashcardStart: 'Start review',
+    flashcardExitLabel: 'Exit',
+    flashcardDeckLabel: 'Deck Review',
+    flashcardMeaningLabel: 'Meaning',
+    flashcardAnswerLabel: 'Type kana or kanji',
+    flashcardSubmit: 'Check',
+    flashcardCorrect: 'Correct!',
+    flashcardIncorrect: 'Incorrect.',
+    flashcardIncorrectRetry: 'Incorrect. This word will appear again once.',
+    flashcardProgressLabel: 'Review progress',
+    flashcardCompleted: 'Review complete',
+    flashcardCompletedTitle: 'Review complete',
+    flashcardCorrectLabel: 'Correct',
+    flashcardMissedLabel: 'Missed',
+    flashcardScoreLabel: 'Score',
+    syntheticResultTitle: 'Generated text',
+    syntheticResultEmpty: 'Select vocab items and click Generate to create a synthetic document.',
+    syntheticRequestError: 'Failed to generate synthetic document.',
+    syntheticInvalidResponse: 'AI returned no synthetic text.',
+    syntheticCategoryNews: 'News Article',
+    syntheticCategoryFiction: 'Fiction Novel',
+    syntheticCategoryTechnical: 'Technical Writing',
+    syntheticCategoryPoetry: 'Poetry',
+    syntheticCategoryEssay: 'Essay',
+    syntheticCategoryDiary: 'Diary',
     editorPlaceholder: 'Write your journal entry here...',
     documentTitleLabel: 'Document title',
     documentTitlePlaceholder: 'Give this entry a title...',
@@ -202,6 +247,50 @@ const i18n = {
     appSubtitle: 'ふりがな・語彙リスト付きの作文ワークスペース',
     editorTitle: '作文',
     editorSubtitle: '英語でも日本語でも入力できます。読むモードでふりがなと漢字情報を表示。',
+    vocabularyTitle: '語彙',
+    vocabularySubtitle: '全投稿の保存済み語彙を表示します。',
+    pageCompose: '作文',
+    pageVocabulary: '語彙',
+    vocabPostTitle: '投稿元',
+    allVocabEmpty: '保存済み投稿に語彙がありません。',
+    syntheticTitle: '合成作文',
+    syntheticDifficultyLabel: '難易度',
+    syntheticCategoryLabel: 'カテゴリ',
+    reviewModeLabel: '復習モード',
+    reviewModeSynthetic: '合成作文',
+    reviewModeFlashcard: 'フラッシュカード復習',
+    syntheticSelectLabel: '選択',
+    syntheticGenerate: '生成',
+    syntheticGenerating: '合成作文を生成中…',
+    syntheticNoSelection: '語彙を1つ以上選択してください。',
+    syntheticSelectCount: '選択数',
+    flashcardReviewTitle: 'フラッシュカード復習',
+    flashcardReviewSubtitle: '英語の意味を読んで、かなまたは漢字を入力してください。',
+    flashcardStart: '復習開始',
+    flashcardExitLabel: '終了',
+    flashcardDeckLabel: 'デッキ復習',
+    flashcardMeaningLabel: '意味',
+    flashcardAnswerLabel: 'かな/漢字を入力',
+    flashcardSubmit: 'チェック',
+    flashcardCorrect: '正解！',
+    flashcardIncorrect: '不正解。',
+    flashcardIncorrectRetry: '不正解です。あとで再出題します。',
+    flashcardProgressLabel: '進捗',
+    flashcardCompleted: '復習完了',
+    flashcardCompletedTitle: '復習結果',
+    flashcardCorrectLabel: '正解',
+    flashcardMissedLabel: '未クリア',
+    flashcardScoreLabel: 'スコア',
+    syntheticResultTitle: '生成結果',
+    syntheticResultEmpty: '語彙を選択して生成を押すと結果が表示されます。',
+    syntheticRequestError: '合成作文の生成に失敗しました。',
+    syntheticInvalidResponse: 'AIから本文を受け取れませんでした。',
+    syntheticCategoryNews: 'ニュース記事',
+    syntheticCategoryFiction: '小説',
+    syntheticCategoryTechnical: '解説記事',
+    syntheticCategoryPoetry: '詩',
+    syntheticCategoryEssay: '小論文',
+    syntheticCategoryDiary: '日記',
     editorPlaceholder: 'ここに日記を書いてください…',
     documentTitleLabel: 'タイトル',
     documentTitlePlaceholder: 'この作文のタイトルを入力…',
@@ -340,12 +429,49 @@ const state = {
   text: '',
   showFurigana: true,
   showVocab: true,
+  activePage: 'compose',
   language: 'en',
   mode: 'edit',
   vocab: [],
   questions: [],
   correctionsBaseText: '',
   workflow: null
+};
+
+const SYNTHETIC_DIFFICULTIES = ['N5', 'N4', 'N3', 'N2', 'N1'];
+const SYNTHETIC_CATEGORIES = [
+  { value: 'News Article', copyKey: 'syntheticCategoryNews' },
+  { value: 'Fiction Novel', copyKey: 'syntheticCategoryFiction' },
+  { value: 'Technical Writing', copyKey: 'syntheticCategoryTechnical' },
+  { value: 'Poetry', copyKey: 'syntheticCategoryPoetry' },
+  { value: 'Essay', copyKey: 'syntheticCategoryEssay' },
+  { value: 'Diary', copyKey: 'syntheticCategoryDiary' }
+];
+const FLASHCARD_MODES = {
+  synthetic: 'synthetic',
+  flashcard: 'flashcard'
+};
+
+const syntheticDocumentState = {
+  difficulty: SYNTHETIC_DIFFICULTIES[0],
+  category: SYNTHETIC_CATEGORIES[0].value,
+  selectedVocabularyIds: new Set(),
+  status: 'idle',
+  text: '',
+  error: ''
+};
+
+const flashcardReviewState = {
+  mode: FLASHCARD_MODES.synthetic,
+  phase: 'idle',
+  selectedCount: 0,
+  deck: [],
+  currentCard: null,
+  correct: [],
+  missed: [],
+  feedbackMessage: '',
+  feedbackType: '',
+  inputLocked: false
 };
 
 const proofreadState = {
@@ -386,6 +512,7 @@ let workspaceRefreshTimer = null;
 let workspaceRefreshInFlight = false;
 let workspaceHydrating = false;
 let workspaceDeletedDocumentIds = new Set();
+let flashcardAdvanceTimer = null;
 
 function enqueueVocabApiTask(task) {
   vocabSaveQueue = vocabSaveQueue
@@ -460,6 +587,432 @@ const proofreadSubtitle = document.querySelector('#proofread-subtitle');
 const proofreadButton = document.querySelector('#proofread-button');
 const proofreadMeta = document.querySelector('#proofread-meta');
 const proofreadResult = document.querySelector('#proofread-result');
+const composePage = document.querySelector('#compose-page');
+const vocabularyPage = document.querySelector('#vocabulary-page');
+const pageNavCompose = document.querySelector('#page-nav-compose');
+const pageNavVocabulary = document.querySelector('#page-nav-vocabulary');
+const allVocabList = document.querySelector('#all-vocab-list');
+const allVocabTitle = document.querySelector('#vocabulary-page-title');
+const allVocabSubtitle = document.querySelector('#vocabulary-page-subtitle');
+const syntheticDifficultySelect = document.querySelector('#synthetic-difficulty');
+const syntheticCategorySelect = document.querySelector('#synthetic-category');
+const vocabReviewModeSelect = document.querySelector('#vocab-review-mode');
+const vocabReviewModeLabel = document.querySelector('#vocab-review-mode-label');
+const syntheticDifficultyField = document.querySelector('#synthetic-difficulty-field');
+const syntheticCategoryField = document.querySelector('#synthetic-category-field');
+const syntheticDifficultyLabel = document.querySelector('#synthetic-difficulty-label');
+const syntheticCategoryLabel = document.querySelector('#synthetic-category-label');
+const syntheticGenerateButton = document.querySelector('#synthetic-generate');
+const syntheticStatus = document.querySelector('#synthetic-status');
+const syntheticResultTitle = document.querySelector('#synthetic-result-title');
+const syntheticResult = document.querySelector('#synthetic-result');
+const flashcardReview = document.querySelector('#flashcard-review');
+const flashcardReviewTitle = document.querySelector('#flashcard-review-title');
+const flashcardReviewSubtitle = document.querySelector('#flashcard-review-subtitle');
+const flashcardExit = document.querySelector('#flashcard-exit');
+const flashcardStart = document.querySelector('#flashcard-start');
+const flashcardCard = document.querySelector('#flashcard-card');
+const flashcardProgress = document.querySelector('#flashcard-progress');
+const flashcardDeckChip = document.querySelector('#flashcard-chip');
+const flashcardPromptLabel = document.querySelector('#flashcard-prompt-label');
+const flashcardPrompt = document.querySelector('#flashcard-prompt');
+const flashcardAnswerForm = document.querySelector('#flashcard-answer-form');
+const flashcardAnswerLabel = document.querySelector('#flashcard-answer-label');
+const flashcardAnswer = document.querySelector('#flashcard-answer');
+const flashcardCheck = document.querySelector('#flashcard-check');
+const flashcardFeedback = document.querySelector('#flashcard-feedback');
+const flashcardSummary = document.querySelector('#flashcard-summary');
+
+function normalizeFlashcardInput(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/\s+/g, '');
+}
+
+function clearFlashcardAdvanceTimer() {
+  if (flashcardAdvanceTimer) {
+    clearTimeout(flashcardAdvanceTimer);
+    flashcardAdvanceTimer = null;
+  }
+}
+
+function shuffleDeck(items) {
+  const deck = Array.isArray(items) ? items.slice() : [];
+  for (let i = deck.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const temp = deck[i];
+    deck[i] = deck[j];
+    deck[j] = temp;
+  }
+  return deck;
+}
+
+function buildFlashcardDeck(entries) {
+  return shuffleDeck(entries.map((entry, index) => ({
+    ...entry,
+    reviewId: entry.syntheticId || `${entry.word}|${entry.reading}|${entry.meaning}|${index}`,
+    attempts: 0
+  })));
+}
+
+function resetFlashcardReviewState() {
+  clearFlashcardAdvanceTimer();
+  flashcardReviewState.phase = 'idle';
+  flashcardReviewState.deck = [];
+  flashcardReviewState.currentCard = null;
+  flashcardReviewState.correct = [];
+  flashcardReviewState.missed = [];
+  flashcardReviewState.feedbackMessage = '';
+  flashcardReviewState.feedbackType = '';
+  flashcardReviewState.inputLocked = false;
+}
+
+function markRemainingCardsAsMissed() {
+  const missed = [];
+  if (flashcardReviewState.currentCard) {
+    missed.push(flashcardReviewState.currentCard);
+  }
+  if (Array.isArray(flashcardReviewState.deck) && flashcardReviewState.deck.length) {
+    missed.push(...flashcardReviewState.deck);
+  }
+  if (!missed.length) {
+    return;
+  }
+
+  const existingMissed = new Set(flashcardReviewState.missed.map((card) => card.reviewId));
+  missed.forEach((card) => {
+    const reviewId = card.reviewId || `${card.word}|${card.reading || ''}|${card.meaning || ''}`;
+    if (existingMissed.has(reviewId)) {
+      return;
+    }
+    flashcardReviewState.missed.push(card);
+    existingMissed.add(reviewId);
+  });
+}
+
+function finalizeFlashcardReview() {
+  if (flashcardReviewState.phase !== 'running') {
+    return;
+  }
+
+  clearFlashcardAdvanceTimer();
+  markRemainingCardsAsMissed();
+  flashcardReviewState.currentCard = null;
+  flashcardReviewState.deck = [];
+  flashcardReviewState.feedbackMessage = '';
+  flashcardReviewState.feedbackType = '';
+  flashcardReviewState.inputLocked = false;
+  flashcardReviewState.phase = 'complete';
+  if (flashcardAnswer) {
+    flashcardAnswer.value = '';
+    flashcardAnswer.disabled = true;
+  }
+  if (flashcardCheck) {
+    flashcardCheck.disabled = true;
+  }
+  if (flashcardCard) {
+    flashcardCard.classList.remove('flashcard-card-correct', 'flashcard-card-incorrect');
+  }
+  renderSyntheticGeneratorPanel();
+}
+
+function setFlashcardMode(nextMode) {
+  const safeMode = nextMode === FLASHCARD_MODES.flashcard ? FLASHCARD_MODES.flashcard : FLASHCARD_MODES.synthetic;
+  flashcardReviewState.mode = safeMode;
+  flashcardReviewState.selectedCount = 0;
+  resetFlashcardReviewState();
+  renderSyntheticGeneratorPanel();
+}
+
+function getFlashcardDisplayCards(entries) {
+  return entries.map((entry) => ({
+    ...entry,
+    attempts: 0,
+    reviewId: entry.syntheticId || `${entry.word}|${entry.reading}|${entry.meaning}`
+  }));
+}
+
+function isFlashcardAnswerCorrect(card, answer) {
+  const normalizedAnswer = normalizeFlashcardInput(answer);
+  if (!normalizedAnswer) {
+    return false;
+  }
+  const accepted = [];
+  if (card.word) {
+    accepted.push(card.word);
+  }
+  if (card.reading && card.reading !== card.word) {
+    accepted.push(card.reading);
+  }
+  if (!accepted.length) {
+    return false;
+  }
+  return accepted
+    .map((value) => normalizeFlashcardInput(value))
+    .some((value) => value === normalizedAnswer);
+}
+
+function requeueFlashcardForRetry(card) {
+  const deck = flashcardReviewState.deck;
+  if (!Array.isArray(deck) || !deck.length) {
+    deck.push(card);
+    return;
+  }
+  const nextIndex = deck.length === 1 ? 1 : Math.floor(Math.random() * (deck.length - 1)) + 1;
+  deck.splice(nextIndex, 0, card);
+}
+
+function renderFlashcardSummaryList(title, cards, copy) {
+  const block = document.createElement('div');
+  block.className = 'flashcard-summary-block';
+
+  const heading = document.createElement('h4');
+  heading.className = 'flashcard-summary-title';
+  heading.textContent = title;
+  block.appendChild(heading);
+
+  if (!cards.length) {
+    const empty = document.createElement('p');
+    empty.className = 'flashcard-summary-empty';
+    empty.textContent = copy.vocabEmpty;
+    block.appendChild(empty);
+    return block;
+  }
+
+  const list = document.createElement('ul');
+  list.className = 'flashcard-summary-list';
+  cards.forEach((card) => {
+    const item = document.createElement('li');
+    const wordText = card.word ? `${card.word}` : '';
+    const readingText = card.reading ? ` (${card.reading})` : '';
+    const meaningText = card.meaning ? ` — ${card.meaning}` : '';
+    item.textContent = `${wordText}${readingText}${meaningText}` || copy.vocabEmpty;
+    list.appendChild(item);
+  });
+  block.appendChild(list);
+  return block;
+}
+
+function moveToNextFlashcard() {
+  if (flashcardReviewState.phase !== 'running') {
+    return;
+  }
+  clearFlashcardAdvanceTimer();
+
+  if (!flashcardReviewState.deck.length) {
+    finalizeFlashcardReview();
+    return;
+  }
+
+  flashcardReviewState.currentCard = flashcardReviewState.deck.shift();
+  flashcardReviewState.feedbackMessage = '';
+  flashcardReviewState.feedbackType = '';
+  flashcardReviewState.inputLocked = false;
+  if (flashcardAnswer) {
+    flashcardAnswer.value = '';
+    flashcardAnswer.disabled = false;
+    requestAnimationFrame(() => {
+      flashcardAnswer.focus();
+    });
+  }
+  renderSyntheticGeneratorPanel();
+}
+
+function startFlashcardReview() {
+  const copy = i18n[state.language];
+  const selectedEntries = getSelectedSyntheticEntries();
+  if (!selectedEntries.length) {
+    flashcardReviewState.feedbackMessage = copy.syntheticNoSelection;
+    flashcardReviewState.feedbackType = 'error';
+    flashcardReviewState.phase = 'idle';
+    flashcardReviewState.currentCard = null;
+    renderSyntheticGeneratorPanel();
+    return;
+  }
+
+  flashcardReviewState.mode = FLASHCARD_MODES.flashcard;
+  flashcardReviewState.selectedCount = selectedEntries.length;
+  flashcardReviewState.deck = buildFlashcardDeck(getFlashcardDisplayCards(selectedEntries));
+  flashcardReviewState.correct = [];
+  flashcardReviewState.missed = [];
+  flashcardReviewState.feedbackMessage = '';
+  flashcardReviewState.feedbackType = '';
+  flashcardReviewState.phase = 'running';
+  if (flashcardSummary) {
+    flashcardSummary.hidden = true;
+  }
+  moveToNextFlashcard();
+}
+
+function handleFlashcardAnswerSubmission(rawAnswer) {
+  if (flashcardReviewState.phase !== 'running' || flashcardReviewState.inputLocked) {
+    return;
+  }
+  const card = flashcardReviewState.currentCard;
+  if (!card) {
+    return;
+  }
+  const copy = i18n[state.language];
+  const isCorrect = isFlashcardAnswerCorrect(card, rawAnswer);
+  flashcardReviewState.inputLocked = true;
+  if (flashcardAnswer) {
+    flashcardAnswer.disabled = true;
+  }
+  if (flashcardCheck) {
+    flashcardCheck.disabled = true;
+  }
+
+  if (isCorrect) {
+    flashcardReviewState.correct.push(card);
+    flashcardReviewState.feedbackMessage = copy.flashcardCorrect;
+    flashcardReviewState.feedbackType = 'correct';
+    if (flashcardCard) {
+      flashcardCard.classList.remove('flashcard-card-incorrect');
+      flashcardCard.classList.add('flashcard-card-correct');
+    }
+  } else {
+    card.attempts += 1;
+    if (card.attempts >= 2) {
+      flashcardReviewState.missed.push(card);
+      flashcardReviewState.feedbackMessage = copy.flashcardIncorrect;
+      flashcardReviewState.feedbackType = 'incorrect';
+      if (flashcardCard) {
+        flashcardCard.classList.remove('flashcard-card-correct');
+        flashcardCard.classList.add('flashcard-card-incorrect');
+      }
+    } else {
+      requeueFlashcardForRetry(card);
+      flashcardReviewState.feedbackMessage = copy.flashcardIncorrectRetry;
+      flashcardReviewState.feedbackType = 'incorrect';
+      if (flashcardCard) {
+        flashcardCard.classList.remove('flashcard-card-correct');
+        flashcardCard.classList.add('flashcard-card-incorrect');
+      }
+    }
+  }
+
+  flashcardReviewState.currentCard = null;
+  clearFlashcardAdvanceTimer();
+  flashcardAdvanceTimer = setTimeout(() => {
+    flashcardAdvanceTimer = null;
+    if (flashcardReviewState.phase !== 'running') {
+      return;
+    }
+    if (flashcardCard) {
+      flashcardCard.classList.remove('flashcard-card-correct', 'flashcard-card-incorrect');
+    }
+    moveToNextFlashcard();
+  }, 700);
+  renderSyntheticGeneratorPanel();
+}
+
+function renderFlashcardReview() {
+  if (!flashcardReview) {
+    return;
+  }
+  const copy = i18n[state.language];
+  const selectedCount = getSelectedSyntheticEntries().length;
+  const isFlashcardMode = flashcardReviewState.mode === FLASHCARD_MODES.flashcard;
+  const isRunning = flashcardReviewState.phase === 'running';
+  const isCompleted = flashcardReviewState.phase === 'complete';
+  const total = isCompleted ? flashcardReviewState.selectedCount : flashcardReviewState.selectedCount || selectedCount;
+  const remaining = flashcardReviewState.deck.length + (isRunning && flashcardReviewState.currentCard ? 1 : 0);
+  const progressCount = Math.max(0, total - remaining);
+
+  flashcardReview.hidden = !isFlashcardMode;
+
+  if (!isFlashcardMode) {
+    if (flashcardSummary) {
+      flashcardSummary.hidden = true;
+    }
+    if (flashcardCard) {
+      flashcardCard.hidden = true;
+    }
+    return;
+  }
+
+  if (flashcardReviewTitle) {
+    flashcardReviewTitle.textContent = copy.flashcardReviewTitle;
+  }
+  if (flashcardReviewSubtitle) {
+    flashcardReviewSubtitle.textContent = copy.flashcardReviewSubtitle;
+  }
+  if (flashcardExit) {
+    flashcardExit.hidden = !isFlashcardMode;
+    flashcardExit.setAttribute('aria-label', copy.flashcardExitLabel || 'Exit');
+    flashcardExit.title = copy.flashcardExitLabel || 'Exit';
+  }
+  if (flashcardStart) {
+    flashcardStart.textContent = copy.flashcardStart;
+    flashcardStart.hidden = isRunning;
+    flashcardStart.disabled = isRunning || !selectedCount;
+  }
+  if (flashcardDeckChip) {
+    flashcardDeckChip.textContent = copy.flashcardDeckLabel || 'Deck';
+  }
+  if (flashcardProgress) {
+    flashcardProgress.textContent = `${copy.flashcardProgressLabel}: ${progressCount}/${total || 0}`;
+  }
+  if (flashcardPromptLabel) {
+    flashcardPromptLabel.textContent = copy.flashcardMeaningLabel;
+  }
+  if (flashcardPrompt) {
+    flashcardPrompt.textContent = flashcardReviewState.currentCard?.meaning || '';
+  }
+  if (flashcardAnswerLabel) {
+    flashcardAnswerLabel.textContent = copy.flashcardAnswerLabel;
+  }
+  if (flashcardAnswer) {
+    flashcardAnswer.disabled = !isRunning || !flashcardReviewState.currentCard;
+    flashcardAnswer.setAttribute('aria-label', copy.flashcardAnswerLabel);
+  }
+  if (flashcardCheck) {
+    flashcardCheck.disabled = !isRunning || !flashcardReviewState.currentCard;
+  }
+  if (flashcardCard) {
+    flashcardCard.hidden = !isRunning || !flashcardReviewState.currentCard;
+  }
+  if (flashcardAnswerForm) {
+    flashcardAnswerForm.hidden = isRunning ? false : true;
+  }
+
+  if (flashcardFeedback) {
+    flashcardFeedback.textContent = flashcardReviewState.feedbackMessage || '';
+    flashcardFeedback.classList.remove('flashcard-feedback-correct', 'flashcard-feedback-incorrect');
+    if (flashcardReviewState.feedbackType === 'correct') {
+      flashcardFeedback.classList.add('flashcard-feedback-correct');
+    } else if (flashcardReviewState.feedbackType === 'incorrect') {
+      flashcardFeedback.classList.add('flashcard-feedback-incorrect');
+    }
+  }
+
+  if (flashcardSummary) {
+    flashcardSummary.hidden = !isCompleted;
+    if (!isCompleted) {
+      flashcardSummary.replaceChildren();
+      return;
+    }
+    flashcardSummary.replaceChildren();
+    const score = document.createElement('div');
+    score.className = 'flashcard-summary-score';
+    score.textContent = `${copy.flashcardScoreLabel}: ${flashcardReviewState.correct.length}/${total || 0}`;
+    const title = document.createElement('div');
+    title.className = 'flashcard-summary-title';
+    title.textContent = copy.flashcardCompletedTitle;
+
+    flashcardSummary.appendChild(title);
+    flashcardSummary.appendChild(score);
+    flashcardSummary.appendChild(
+      renderFlashcardSummaryList(copy.flashcardCorrectLabel, flashcardReviewState.correct, copy)
+    );
+    flashcardSummary.appendChild(
+      renderFlashcardSummaryList(copy.flashcardMissedLabel, flashcardReviewState.missed, copy)
+    );
+    flashcardStart.hidden = false;
+    flashcardStart.disabled = false;
+  }
+}
 
 const tooltip = document.querySelector('#tooltip');
 const tooltipWord = document.querySelector('#tooltip-word');
@@ -2130,6 +2683,7 @@ function persistActiveDocument({
   if (updateList) {
     renderDocumentList();
     updateDocumentSaveControls();
+    renderVocabularyPage();
   }
 }
 
@@ -2204,6 +2758,7 @@ function saveVocab({ persist = true } = {}) {
   setActiveDocumentSavedState(false);
   updateDocumentSaveControls();
   persistActiveDocument();
+  renderVocabularyPage();
   if (!persist) {
     return;
   }
@@ -2519,6 +3074,83 @@ function renderPreview() {
       preview.appendChild(document.createElement('br'));
     }
   });
+}
+
+async function renderSyntheticResultText(text, outputContainer = syntheticResult) {
+  if (!outputContainer) {
+    return;
+  }
+  const copy = i18n[state.language];
+  const normalizedText = normalizeLineBreaks(sanitizeSyntheticText(text));
+  const lines = normalizedText.split('\n');
+  const requestedLookups = [];
+
+  if (!normalizedText.trim()) {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'synthetic-result-empty';
+    placeholder.textContent = copy.syntheticResultEmpty;
+    outputContainer.appendChild(placeholder);
+    return;
+  }
+
+  lines.forEach((line, lineIndex) => {
+    const segments = getLineTokens(line);
+    if (!segments.length) {
+      if (lineIndex < lines.length - 1) {
+        outputContainer.appendChild(document.createElement('br'));
+      }
+      return;
+    }
+
+    segments.forEach((segment) => {
+      const raw = segment?.text ?? '';
+      if (!raw) {
+        return;
+      }
+
+      if (hasKanji(raw)) {
+        const lookupWord = normalizeLookupWord(raw);
+        const info = segment.reading
+          ? { reading: segment.reading }
+          : lookupWord ? lookupCache.get(lookupWord) : null;
+        if (!segment.reading && lookupWord && !lookupCache.has(lookupWord) && !pendingLookups.has(lookupWord)) {
+          ensureLookup(lookupWord);
+          const pending = pendingLookups.get(lookupWord);
+          if (pending) {
+            requestedLookups.push(pending);
+          }
+        }
+        outputContainer.appendChild(buildTokenElement(raw, info, lookupWord));
+      } else {
+        outputContainer.appendChild(document.createTextNode(raw));
+      }
+    });
+
+    if (lineIndex < lines.length - 1) {
+      outputContainer.appendChild(document.createElement('br'));
+    }
+  });
+
+  if (!requestedLookups.length) {
+    return;
+  }
+
+  try {
+    await Promise.allSettled(requestedLookups);
+    if (syntheticDocumentState.text === text) {
+      renderSyntheticGeneratorPanel();
+    }
+  } catch (error) {
+    // Ignore lookup errors for synthetic output.
+  }
+}
+
+function sanitizeSyntheticText(text) {
+  if (typeof text !== 'string') {
+    return '';
+  }
+
+  return text.replace(/([一-龯々]+)\s*[\uff08(][\u3040-\u30FFー・゛゜\u3000\s]+[\uff09)]/g, '$1');
 }
 
 function normalizeLineBreaks(text) {
@@ -2912,6 +3544,328 @@ function renderVocab() {
   });
 
   vocabList.appendChild(table);
+}
+
+function getAllSavedVocabularyEntries() {
+  const copy = i18n[state.language];
+  const entries = (state.documents || [])
+    .filter((doc) => doc && Array.isArray(doc.vocab) && doc.vocab.length > 0)
+    .flatMap((doc) => {
+      const postTitle = buildDocumentLabel(doc, copy);
+      const entries = normalizeVocabEntries(Array.isArray(doc.vocab) ? doc.vocab : []);
+      return entries.map((entry, index) => ({
+        ...entry,
+        postTitle,
+        documentId: doc.id,
+        syntheticId: buildSyntheticVocabId(doc.id, entry, index),
+      }));
+    });
+  syncSyntheticSelectionState(entries);
+  return entries;
+}
+
+function buildSyntheticVocabId(documentId, entry, index) {
+  const docId = typeof documentId === 'string' ? documentId : 'doc';
+  const word = typeof entry.word === 'string' ? entry.word : '';
+  const reading = typeof entry.reading === 'string' ? entry.reading : '';
+  const meaning = typeof entry.meaning === 'string' ? entry.meaning : '';
+  const addedAt = Number.isFinite(entry?.addedAt) ? Math.trunc(entry.addedAt) : 0;
+  return `${docId}|${index}|${addedAt}|${word}|${reading}|${meaning}`;
+}
+
+function syncSyntheticSelectionState(entries) {
+  if (!syntheticDocumentState.selectedVocabularyIds.size) {
+    return;
+  }
+  const validIds = new Set(entries.map((entry) => entry.syntheticId));
+  const nextIds = new Set(
+    Array.from(syntheticDocumentState.selectedVocabularyIds).filter((id) => validIds.has(id))
+  );
+  syntheticDocumentState.selectedVocabularyIds = nextIds;
+}
+
+function getSelectedSyntheticEntries() {
+  const entries = getAllSavedVocabularyEntries();
+  return entries.filter((entry) => syntheticDocumentState.selectedVocabularyIds.has(entry.syntheticId));
+}
+
+function toggleSyntheticSelection(syntheticId, checked) {
+  if (!syntheticId) {
+    return;
+  }
+  if (checked) {
+    syntheticDocumentState.selectedVocabularyIds.add(syntheticId);
+  } else {
+    syntheticDocumentState.selectedVocabularyIds.delete(syntheticId);
+  }
+  renderSyntheticGeneratorPanel();
+}
+
+function renderVocabularyPage() {
+  if (!allVocabList) {
+    return;
+  }
+  const copy = i18n[state.language];
+  allVocabList.replaceChildren();
+
+  const entries = getAllSavedVocabularyEntries();
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'vocab-empty';
+    empty.textContent = copy.allVocabEmpty || copy.vocabEmpty;
+    allVocabList.appendChild(empty);
+    renderSyntheticGeneratorPanel();
+    return;
+  }
+
+  const table = document.createElement('div');
+  table.className = 'vocab-table vocabulary-table';
+  const header = document.createElement('div');
+  header.className = 'vocab-row vocab-head';
+  header.appendChild(buildVocabCell(copy.syntheticSelectLabel || 'Select'));
+  header.appendChild(buildVocabCell(copy.vocabMeaning));
+  header.appendChild(buildVocabCell(copy.vocabKana));
+  header.appendChild(buildVocabCell(copy.vocabKanji));
+  header.appendChild(buildVocabCell(copy.vocabPostTitle || 'Post'));
+  table.appendChild(header);
+
+  entries.forEach((entry) => {
+    const row = document.createElement('div');
+    row.className = 'vocab-row';
+    const meaningText = entry.meaning || '-';
+    const hasEntryKanji = hasKanji(entry.word || '');
+    const kanaText = entry.reading || (hasEntryKanji ? '-' : (entry.word || '-'));
+    const kanjiText = hasEntryKanji ? (entry.word || '') : '-';
+    const postText = entry.postTitle || copy.documentUntitled;
+    const isChecked = syntheticDocumentState.selectedVocabularyIds.has(entry.syntheticId);
+
+    const checkboxCell = document.createElement('div');
+    checkboxCell.className = 'vocab-cell';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'vocab-select';
+    checkbox.checked = isChecked;
+    checkbox.setAttribute('aria-label', `${entry.word || copy.syntheticSelectLabel || 'Vocab'} (${copy.syntheticSelectLabel || 'Select'})`);
+    checkbox.addEventListener('change', () => {
+      toggleSyntheticSelection(entry.syntheticId, checkbox.checked);
+    });
+    checkboxCell.appendChild(checkbox);
+
+    row.appendChild(checkboxCell);
+    row.appendChild(buildVocabCell(meaningText));
+    row.appendChild(buildVocabCell(kanaText));
+    row.appendChild(buildVocabCell(kanjiText));
+    row.appendChild(buildVocabCell(postText));
+    table.appendChild(row);
+  });
+
+  allVocabList.appendChild(table);
+  renderSyntheticGeneratorPanel();
+}
+
+function renderSyntheticGeneratorPanel() {
+  if (!syntheticDifficultySelect || !syntheticCategorySelect || !syntheticGenerateButton) {
+    return;
+  }
+  const copy = i18n[state.language];
+  const selectedEntries = getSelectedSyntheticEntries();
+  const selectedCount = selectedEntries.length;
+  const isLoading = syntheticDocumentState.status === 'loading';
+  const hasOutput = Boolean(syntheticDocumentState.text);
+  const isFlashcardMode = flashcardReviewState.mode === FLASHCARD_MODES.flashcard;
+  const isFlashcardReviewRunning = isFlashcardMode && flashcardReviewState.phase === 'running';
+
+  syntheticDifficultySelect.value = SYNTHETIC_DIFFICULTIES.includes(syntheticDocumentState.difficulty)
+    ? syntheticDocumentState.difficulty
+    : SYNTHETIC_DIFFICULTIES[0];
+  syntheticCategorySelect.value = SYNTHETIC_CATEGORIES.some(({ value }) => value === syntheticDocumentState.category)
+    ? syntheticDocumentState.category
+    : SYNTHETIC_CATEGORIES[0].value;
+
+  if (syntheticDifficultyField) {
+    syntheticDifficultyField.hidden = isFlashcardReviewRunning;
+  }
+  if (syntheticCategoryField) {
+    syntheticCategoryField.hidden = isFlashcardReviewRunning;
+  }
+
+  if (syntheticDifficultyLabel) {
+    syntheticDifficultyLabel.textContent = copy.syntheticDifficultyLabel;
+  }
+  if (syntheticCategoryLabel) {
+    syntheticCategoryLabel.textContent = copy.syntheticCategoryLabel;
+  }
+  syntheticGenerateButton.textContent = isLoading ? copy.syntheticGenerating : copy.syntheticGenerate;
+  syntheticGenerateButton.disabled = isLoading || !selectedCount;
+  syntheticGenerateButton.setAttribute('aria-busy', String(isLoading));
+  syntheticGenerateButton.hidden = isFlashcardReviewRunning;
+
+  if (syntheticStatus) {
+    syntheticStatus.classList.remove('is-error');
+    if (isLoading) {
+      syntheticStatus.textContent = copy.syntheticGenerating;
+    } else if (syntheticDocumentState.error) {
+      syntheticStatus.textContent = syntheticDocumentState.error;
+      syntheticStatus.classList.add('is-error');
+    } else if (hasOutput) {
+      syntheticStatus.textContent = `${copy.syntheticSelectCount}: ${selectedCount}`;
+      syntheticStatus.classList.remove('is-error');
+    } else {
+      syntheticStatus.textContent = selectedCount
+        ? `${copy.syntheticSelectCount}: ${selectedCount}`
+        : copy.syntheticNoSelection;
+      syntheticStatus.classList.remove('is-error');
+    }
+  }
+
+  if (syntheticResultTitle) {
+    syntheticResultTitle.textContent = copy.syntheticResultTitle;
+    syntheticResultTitle.hidden = isFlashcardReviewRunning;
+  }
+  if (syntheticResult) {
+    syntheticResult.hidden = isFlashcardReviewRunning;
+    syntheticResult.replaceChildren();
+    if (!isFlashcardReviewRunning && syntheticDocumentState.text) {
+      const resultText = document.createElement('div');
+      resultText.className = 'synthetic-result-text';
+      resultText.setAttribute('aria-live', 'polite');
+      syntheticResult.appendChild(resultText);
+      renderSyntheticResultText(syntheticDocumentState.text, resultText);
+    } else {
+      const placeholder = document.createElement('div');
+      placeholder.className = 'synthetic-result-empty';
+      placeholder.textContent = copy.syntheticResultEmpty;
+      syntheticResult.appendChild(placeholder);
+    }
+  }
+
+  renderFlashcardReview();
+}
+
+function buildSyntheticDocumentPayload(entries) {
+  return {
+    readingDifficulty: syntheticDocumentState.difficulty,
+    textCategory: syntheticDocumentState.category,
+    vocabulary: entries.map((entry) => ({
+      word: entry.word || '',
+      reading: entry.reading || '',
+      meaning: entry.meaning || '',
+      source: entry.postTitle || '',
+      sourceDocumentId: entry.documentId || ''
+    }))
+  };
+}
+
+function renderPageView() {
+  const activePage = state.activePage === 'vocabulary' ? 'vocabulary' : 'compose';
+  const isCompose = activePage === 'compose';
+
+  if (composePage) {
+    composePage.classList.toggle('is-active', isCompose);
+  }
+  if (vocabularyPage) {
+    vocabularyPage.classList.toggle('is-active', !isCompose);
+  }
+
+  if (pageNavCompose) {
+    pageNavCompose.textContent = copySafe(i18n[state.language].pageCompose, 'Compose');
+    pageNavCompose.setAttribute('aria-pressed', String(isCompose));
+    pageNavCompose.setAttribute('aria-current', isCompose ? 'page' : 'false');
+  }
+  if (pageNavVocabulary) {
+    pageNavVocabulary.textContent = copySafe(i18n[state.language].pageVocabulary, 'Vocabulary');
+    pageNavVocabulary.setAttribute('aria-pressed', String(!isCompose));
+    pageNavVocabulary.setAttribute('aria-current', !isCompose ? 'page' : 'false');
+  }
+
+  if (allVocabTitle) {
+    allVocabTitle.textContent = copySafe(i18n[state.language].vocabularyTitle, copySafe(i18n[state.language].vocabTitle, 'Vocabulary'));
+  }
+  if (allVocabSubtitle) {
+    allVocabSubtitle.textContent = copySafe(i18n[state.language].vocabularySubtitle, copySafe(i18n[state.language].vocabSubtitle, 'Saved words from your journal entry.'));
+  }
+  if (syntheticResultTitle) {
+    syntheticResultTitle.textContent = copySafe(i18n[state.language].syntheticResultTitle, 'Generated text');
+  }
+  if (syntheticDifficultySelect) {
+    syntheticDifficultySelect.setAttribute('aria-label', copySafe(i18n[state.language].syntheticDifficultyLabel, 'Reading difficulty'));
+  }
+  if (syntheticCategorySelect) {
+    syntheticCategorySelect.setAttribute('aria-label', copySafe(i18n[state.language].syntheticCategoryLabel, 'Text category'));
+  }
+  if (vocabReviewModeSelect) {
+    vocabReviewModeSelect.setAttribute('aria-label', copySafe(i18n[state.language].reviewModeLabel, 'Review mode'));
+    const options = Array.from(vocabReviewModeSelect.options);
+    if (!options.length) {
+      const syntheticOption = document.createElement('option');
+      syntheticOption.value = FLASHCARD_MODES.synthetic;
+      syntheticOption.textContent = copySafe(i18n[state.language].reviewModeSynthetic, 'Synthetic document');
+      vocabReviewModeSelect.appendChild(syntheticOption);
+
+      const flashcardOption = document.createElement('option');
+      flashcardOption.value = FLASHCARD_MODES.flashcard;
+      flashcardOption.textContent = copySafe(i18n[state.language].reviewModeFlashcard, 'Flashcard review');
+      vocabReviewModeSelect.appendChild(flashcardOption);
+    }
+    Array.from(vocabReviewModeSelect.options).forEach((option) => {
+      if (option.value === FLASHCARD_MODES.synthetic) {
+        option.textContent = copySafe(i18n[state.language].reviewModeSynthetic, 'Synthetic document');
+      }
+      if (option.value === FLASHCARD_MODES.flashcard) {
+        option.textContent = copySafe(i18n[state.language].reviewModeFlashcard, 'Flashcard review');
+      }
+    });
+    vocabReviewModeSelect.value = flashcardReviewState.mode === FLASHCARD_MODES.flashcard
+      ? FLASHCARD_MODES.flashcard
+      : FLASHCARD_MODES.synthetic;
+  }
+  if (vocabReviewModeLabel) {
+    vocabReviewModeLabel.textContent = copySafe(i18n[state.language].reviewModeLabel, 'Review mode');
+  }
+
+  if (syntheticDifficultySelect) {
+    const difficultyOptions = syntheticDifficultySelect.querySelectorAll('option');
+    if (!difficultyOptions.length) {
+      SYNTHETIC_DIFFICULTIES.forEach((difficulty) => {
+        const option = document.createElement('option');
+        option.value = difficulty;
+        option.textContent = difficulty;
+        syntheticDifficultySelect.appendChild(option);
+      });
+    }
+  }
+
+  if (syntheticCategorySelect) {
+    const hasCategoryOptions = syntheticCategorySelect.querySelectorAll('option').length > 0;
+    if (!hasCategoryOptions) {
+      SYNTHETIC_CATEGORIES.forEach(({ value, copyKey }) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = copySafe(i18n[state.language][copyKey], value);
+        syntheticCategorySelect.appendChild(option);
+      });
+    }
+    Array.from(syntheticCategorySelect.options).forEach((option) => {
+      const item = SYNTHETIC_CATEGORIES.find((item) => item.value === option.value);
+      option.textContent = item ? copySafe(i18n[state.language][item.copyKey], option.value) : option.value;
+    });
+  }
+}
+
+function copySafe(value, fallback) {
+  if (typeof value === 'string' && value.trim()) {
+    return value;
+  }
+  return typeof fallback === 'string' ? fallback : '';
+}
+
+function setActivePage(nextPage = 'compose') {
+  const next = nextPage === 'vocabulary' ? 'vocabulary' : 'compose';
+  if (state.activePage === next) {
+    return;
+  }
+  state.activePage = next;
+  renderUI();
 }
 
 function renderQuestions() {
@@ -3578,6 +4532,7 @@ function renderDocumentList() {
   state.documents.forEach((doc) => {
     documentsList.appendChild(buildDocumentListRow(doc, copy, locale));
   });
+  renderVocabularyPage();
 }
 
 function renderDocumentControls() {
@@ -3710,6 +4665,9 @@ function renderUI() {
   renderProofread();
   renderSharePanel();
   renderAuthControls();
+  renderPageView();
+  renderVocab();
+  renderVocabularyPage();
 }
 
 function schedulePreviewRender() {
@@ -3935,6 +4893,25 @@ async function requestAsk(text, question) {
   return data;
 }
 
+async function requestSyntheticDocument(payload) {
+  const response = await fetch(SYNTHETIC_DOCUMENT_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (error) {
+    data = null;
+  }
+  if (!response.ok) {
+    const message = data?.error || 'Synthetic document generation failed';
+    throw new Error(message);
+  }
+  return data;
+}
+
 function formatProofreadTimestamp(date) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
     return '';
@@ -4001,6 +4978,52 @@ function setProofreadState(next) {
   renderProofread();
 }
 
+function setSyntheticDocumentState(next) {
+  Object.assign(syntheticDocumentState, next);
+  renderSyntheticGeneratorPanel();
+}
+
+async function generateSyntheticDocument() {
+  const copy = i18n[state.language];
+  const selectedEntries = getSelectedSyntheticEntries();
+  if (!selectedEntries.length) {
+    setSyntheticDocumentState({
+      status: 'error',
+      text: '',
+      error: copy.syntheticNoSelection
+    });
+    return;
+  }
+
+  setSyntheticDocumentState({
+    status: 'loading',
+    text: '',
+    error: ''
+  });
+
+  try {
+    const result = await requestSyntheticDocument(buildSyntheticDocumentPayload(selectedEntries));
+    const generatedText = typeof result?.output === 'string'
+      ? result.output.trim()
+      : (typeof result?.text === 'string' ? result.text.trim() : '');
+    const sanitizedText = sanitizeSyntheticText(generatedText);
+    if (!sanitizedText) {
+      throw new Error(copy.syntheticInvalidResponse);
+    }
+    setSyntheticDocumentState({
+      status: 'success',
+      text: sanitizedText,
+      error: ''
+    });
+  } catch (error) {
+    setSyntheticDocumentState({
+      status: 'error',
+      text: '',
+      error: error?.message || copy.syntheticRequestError
+    });
+  }
+}
+
 function setActiveHover(base) {
   if (activeHoverBase && activeHoverBase !== base) {
     activeHoverBase.classList.remove('word-hover');
@@ -4019,6 +5042,14 @@ function clearActiveHover() {
 }
 
 function bindEvents() {
+  pageNavCompose?.addEventListener('click', () => {
+    setActivePage('compose');
+  });
+
+  pageNavVocabulary?.addEventListener('click', () => {
+    setActivePage('vocabulary');
+  });
+
   documentTitleInput?.addEventListener('input', (event) => {
     state.title = event.target.value;
     setActiveDocumentSavedState(false);
@@ -4273,6 +5304,51 @@ function bindEvents() {
         updatedAt: null
       });
     }
+  });
+
+  syntheticDifficultySelect?.addEventListener('change', () => {
+    const difficulty = syntheticDifficultySelect.value;
+    if (SYNTHETIC_DIFFICULTIES.includes(difficulty)) {
+      syntheticDocumentState.difficulty = difficulty;
+      renderSyntheticGeneratorPanel();
+    }
+  });
+
+  syntheticCategorySelect?.addEventListener('change', () => {
+    const category = syntheticCategorySelect.value;
+    const isValid = SYNTHETIC_CATEGORIES.some((item) => item.value === category);
+    if (isValid) {
+      syntheticDocumentState.category = category;
+      renderSyntheticGeneratorPanel();
+    }
+  });
+
+  syntheticGenerateButton?.addEventListener('click', () => {
+    generateSyntheticDocument();
+  });
+
+  vocabReviewModeSelect?.addEventListener('change', () => {
+    const mode = vocabReviewModeSelect.value;
+    const nextMode = mode === FLASHCARD_MODES.flashcard ? FLASHCARD_MODES.flashcard : FLASHCARD_MODES.synthetic;
+    setFlashcardMode(nextMode);
+  });
+
+  flashcardStart?.addEventListener('click', () => {
+    startFlashcardReview();
+  });
+
+  flashcardExit?.addEventListener('click', () => {
+    finalizeFlashcardReview();
+  });
+
+  flashcardAnswerForm?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!flashcardAnswer) {
+      return;
+    }
+    const value = flashcardAnswer.value.trim();
+    handleFlashcardAnswerSubmission(value);
+    flashcardAnswer.value = '';
   });
 
   preview.addEventListener('pointerover', (event) => {
@@ -4543,7 +5619,6 @@ async function init() {
   composerInput.value = state.text;
   renderUI();
   renderPreview();
-  renderVocab();
   renderQuestions();
   bindEvents();
   if (!authState.authenticated) {
