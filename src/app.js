@@ -74,6 +74,7 @@ const i18n = {
     documentDrawerTitle: 'Saved documents',
     documentDrawerSubtitle: 'Open a saved document',
     documentListEmpty: 'No documents yet.',
+    documentCreatedLabel: 'Created:',
     documentNew: 'New',
     documentSave: 'Save',
     documentSaved: 'Saved',
@@ -87,7 +88,10 @@ const i18n = {
     vocabMeaning: 'Meaning',
     vocabKana: 'Kana',
     vocabKanji: 'Kanji',
+    vocabAdd: 'Add',
     vocabDelete: 'Delete',
+    vocabEdit: 'Edit',
+    vocabSave: 'Save',
     selectionTitle: 'Selection',
     selectionTranslate: 'Translate',
     selectionCopy: 'Copy',
@@ -95,6 +99,12 @@ const i18n = {
     selectionAskLabel: 'Ask about selected text',
     selectionAskPlaceholder: 'Ask a question about this text...',
     selectionAskSubmit: 'Send',
+    selectionAddToVocab: 'Add to vocab',
+    selectionAddToVocabLoading: 'Adding to vocab…',
+    selectionAddToVocabSuccess: 'Added to vocab.',
+    selectionAddToVocabDuplicate: 'Already in vocab.',
+    selectionAddToVocabMissing: 'No matching kanji entry found.',
+    selectionAddToVocabError: 'Failed to add.',
     selectionCopied: 'Copied',
     selectionLoading: 'Translating…',
     selectionError: 'Translation failed.',
@@ -198,6 +208,7 @@ const i18n = {
     documentDrawerTitle: '保存した作文',
     documentDrawerSubtitle: '保存した作文を開く',
     documentListEmpty: 'まだ作文がありません。',
+    documentCreatedLabel: '作成日:',
     documentNew: '新規',
     documentSave: '保存',
     documentSaved: '保存済み',
@@ -211,7 +222,10 @@ const i18n = {
     vocabMeaning: '意味',
     vocabKana: 'かな',
     vocabKanji: '漢字',
+    vocabAdd: '追加',
     vocabDelete: '削除',
+    vocabEdit: '編集',
+    vocabSave: '保存',
     selectionTitle: '選択',
     selectionTranslate: '翻訳',
     selectionCopy: 'コピー',
@@ -219,6 +233,12 @@ const i18n = {
     selectionAskLabel: '選択テキストについて質問',
     selectionAskPlaceholder: '選択したテキストについて質問…',
     selectionAskSubmit: '送信',
+    selectionAddToVocab: '語彙に追加',
+    selectionAddToVocabLoading: '語彙に追加中…',
+    selectionAddToVocabSuccess: '語彙に追加しました。',
+    selectionAddToVocabDuplicate: '既に語彙に追加済みです。',
+    selectionAddToVocabMissing: '該当する漢字語が見つかりません。',
+    selectionAddToVocabError: '追加に失敗しました。',
     selectionCopied: 'コピーしました',
     selectionLoading: '翻訳中…',
     selectionError: '翻訳に失敗しました。',
@@ -358,6 +378,7 @@ let pendingRender = false;
 let pendingCorrectionsRender = false;
 let pendingCorrectionResetOnInput = false;
 let vocabSaveQueue = Promise.resolve();
+let editingVocabIndex = null;
 let workspaceSyncTimer = null;
 let workspaceSyncPending = null;
 let workspaceSyncInFlight = false;
@@ -448,6 +469,7 @@ const tooltipAdd = document.querySelector('#tooltip-add');
 const selectionTooltip = document.querySelector('#selection-tooltip');
 const selectionTitle = document.querySelector('#selection-title');
 const selectionTranslate = document.querySelector('#selection-translate');
+const selectionAddToVocab = document.querySelector('#selection-add-vocab');
 const selectionCopy = document.querySelector('#selection-copy');
 const selectionAsk = document.querySelector('#selection-ask');
 const selectionAskForm = document.querySelector('#selection-ask-form');
@@ -1359,9 +1381,19 @@ function markWorkspaceDocumentDeleted(documentId) {
 function getWorkspaceFilteredDocuments(documents) {
   const normalized = normalizeDocumentEntries(documents);
   if (!workspaceDeletedDocumentIds.size) {
-    return normalized;
+    return normalized.sort((a, b) => {
+      const left = Number.isFinite(a?.createdAt) ? a.createdAt : 0;
+      const right = Number.isFinite(b?.createdAt) ? b.createdAt : 0;
+      return right - left;
+    });
   }
-  return normalized.filter((doc) => !workspaceDeletedDocumentIds.has(doc.id));
+  return normalized
+    .filter((doc) => !workspaceDeletedDocumentIds.has(doc.id))
+    .sort((a, b) => {
+      const left = Number.isFinite(a?.createdAt) ? a.createdAt : 0;
+      const right = Number.isFinite(b?.createdAt) ? b.createdAt : 0;
+      return right - left;
+    });
 }
 
 function clearWorkspaceDocumentDeletionMarkers(syncWorkspace) {
@@ -1456,8 +1488,8 @@ function mergeWorkspaceDocuments(localDocuments, remoteDocuments) {
     }
   });
   return Array.from(merged.values()).sort((a, b) => {
-    const left = Number.isFinite(a?.updatedAt) ? a.updatedAt : 0;
-    const right = Number.isFinite(b?.updatedAt) ? b.updatedAt : 0;
+    const left = Number.isFinite(a?.createdAt) ? a.createdAt : 0;
+    const right = Number.isFinite(b?.createdAt) ? b.createdAt : 0;
     return right - left;
   });
 }
@@ -1959,8 +1991,8 @@ function applyDocumentToState(doc) {
   state.vocab = normalizeVocabEntries(doc.vocab);
   state.questions = normalizeQuestionEntries(doc.questions);
   state.correctionsBaseText = normalizeCorrectionsBaseText(doc.correctionsBaseText, state.text);
-  state.workflow = normalizeDocumentWorkflow(getActiveDocumentFromState()?.workflow || doc.workflow);
-  enforceTeacherWorkflowMode();
+  state.workflow = normalizeDocumentWorkflow(doc?.workflow);
+  enforceWorkflowModeRules();
 }
 
 function hydrateProofreadFromDocument(doc, { reset = false } = {}) {
@@ -2102,20 +2134,20 @@ function persistActiveDocument({
 }
 
 function setActiveDocument(doc, { resetProofread = false } = {}) {
+  editingVocabIndex = null;
   applyDocumentToState(doc);
   safeStorageSet(STORAGE_KEYS.activeDocument, state.documentId);
   if (documentTitleInput && documentTitleInput.value !== state.title) {
     documentTitleInput.value = state.title;
   }
   composerInput.value = state.text;
-  renderDocumentList();
   renderPreview();
   renderCorrections();
   renderVocab();
   renderQuestions();
   hydrateProofreadFromDocument(doc, { reset: resetProofread });
   hydrateShareFromDocument(doc);
-  updateDocumentSaveControls();
+  renderUI();
   clearActiveHover();
   hideTooltip();
   hideSelectionTooltip();
@@ -2214,37 +2246,129 @@ function deleteActiveDocument() {
   deleteDocumentById(state.documentId);
 }
 
+function buildDictionaryMeaning(entry) {
+  return entry.senses?.[0]?.english_definitions?.slice(0, 3).join('; ') || '';
+}
+
+async function fetchDictionaryEntries(word) {
+  const normalized = normalizeLookupWord(word);
+  if (!normalized) {
+    return [];
+  }
+  const proxyUrl = `${PROXY_DICT_ENDPOINT}${encodeURIComponent(normalized)}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  try {
+    const data = await fetchJson(proxyUrl, controller.signal);
+    return Array.isArray(data?.data) ? data.data : [];
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function lookupWord(word) {
   if (!hasKanji(word)) {
     return null;
   }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000);
-
-  try {
-    const proxyUrl = `${PROXY_DICT_ENDPOINT}${encodeURIComponent(word)}`;
-    const data = await fetchJson(proxyUrl, controller.signal);
-    const selection = selectBestEntry(data?.data, word);
-    if (!selection) {
-      return null;
-    }
-
-    const { entry, form } = selection;
-    const reading = form.reading || '';
-    const resolvedWord = form.word || word;
-    const meaning = entry.senses?.[0]?.english_definitions?.slice(0, 3).join('; ') || '';
-
-    return {
-      word: resolvedWord,
-      reading,
-      meaning
-    };
-  } catch (error) {
+  const lookupEntries = await fetchDictionaryEntries(word);
+  if (!lookupEntries.length) {
     return null;
-  } finally {
-    clearTimeout(timeoutId);
   }
+  const selection = selectBestEntry(lookupEntries, word);
+  if (!selection) {
+    return null;
+  }
+  const { entry, form } = selection;
+  if (!entry || !form) {
+    return null;
+  }
+  const reading = form.reading || '';
+  const resolvedWord = form.word || word;
+
+  return {
+    word: resolvedWord,
+    reading,
+    meaning: buildDictionaryMeaning(entry)
+  };
+}
+
+function pickKanjiFormForKana(entry, query) {
+  const kanaQuery = toHiragana(query);
+  if (!kanaQuery) {
+    return null;
+  }
+  const forms = Array.isArray(entry?.japanese) ? entry.japanese : [];
+  let best = null;
+  let bestScore = -1;
+
+  for (let i = 0; i < forms.length; i += 1) {
+    const form = forms[i];
+    if (!form || typeof form !== 'object') {
+      continue;
+    }
+    const word = typeof form.word === 'string' ? form.word : '';
+    if (!hasKanji(word)) {
+      continue;
+    }
+    const reading = typeof form.reading === 'string' ? form.reading : '';
+    const readingKana = toHiragana(reading);
+    let score = 1;
+    if (word === query) {
+      score += 90;
+    }
+    if (readingKana && readingKana === kanaQuery) {
+      score += 110;
+    } else if (readingKana && readingKana.startsWith(kanaQuery)) {
+      score += 70;
+    } else if (kanaQuery && readingKana && kanaQuery.startsWith(readingKana)) {
+      score += 60;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = {
+        word,
+        reading,
+        score
+      };
+    }
+  }
+  return best;
+}
+
+async function lookupKanaWord(word) {
+  const normalized = normalizeLookupWord(word);
+  if (!normalized || !hasKana(normalized)) {
+    return null;
+  }
+  const lookupEntries = await fetchDictionaryEntries(normalized);
+  if (!lookupEntries.length) {
+    return null;
+  }
+  const kanaQuery = toHiragana(normalized);
+  let best = null;
+  let bestScore = -1;
+
+  for (let i = 0; i < lookupEntries.length; i += 1) {
+    const entry = lookupEntries[i];
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const matched = pickKanjiFormForKana(entry, normalized);
+    if (!matched) {
+      continue;
+    }
+    const meaning = buildDictionaryMeaning(entry);
+    const score = matched.score + (meaning ? 3 : 0);
+    if (score > bestScore) {
+      best = { ...matched, meaning };
+      bestScore = score;
+      if (toHiragana(matched.reading) === kanaQuery) {
+        break;
+      }
+    }
+  }
+
+  return best;
 }
 
 function selectBestEntry(entries, query) {
@@ -2576,6 +2700,10 @@ function renderCorrections() {
 function renderVocab() {
   vocabList.replaceChildren();
 
+  if (editingVocabIndex !== null && editingVocabIndex >= state.vocab.length) {
+    editingVocabIndex = null;
+  }
+
   if (!state.vocab.length) {
     const empty = document.createElement('div');
     empty.className = 'vocab-empty';
@@ -2586,48 +2714,200 @@ function renderVocab() {
 
   const table = document.createElement('div');
   table.className = 'vocab-table';
+  const copy = i18n[state.language];
 
   const header = document.createElement('div');
   header.className = 'vocab-row vocab-head';
   header.appendChild(buildVocabCell(i18n[state.language].vocabMeaning));
   header.appendChild(buildVocabCell(i18n[state.language].vocabKana));
   header.appendChild(buildVocabCell(i18n[state.language].vocabKanji));
-  header.appendChild(buildVocabCell(i18n[state.language].vocabDelete));
+  const headerActionsCell = document.createElement('div');
+  headerActionsCell.className = 'vocab-cell vocab-head-actions';
+  const addButton = document.createElement('button');
+  addButton.type = 'button';
+  addButton.className = 'vocab-action vocab-add';
+  addButton.setAttribute('aria-label', copy.vocabAdd);
+  addButton.setAttribute('title', copy.vocabAdd);
+  addButton.innerHTML = `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M11 4h2v16h-2V4Zm-8 6h16v2H3v-2Z"/>
+    </svg>
+  `;
+  addButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    state.vocab.unshift({
+      word: '',
+      reading: '',
+      meaning: '',
+      addedAt: Date.now()
+    });
+    editingVocabIndex = 0;
+    renderVocab();
+  });
+  headerActionsCell.appendChild(addButton);
+  header.appendChild(headerActionsCell);
   table.appendChild(header);
 
   state.vocab.forEach((entry, index) => {
     const row = document.createElement('div');
     row.className = 'vocab-row';
+    const isEditing = editingVocabIndex === index;
 
     const meaningText = entry.meaning || '-';
     const hasEntryKanji = hasKanji(entry.word || '');
     const kanaText = entry.reading || (hasEntryKanji ? '-' : (entry.word || '-'));
     const kanjiText = hasEntryKanji ? entry.word : '-';
 
-    row.appendChild(buildVocabCell(meaningText));
-    row.appendChild(buildVocabCell(kanaText));
-    row.appendChild(buildVocabCell(kanjiText));
+    if (isEditing) {
+      const meaningInput = document.createElement('input');
+      meaningInput.type = 'text';
+      meaningInput.className = 'vocab-input';
+      meaningInput.value = entry.meaning || '';
+      meaningInput.placeholder = copy.vocabMeaning;
+      const meaningCell = document.createElement('div');
+      meaningCell.className = 'vocab-cell';
+      meaningCell.appendChild(meaningInput);
 
-    const deleteButton = document.createElement('button');
-    deleteButton.type = 'button';
-    deleteButton.className = 'vocab-delete';
-    deleteButton.setAttribute('aria-label', i18n[state.language].vocabDelete);
-    deleteButton.setAttribute('title', i18n[state.language].vocabDelete);
-    deleteButton.innerHTML = `
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="M9 3h6l1 2h4v2h-1.2l-1.1 13.2a2 2 0 0 1-2 1.8H8.3a2 2 0 0 1-2-1.8L5.2 7H4V5h4l1-2zm-1.6 4 1 12.1c.1.2.2.4.5.4h6.2c.3 0 .4-.2.5-.4L16.6 7H7.4zm3 2h2v8h-2V9zm-3 0h2v8h-2V9zm8 0h2v8h-2V9z"/>
-      </svg>
-    `;
-    deleteButton.addEventListener('click', (event) => {
-      event.stopPropagation();
-      const removed = state.vocab[index];
-      state.vocab = state.vocab.filter((_, idx) => idx !== index);
-      saveVocab();
-      enqueueVocabDelete(removed);
-      renderVocab();
-    });
+      const kanaInput = document.createElement('input');
+      kanaInput.type = 'text';
+      kanaInput.className = 'vocab-input';
+      kanaInput.value = entry.reading || (entry.word || '');
+      kanaInput.placeholder = copy.vocabKana;
+      const kanaCell = document.createElement('div');
+      kanaCell.className = 'vocab-cell';
+      kanaCell.appendChild(kanaInput);
 
-    row.appendChild(deleteButton);
+      const kanjiInput = document.createElement('input');
+      kanjiInput.type = 'text';
+      kanjiInput.className = 'vocab-input';
+      kanjiInput.value = hasEntryKanji ? (entry.word || '') : '';
+      kanjiInput.placeholder = copy.vocabKanji;
+      const kanjiCell = document.createElement('div');
+      kanjiCell.className = 'vocab-cell';
+      kanjiCell.appendChild(kanjiInput);
+
+      row.appendChild(meaningCell);
+      row.appendChild(kanaCell);
+      row.appendChild(kanjiCell);
+
+      const saveButton = document.createElement('button');
+      saveButton.type = 'button';
+      saveButton.className = 'vocab-action vocab-save';
+      saveButton.setAttribute('aria-label', copy.vocabSave);
+      saveButton.setAttribute('title', copy.vocabSave);
+      saveButton.innerHTML = `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="m10 17.8-4.7-4.7 1.4-1.4 3.3 3.3 8.3-8.3 1.4 1.4z"/>
+        </svg>
+      `;
+      saveButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (editingVocabIndex !== index || !state.vocab[index]) {
+          return;
+        }
+        const nextWord = kanjiInput.value.trim();
+        const nextReading = kanaInput.value.trim();
+        const normalized = normalizeVocabEntries([{
+          word: nextWord,
+          reading: nextReading,
+          meaning: meaningInput.value.trim()
+        }])[0];
+        if (!normalized) {
+          const removed = state.vocab[index];
+          state.vocab = state.vocab.filter((_, idx) => idx !== index);
+          editingVocabIndex = null;
+          saveVocab();
+          if (removed) {
+            enqueueVocabDelete(removed);
+          }
+          renderVocab();
+          return;
+        }
+
+        const current = state.vocab[index];
+        state.vocab[index] = {
+          word: normalized.word,
+          reading: normalized.reading,
+          meaning: normalized.meaning,
+          addedAt: Number.isFinite(current?.addedAt) ? current.addedAt : Date.now()
+        };
+        editingVocabIndex = null;
+        saveVocab();
+        renderVocab();
+      });
+
+      const deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.className = 'vocab-action vocab-delete';
+      deleteButton.setAttribute('aria-label', copy.vocabDelete);
+      deleteButton.setAttribute('title', copy.vocabDelete);
+      deleteButton.innerHTML = `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M9 3h6l1 2h4v2h-1.2l-1.1 13.2a2 2 0 0 1-2 1.8H8.3a2 2 0 0 1-2-1.8L5.2 7H4V5h4l1-2zm-1.6 4 1 12.1c.1.2.2.4.5.4h6.2c.3 0 .4-.2.5-.4L16.6 7H7.4zm3 2h2v8h-2V9zm-3 0h2v8h-2V9zm8 0h2v8h-2V9z"/>
+        </svg>
+      `;
+      deleteButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const removed = state.vocab[index];
+        state.vocab = state.vocab.filter((_, idx) => idx !== index);
+        saveVocab();
+        enqueueVocabDelete(removed);
+        editingVocabIndex = null;
+        renderVocab();
+      });
+
+      const actionsCell = document.createElement('div');
+      actionsCell.className = 'vocab-actions';
+      actionsCell.appendChild(saveButton);
+      actionsCell.appendChild(deleteButton);
+      row.appendChild(actionsCell);
+    } else {
+      row.appendChild(buildVocabCell(meaningText));
+      row.appendChild(buildVocabCell(kanaText));
+      row.appendChild(buildVocabCell(kanjiText));
+
+      const editButton = document.createElement('button');
+      editButton.type = 'button';
+      editButton.className = 'vocab-action vocab-edit';
+      editButton.setAttribute('aria-label', copy.vocabEdit);
+      editButton.setAttribute('title', copy.vocabEdit);
+      editButton.innerHTML = `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="m17.1 3 3.9 3.9-11.3 11.3-4.1.9.9-4.1L17.1 3Zm2.5 2.9-3.9-3.9 1.8-1.8a1.8 1.8 0 0 1 2.5 0l1.4 1.4a1.8 1.8 0 0 1 0 2.5L19.6 5.9Z"/>
+        </svg>
+      `;
+      editButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        editingVocabIndex = index;
+        renderVocab();
+      });
+
+      const deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.className = 'vocab-action vocab-delete';
+      deleteButton.setAttribute('aria-label', copy.vocabDelete);
+      deleteButton.setAttribute('title', copy.vocabDelete);
+      deleteButton.innerHTML = `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M9 3h6l1 2h4v2h-1.2l-1.1 13.2a2 2 0 0 1-2 1.8H8.3a2 2 0 0 1-2-1.8L5.2 7H4V5h4l1-2zm-1.6 4 1 12.1c.1.2.2.4.5.4h6.2c.3 0 .4-.2.5-.4L16.6 7H7.4zm3 2h2v8h-2V9zm-3 0h2v8h-2V9zm8 0h2v8h-2V9z"/>
+        </svg>
+      `;
+      deleteButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const removed = state.vocab[index];
+        state.vocab = state.vocab.filter((_, idx) => idx !== index);
+        saveVocab();
+        enqueueVocabDelete(removed);
+        renderVocab();
+      });
+
+      const actionsCell = document.createElement('div');
+      actionsCell.className = 'vocab-actions';
+      actionsCell.appendChild(editButton);
+      actionsCell.appendChild(deleteButton);
+      row.appendChild(actionsCell);
+    }
+
     table.appendChild(row);
   });
 
@@ -2756,8 +3036,23 @@ function isTeacherWorkflowWorkflow(workflow) {
   return normalized?.role === 'teacher';
 }
 
-function enforceTeacherWorkflowMode() {
-  if (isTeacherWorkflowWorkflow(state.workflow) && state.mode === 'edit') {
+function canUseCorrectionsMode() {
+  return isTeacherWorkflowWorkflow(state.workflow);
+}
+
+function enforceWorkflowModeRules() {
+  const workflow = normalizeDocumentWorkflow(state.workflow);
+  if (!workflow) {
+    if (state.mode === 'corrections') {
+      state.mode = 'read';
+    }
+    return;
+  }
+  if (workflow.role === 'teacher' && state.mode === 'edit') {
+    state.mode = 'read';
+    return;
+  }
+  if (workflow.role === 'student' && state.mode === 'corrections') {
     state.mode = 'read';
   }
 }
@@ -2922,6 +3217,13 @@ function mergeDocumentFromServer(documentPayload) {
   } else {
     state.documents[index] = normalized;
   }
+  if (state.documents.length > 1) {
+    state.documents.sort((a, b) => {
+      const left = Number.isFinite(a?.createdAt) ? a.createdAt : 0;
+      const right = Number.isFinite(b?.createdAt) ? b.createdAt : 0;
+      return right - left;
+    });
+  }
   if (state.documentId === normalized.id) {
     applyDocumentToState(normalized);
     if (documentTitleInput && documentTitleInput.value !== state.title) {
@@ -2934,7 +3236,7 @@ function mergeDocumentFromServer(documentPayload) {
     renderQuestions();
     hydrateProofreadFromDocument(normalized, { reset: false });
     hydrateShareFromDocument(normalized);
-    updateDocumentSaveControls();
+    renderUI();
   }
   saveDocumentsToStorage({ syncServer: false });
   if (authState.authenticated) {
@@ -2989,7 +3291,7 @@ async function handleWorkflowTransition(action) {
 function renderSharePanel() {
   const copy = i18n[state.language];
   const activeDocument = getActiveDocumentFromState();
-  const workflow = normalizeDocumentWorkflow(activeDocument?.workflow || state.workflow);
+  const workflow = normalizeDocumentWorkflow(activeDocument?.workflow ?? null);
   const hasWorkflow = Boolean(workflow?.id);
   const isTeacherWorkflowRole = workflow?.role === 'teacher';
   const hasSharedOrigin = Boolean(
@@ -3072,6 +3374,11 @@ function renderSharePanel() {
         workflowHistoryList.appendChild(card);
       });
     }
+  } else if (workflowRoleValue && workflowPartnerValue && workflowStatusValue && workflowUpdatedValue) {
+    workflowRoleValue.textContent = '-';
+    workflowPartnerValue.textContent = '-';
+    workflowStatusValue.textContent = '-';
+    workflowUpdatedValue.textContent = '-';
   }
 
   let statusText = shareState.error || shareState.message || '';
@@ -3154,7 +3461,7 @@ function buildDocumentLabel(doc, copy) {
 }
 
 function formatDocumentUpdatedAt(doc, locale) {
-  const timestamp = Number.isFinite(doc.updatedAt) ? doc.updatedAt : null;
+  const timestamp = Number.isFinite(doc.createdAt) ? doc.createdAt : null;
   if (!timestamp) {
     return '';
   }
@@ -3166,16 +3473,16 @@ function formatDocumentUpdatedAt(doc, locale) {
 }
 
 function buildDocumentListMeta(doc, copy, locale) {
-  const title = buildDocumentLabel(doc, copy);
   const workflow = normalizeDocumentWorkflow(doc.workflow);
   const workflowStatus = workflow ? getWorkflowStatusLabel(copy, workflow.status) : '';
-  const updatedAt = formatDocumentUpdatedAt(doc, locale);
-  const parts = [title];
+  const createdAt = formatDocumentUpdatedAt(doc, locale);
+  const parts = [];
   if (workflowStatus) {
     parts.push(workflowStatus);
   }
-  if (updatedAt) {
-    parts.push(updatedAt);
+  if (createdAt) {
+    const createdLabel = copy.documentCreatedLabel || 'Created:';
+    parts.push(`${createdLabel} ${createdAt}`);
   }
   return parts.join(' · ');
 }
@@ -3336,9 +3643,11 @@ function setPanelCollapsed(panel, body, button, collapsed) {
 
 function renderUI() {
   const copy = i18n[state.language];
-  const isReadingMode = state.mode === 'read';
-  const isCorrectionsMode = state.mode === 'corrections';
+  enforceWorkflowModeRules();
   const isTeacherWorkflow = isTeacherWorkflowWorkflow(state.workflow);
+  const canUseCorrections = canUseCorrectionsMode();
+  const isReadingMode = state.mode === 'read';
+  const isCorrectionsMode = state.mode === 'corrections' && canUseCorrections;
 
   document.documentElement.lang = state.language;
 
@@ -3351,7 +3660,7 @@ function renderUI() {
 
   if (state.mode === 'read') {
     modeToggle.textContent = copy.modeRead;
-  } else if (state.mode === 'corrections') {
+  } else if (state.mode === 'corrections' && canUseCorrections) {
     modeToggle.textContent = copy.modeCorrections;
   } else {
     modeToggle.textContent = copy.modeEdit;
@@ -3373,6 +3682,9 @@ function renderUI() {
   tooltipAdd.textContent = copy.addToVocab;
   selectionTitle.textContent = copy.selectionTitle;
   selectionTranslate.textContent = copy.selectionTranslate;
+  if (selectionAddToVocab) {
+    selectionAddToVocab.textContent = copy.selectionAddToVocab;
+  }
   selectionCopy.textContent = copy.selectionCopy;
   selectionAsk.textContent = copy.selectionAsk;
   selectionAskSubmit.textContent = copy.selectionAskSubmit;
@@ -3425,7 +3737,7 @@ function scheduleCorrectionsRender() {
 function addToVocab(entry) {
   const exists = state.vocab.some((item) => item.word === entry.word && item.reading === entry.reading);
   if (exists) {
-    return;
+    return false;
   }
   state.vocab.unshift({
     word: entry.word,
@@ -3435,6 +3747,31 @@ function addToVocab(entry) {
   });
   saveVocab();
   renderVocab();
+  return true;
+}
+
+async function resolveSelectionVocabularyEntry(text) {
+  const normalized = normalizeLookupWord(text);
+  if (!normalized) {
+    return null;
+  }
+  const cached = lookupCache.get(normalized);
+  if (cached) {
+    return cached;
+  }
+
+  let entry = null;
+  if (hasKanji(normalized)) {
+    entry = await lookupWord(normalized);
+  } else if (hasKana(normalized)) {
+    entry = await lookupKanaWord(normalized);
+  }
+
+  if (!entry) {
+    return null;
+  }
+  lookupCache.set(normalized, entry);
+  return entry;
 }
 
 function showTooltip(word, target) {
@@ -3803,14 +4140,9 @@ function bindEvents() {
     if (isTeacherWorkflowWorkflow(state.workflow)) {
       state.mode = state.mode === 'read' ? 'corrections' : 'read';
     } else {
-      if (state.mode === 'edit') {
-        state.mode = 'read';
-      } else if (state.mode === 'read') {
-        state.mode = 'corrections';
-      } else {
-        state.mode = 'edit';
-      }
+      state.mode = state.mode === 'read' ? 'edit' : 'read';
     }
+    enforceWorkflowModeRules();
 
     renderUI();
     clearActiveHover();
@@ -4014,6 +4346,43 @@ function bindEvents() {
       meaning: tooltip.dataset.meaning || ''
     });
   });
+
+  if (selectionAddToVocab) {
+    selectionAddToVocab.addEventListener('click', async () => {
+      const copy = i18n[state.language];
+      const text = selectionTooltip.dataset.text?.trim();
+      if (!text) {
+        return;
+      }
+      const originalLabel = selectionAddToVocab.textContent;
+      const status = document.createElement('div');
+      status.className = 'selection-translation';
+      status.textContent = copy.selectionAddToVocabLoading;
+      selectionResult.replaceChildren(status);
+      selectionTooltip.classList.add('expanded');
+      selectionAddToVocab.disabled = true;
+      selectionAddToVocab.textContent = copy.selectionAddToVocabLoading;
+
+      try {
+        const entry = await resolveSelectionVocabularyEntry(text);
+        if (!entry) {
+          status.textContent = copy.selectionAddToVocabMissing;
+          return;
+        }
+        const added = addToVocab({
+          word: entry.word || text.trim(),
+          reading: entry.reading || '',
+          meaning: entry.meaning || ''
+        });
+        status.textContent = added ? copy.selectionAddToVocabSuccess : copy.selectionAddToVocabDuplicate;
+      } catch (error) {
+        status.textContent = copy.selectionAddToVocabError;
+      } finally {
+        selectionAddToVocab.disabled = false;
+        selectionAddToVocab.textContent = originalLabel || copy.selectionAddToVocab;
+      }
+    });
+  }
 
   selectionTranslate.addEventListener('click', async () => {
     const copy = i18n[state.language];
