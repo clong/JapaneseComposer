@@ -118,7 +118,10 @@ const i18n = {
     documentTitlePlaceholder: 'Give this entry a title...',
     documentDrawerTitle: 'Saved documents',
     documentDrawerSubtitle: 'Open a saved document',
+    documentOwnedSectionTitle: 'Your documents',
+    documentSharedSectionTitle: 'Shared with you',
     documentListEmpty: 'No documents yet.',
+    documentSharedEmpty: 'No shared documents.',
     documentCreatedLabel: 'Created:',
     documentNew: 'New',
     documentSave: 'Save',
@@ -296,7 +299,10 @@ const i18n = {
     documentTitlePlaceholder: 'この作文のタイトルを入力…',
     documentDrawerTitle: '保存した作文',
     documentDrawerSubtitle: '保存した作文を開く',
+    documentOwnedSectionTitle: '自分の作文',
+    documentSharedSectionTitle: '共有された作文',
     documentListEmpty: 'まだ作文がありません。',
+    documentSharedEmpty: '共有された作文はありません。',
     documentCreatedLabel: '作成日:',
     documentNew: '新規',
     documentSave: '保存',
@@ -4513,6 +4519,47 @@ function buildDocumentListRow(doc, copy, locale) {
   return row;
 }
 
+function isSharedDocumentListEntry(doc) {
+  const workflow = normalizeDocumentWorkflow(doc?.workflow ?? null);
+  if (workflow?.role === 'teacher') {
+    return true;
+  }
+  if (workflow?.role === 'student') {
+    return false;
+  }
+  return Boolean(
+    (typeof doc?.sharedByUserId === 'string' && doc.sharedByUserId.trim())
+    || normalizeEmailValue(doc?.sharedByEmail)
+  );
+}
+
+function buildDocumentListSection(title, items, emptyText, copy, locale) {
+  const section = document.createElement('section');
+  section.className = 'document-list-section';
+
+  const heading = document.createElement('h3');
+  heading.className = 'document-list-section-title';
+  heading.textContent = title;
+
+  const content = document.createElement('div');
+  content.className = 'document-list-section-items';
+
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'document-list-empty';
+    empty.textContent = emptyText;
+    content.appendChild(empty);
+  } else {
+    items.forEach((doc) => {
+      content.appendChild(buildDocumentListRow(doc, copy, locale));
+    });
+  }
+
+  section.appendChild(heading);
+  section.appendChild(content);
+  return section;
+}
+
 function renderDocumentList() {
   if (!documentsList) {
     return;
@@ -4521,17 +4568,34 @@ function renderDocumentList() {
   const locale = state.language === 'ja' ? 'ja-JP' : 'en-US';
   documentsList.replaceChildren();
 
-  if (!state.documents.length) {
-    const empty = document.createElement('div');
-    empty.className = 'document-list-empty';
-    empty.textContent = copy.documentListEmpty;
-    documentsList.appendChild(empty);
-    return;
-  }
-
+  const authoredDocuments = [];
+  const sharedDocuments = [];
   state.documents.forEach((doc) => {
-    documentsList.appendChild(buildDocumentListRow(doc, copy, locale));
+    if (isSharedDocumentListEntry(doc)) {
+      sharedDocuments.push(doc);
+      return;
+    }
+    authoredDocuments.push(doc);
   });
+
+  documentsList.appendChild(
+    buildDocumentListSection(
+      copy.documentOwnedSectionTitle || 'Your documents',
+      authoredDocuments,
+      copy.documentListEmpty,
+      copy,
+      locale
+    )
+  );
+  documentsList.appendChild(
+    buildDocumentListSection(
+      copy.documentSharedSectionTitle || 'Shared with you',
+      sharedDocuments,
+      copy.documentSharedEmpty || copy.documentListEmpty,
+      copy,
+      locale
+    )
+  );
   renderVocabularyPage();
 }
 
