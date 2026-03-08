@@ -752,11 +752,32 @@ body::before {
 .document-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 18px;
   max-height: calc(70vh - 160px);
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 2px;
+}
+
+.document-list-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.document-list-section-title {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.document-list-section-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .document-list-empty {
