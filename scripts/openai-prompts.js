@@ -62,6 +62,23 @@ If the question is about Japanese language usage, briefly explain and include a 
 If useful, you may quote short Japanese snippets from the selected text, but explain them in English.
 `;
 
+export const VOCAB_RESOLUTION_SYSTEM_PROMPT = `System Prompt: Japanese Vocabulary Resolver
+
+You receive selected Japanese text from a writing editor and must resolve it into a study entry.
+
+Return only valid JSON with exactly these keys:
+{"word":"","reading":"","meaning":""}
+
+Rules:
+- "word" must be the best Japanese form to store for study.
+- If the selected text is a single inflected word, prefer the dictionary form.
+- If the selected text is better treated as a short phrase, you may keep it as a phrase.
+- "reading" must be the kana reading for "word". Use hiragana when possible.
+- "meaning" must be a short English gloss, ideally 2 to 8 words.
+- Never include markdown, explanations, or extra keys.
+- Use empty strings only when a value is genuinely unknown.
+`;
+
 export const SYNTHETIC_DOCUMENT_SYSTEM_PROMPT = `System Prompt: JLPT-Level Synthetic Document Generator
 
 You are a Japanese-language writing tutor who creates original prose for learners.
