@@ -196,6 +196,7 @@ const i18n = {
     loading: 'Looking up…',
     missingExact: 'No exact dictionary match found.',
     dictionaryFormLabel: 'Dictionary form',
+    closestDictionaryMatchLabel: 'Closest dictionary match',
     proofreadTitle: 'AI Proofreader',
     proofreadSubtitle: 'Send the full entry to OpenAI for JLPT feedback and corrections.',
     proofreadButton: 'Proofread',
@@ -402,6 +403,7 @@ const i18n = {
     loading: '検索中…',
     missingExact: '一致する辞書項目が見つかりません。',
     dictionaryFormLabel: '辞書形',
+    closestDictionaryMatchLabel: '最も近い辞書項目',
     proofreadTitle: '添削フィードバック',
     proofreadSubtitle: '全文をOpenAIに送ってJLPT判定と添削を受けます。',
     proofreadButton: '添削する',
@@ -3418,7 +3420,8 @@ async function lookupWord(word) {
   return {
     word: resolvedWord,
     reading,
-    meaning: buildDictionaryMeaning(entry)
+    meaning: buildDictionaryMeaning(entry),
+    exact: selection.exact !== false
   };
 }
 
@@ -3441,21 +3444,30 @@ function pickBestFormForKana(entry, query) {
     const fallbackReading = !hasKanji(word) && hasKana(word) ? word : '';
     const readingKana = toHiragana(reading || fallbackReading);
     let score = -1;
+    let exact = false;
     if (word === query) {
       score = hasKanji(word) ? 240 : 220;
+      exact = true;
     }
     if (readingKana && readingKana === kanaQuery) {
       score = Math.max(score, hasKanji(word) ? 250 : 225);
+      exact = true;
+    } else if (readingKana && readingKana.startsWith(kanaQuery)) {
+      score = Math.max(score, 120);
+    } else if (kanaQuery && readingKana && kanaQuery.startsWith(readingKana)) {
+      score = Math.max(score, 110);
     }
     if (score < 0) {
       continue;
     }
+    if (reading || fallbackReading) score += 3;
     if (score > bestScore) {
       bestScore = score;
       best = {
         word: word || reading || query,
         reading: reading || fallbackReading,
-        score
+        score,
+        exact
       };
     }
   }
@@ -3514,11 +3526,22 @@ function selectBestEntry(entries, query) {
       const wordForm = normalizeLookupWord(form.word || '');
       const reading = typeof form.reading === 'string' ? form.reading : '';
       let score = -1;
+      let exact = false;
 
       if (wordForm && wordForm === normalizedQuery) {
         score = 200;
+        exact = true;
       } else if (!wordForm && reading === normalizedQuery) {
         score = 150;
+        exact = true;
+      } else if (wordForm && wordForm.startsWith(normalizedQuery)) {
+        score = 120;
+      } else if (normalizedQuery.startsWith(wordForm) && wordForm) {
+        score = 110;
+      } else if (reading && reading.startsWith(normalizedQuery)) {
+        score = 90;
+      } else if (normalizedQuery.startsWith(reading) && reading) {
+        score = 80;
       }
       if (score < 0) {
         return;
@@ -3528,7 +3551,7 @@ function selectBestEntry(entries, query) {
 
       if (score > bestScore) {
         bestScore = score;
-        best = { entry, form };
+        best = { entry, form, exact };
       }
     });
   });
@@ -5643,7 +5666,11 @@ function showTooltip(word, target) {
     ? copy.loading
     : (info?.meaning || copy.missingExact);
 
-  if (!pending && info?.meaning && info?.word && surfaceWord && info.word !== surfaceWord) {
+  if (!pending && info?.meaning && info?.exact === false) {
+    const dictionaryReading = info.reading ? ` (${info.reading})` : '';
+    const dictionaryWord = info.word || surfaceWord;
+    meaningText = `${copy.closestDictionaryMatchLabel}: ${dictionaryWord}${dictionaryReading} · ${info.meaning}`;
+  } else if (!pending && info?.meaning && info?.word && surfaceWord && info.word !== surfaceWord) {
     const dictionaryReading = info.reading ? ` (${info.reading})` : '';
     meaningText = `${copy.dictionaryFormLabel}: ${info.word}${dictionaryReading} · ${info.meaning}`;
   }
