@@ -193,7 +193,8 @@ const i18n = {
     collapse: 'Collapse',
     expand: 'Expand',
     loading: 'Looking up…',
-    missing: 'No definition found.',
+    missingExact: 'No exact dictionary match found.',
+    dictionaryFormLabel: 'Dictionary form',
     proofreadTitle: 'AI Proofreader',
     proofreadSubtitle: 'Send the full entry to OpenAI for JLPT feedback and corrections.',
     proofreadButton: 'Proofread',
@@ -398,7 +399,8 @@ const i18n = {
     collapse: '折りたたむ',
     expand: '展開',
     loading: '検索中…',
-    missing: '意味が見つかりません。',
+    missingExact: '一致する辞書項目が見つかりません。',
+    dictionaryFormLabel: '辞書形',
     proofreadTitle: '添削フィードバック',
     proofreadSubtitle: '全文をOpenAIに送ってJLPT判定と添削を受けます。',
     proofreadButton: '添削する',
@@ -1185,6 +1187,14 @@ function normalizeLookupWord(token) {
   return runWithKanji || runs[0];
 }
 
+function getPreferredLookupWord(surfaceText, basicForm = '') {
+  const normalizedBasicForm = normalizeLookupWord(basicForm);
+  if (normalizedBasicForm && hasJapaneseChars(normalizedBasicForm)) {
+    return normalizedBasicForm;
+  }
+  return normalizeLookupWord(surfaceText);
+}
+
 function splitTokenForFurigana(token, reading) {
   if (!reading) {
     return [{ type: 'plain', text: token }];
@@ -1639,15 +1649,22 @@ function tokenizeLineWithKuromoji(line) {
   const segments = splitTokenizableRuns(line);
   segments.forEach((segment) => {
     if (segment.type === 'plain') {
-      tokens.push({ text: segment.text, reading: '' });
+      tokens.push({
+        text: segment.text,
+        reading: '',
+        lookup: normalizeLookupWord(segment.text)
+      });
       return;
     }
     const kuromojiTokens = kuromojiTokenizer.tokenize(segment.text);
     kuromojiTokens.forEach((token) => {
+      const surfaceText = token.surface_form || '';
       const reading = token.reading && token.reading !== '*' ? token.reading : '';
+      const basicForm = token.basic_form && token.basic_form !== '*' ? token.basic_form : '';
       tokens.push({
-        text: token.surface_form || '',
-        reading
+        text: surfaceText,
+        reading,
+        lookup: getPreferredLookupWord(surfaceText, basicForm)
       });
     });
   });
@@ -1672,7 +1689,11 @@ function applyReadingOverrides(tokens) {
       const combinedText = current.text + next.text;
       const combinedReading = compoundReadingOverrides.get(combinedText);
       if (combinedReading) {
-        merged.push({ text: combinedText, reading: combinedReading });
+        merged.push({
+          text: combinedText,
+          reading: combinedReading,
+          lookup: normalizeLookupWord(combinedText)
+        });
         i += 1;
         continue;
       }
@@ -1701,7 +1722,11 @@ function getLineTokens(line) {
   if (kuromojiTokens) {
     return applyReadingOverrides(kuromojiTokens);
   }
-  const segments = segmentLine(line).map((segment) => ({ text: segment, reading: '' }));
+  const segments = segmentLine(line).map((segment) => ({
+    text: segment,
+    reading: '',
+    lookup: normalizeLookupWord(segment)
+  }));
   return applyReadingOverrides(segments);
 }
 
@@ -3416,16 +3441,15 @@ function pickKanjiFormForKana(entry, query) {
     }
     const reading = typeof form.reading === 'string' ? form.reading : '';
     const readingKana = toHiragana(reading);
-    let score = 1;
+    let score = -1;
     if (word === query) {
-      score += 90;
+      score = 210;
     }
     if (readingKana && readingKana === kanaQuery) {
-      score += 110;
-    } else if (readingKana && readingKana.startsWith(kanaQuery)) {
-      score += 70;
-    } else if (kanaQuery && readingKana && kanaQuery.startsWith(readingKana)) {
-      score += 60;
+      score = Math.max(score, 220);
+    }
+    if (score < 0) {
+      continue;
     }
     if (score > bestScore) {
       bestScore = score;
@@ -3481,21 +3505,27 @@ function selectBestEntry(entries, query) {
   }
   let best = null;
   let bestScore = -1;
-  const normalizedQuery = query.trim();
+  const normalizedQuery = normalizeLookupWord(query);
+  if (!normalizedQuery) {
+    return null;
+  }
 
   entries.forEach((entry) => {
     (entry.japanese || []).forEach((form) => {
-      const wordForm = form.word || '';
-      const reading = form.reading || '';
-      let score = 0;
+      const wordForm = normalizeLookupWord(form.word || '');
+      const reading = typeof form.reading === 'string' ? form.reading : '';
+      let score = -1;
 
-      if (wordForm && wordForm === normalizedQuery) score += 100;
-      if (reading && reading === normalizedQuery) score += 90;
-      if (wordForm && wordForm.startsWith(normalizedQuery)) score += 80;
-      if (normalizedQuery.startsWith(wordForm) && wordForm) score += 70;
-      if (reading && reading.startsWith(normalizedQuery)) score += 60;
-      if (normalizedQuery.startsWith(reading) && reading) score += 50;
-      if (hasKanji(wordForm) && hasKanji(normalizedQuery)) score += 10;
+      if (wordForm && wordForm === normalizedQuery) {
+        score = 200;
+      } else if (!wordForm && reading === normalizedQuery) {
+        score = 150;
+      }
+      if (score < 0) {
+        return;
+      }
+      if (reading) score += 5;
+      if (buildDictionaryMeaning(entry)) score += 3;
 
       if (score > bestScore) {
         bestScore = score;
@@ -3522,22 +3552,37 @@ async function fetchJson(url, signal) {
   }
 }
 
+async function lookupDictionaryEntry(word) {
+  const normalized = normalizeLookupWord(word);
+  if (!normalized) {
+    return null;
+  }
+  if (hasKanji(normalized)) {
+    return lookupWord(normalized);
+  }
+  if (hasKana(normalized)) {
+    return lookupKanaWord(normalized);
+  }
+  return null;
+}
+
 function ensureLookup(word) {
-  if (!word || !hasKanji(word)) {
+  const normalized = normalizeLookupWord(word);
+  if (!normalized || (!hasKanji(normalized) && !hasKana(normalized))) {
     return;
   }
 
-  if (lookupCache.has(word) || pendingLookups.has(word)) {
+  if (lookupCache.has(normalized) || pendingLookups.has(normalized)) {
     return;
   }
 
-  const lookupPromise = lookupWord(word).then((result) => {
-    lookupCache.set(word, result);
-    pendingLookups.delete(word);
+  const lookupPromise = lookupDictionaryEntry(normalized).then((result) => {
+    lookupCache.set(normalized, result);
+    pendingLookups.delete(normalized);
     schedulePreviewRender();
   });
 
-  pendingLookups.set(word, lookupPromise);
+  pendingLookups.set(normalized, lookupPromise);
 }
 
 function buildTokenElement(token, info, lookupWord) {
@@ -3552,7 +3597,6 @@ function buildTokenElement(token, info, lookupWord) {
 
   segments.forEach((segment) => {
     if (segment.type === 'kanji' && segment.reading) {
-      const hoverWord = segment.hoverKey || resolvedLookup;
       const ruby = document.createElement('ruby');
       const rb = document.createElement('span');
       rb.className = 'ruby-base';
@@ -3560,7 +3604,9 @@ function buildTokenElement(token, info, lookupWord) {
         const span = document.createElement('span');
         span.className = isKanji(char) ? 'kanji char' : 'char';
         if (isKanji(char)) {
-          span.dataset.word = hoverWord;
+          span.dataset.word = resolvedLookup;
+          span.dataset.surface = token;
+          span.dataset.reading = segment.reading;
         }
         span.textContent = char;
         rb.appendChild(span);
@@ -3574,11 +3620,12 @@ function buildTokenElement(token, info, lookupWord) {
     }
 
     for (const char of segment.text) {
-      const hoverWord = segment.hoverKey || resolvedLookup;
       const span = document.createElement('span');
       span.className = isKanji(char) ? 'kanji char' : 'char';
       if (isKanji(char)) {
-        span.dataset.word = hoverWord;
+        span.dataset.word = resolvedLookup;
+        span.dataset.surface = token;
+        span.dataset.reading = reading;
       }
       span.textContent = char;
       base.appendChild(span);
@@ -3609,10 +3656,10 @@ function renderPreview() {
       }
 
       if (hasKanji(raw)) {
-        const lookupWord = normalizeLookupWord(raw);
+        const lookupWord = segment.lookup || normalizeLookupWord(raw);
         ensureLookup(lookupWord);
         const info = lookupCache.get(lookupWord);
-        const readingInfo = segment.reading ? { reading: segment.reading } : info;
+        const readingInfo = segment.reading ? { ...(info || {}), reading: segment.reading } : info;
         preview.appendChild(buildTokenElement(raw, readingInfo, lookupWord));
       } else {
         preview.appendChild(document.createTextNode(raw));
@@ -3819,9 +3866,9 @@ async function renderSyntheticResultText(text, outputContainer = syntheticResult
       }
 
       if (hasKanji(raw)) {
-        const lookupWord = normalizeLookupWord(raw);
+        const lookupWord = segment.lookup || normalizeLookupWord(raw);
         const info = segment.reading
-          ? { reading: segment.reading }
+          ? { ...((lookupWord ? lookupCache.get(lookupWord) : null) || {}), reading: segment.reading }
           : lookupWord ? lookupCache.get(lookupWord) : null;
         if (!segment.reading && lookupWord && !lookupCache.has(lookupWord) && !pendingLookups.has(lookupWord)) {
           ensureLookup(lookupWord);
@@ -5483,22 +5530,24 @@ async function resolveSelectionVocabularyEntry(text) {
   if (!normalized) {
     return null;
   }
-  const cached = lookupCache.get(normalized);
+  const selectionTokens = getLineTokens(normalized).filter((token) => token && token.text && !/^\s+$/.test(token.text));
+  const lookupTarget = selectionTokens.length === 1
+    ? (selectionTokens[0].lookup || normalized)
+    : normalized;
+  const cacheKey = normalizeLookupWord(lookupTarget) || normalized;
+  const cached = lookupCache.get(cacheKey) || lookupCache.get(normalized);
   if (cached) {
     return cached;
   }
 
-  let entry = null;
-  if (hasKanji(normalized)) {
-    entry = await lookupWord(normalized);
-  } else if (hasKana(normalized)) {
-    entry = await lookupKanaWord(normalized);
-  }
-
+  const entry = await lookupDictionaryEntry(cacheKey);
   if (!entry) {
     return null;
   }
-  lookupCache.set(normalized, entry);
+  lookupCache.set(cacheKey, entry);
+  if (cacheKey !== normalized) {
+    lookupCache.set(normalized, entry);
+  }
   return entry;
 }
 
@@ -5510,19 +5559,29 @@ function showTooltip(word, target) {
   }
   const info = lookupCache.get(lookupKey);
   const pending = pendingLookups.has(lookupKey);
+  const surfaceWord = target.dataset.surface || word;
+  const sourceReading = target.dataset.reading || '';
 
   const readingText = pending
     ? copy.loading
-    : (info?.reading || copy.missing);
-  const meaningText = pending
+    : (sourceReading || info?.reading || '---');
+  let meaningText = pending
     ? copy.loading
-    : (info?.meaning || copy.missing);
+    : (info?.meaning || copy.missingExact);
 
-  tooltip.dataset.word = info?.word || word;
-  tooltip.dataset.reading = info?.reading || '';
+  if (!pending && info?.meaning && info?.word && surfaceWord && info.word !== surfaceWord) {
+    const dictionaryReading = info.reading ? ` (${info.reading})` : '';
+    meaningText = `${copy.dictionaryFormLabel}: ${info.word}${dictionaryReading} · ${info.meaning}`;
+  }
+
+  tooltip.dataset.word = info?.word || surfaceWord;
+  tooltip.dataset.reading = info?.word && info.word !== surfaceWord
+    ? (info?.reading || '')
+    : (sourceReading || info?.reading || '');
   tooltip.dataset.meaning = info?.meaning || '';
+  tooltipAdd.disabled = pending || !info?.meaning;
 
-  tooltipWord.textContent = info?.word || word;
+  tooltipWord.textContent = surfaceWord;
   tooltipReading.textContent = readingText;
   tooltipMeaning.textContent = meaningText;
 
