@@ -18,10 +18,20 @@ const STORAGE_KEYS = {
   questions: 'jc_questions',
   documents: 'jc_documents',
   activeDocument: 'jc_active_document',
-  deletedDocuments: 'jc_deleted_documents'
+  deletedDocuments: 'jc_deleted_documents',
+  sidebarWidth: 'jc_sidebar_width'
 };
 const MAX_IMAGES_PER_DOCUMENT = 8;
 const MAX_DOCUMENT_IMAGE_SOURCE_LENGTH = 500000;
+const COMPOSE_LAYOUT_BREAKPOINT = 1100;
+const COMPOSE_DRAWER_WIDTH = 320;
+const COMPOSE_DRAWER_COLLAPSED_WIDTH = 84;
+const COMPOSE_MAIN_MIN_WIDTH = 460;
+const COMPOSE_SIDEBAR_DEFAULT_WIDTH = 400;
+const COMPOSE_SIDEBAR_MIN_WIDTH = 340;
+const COMPOSE_SIDEBAR_MAX_WIDTH = 620;
+const COMPOSE_RESIZER_WIDTH = 14;
+const COMPOSE_GRID_GAP = 24;
 const IMAGE_PROCESSING_STEPS = [
   { maxEdge: 1400, quality: 0.82 },
   { maxEdge: 1200, quality: 0.76 },
@@ -139,6 +149,7 @@ const i18n = {
     documentUntitled: 'Untitled entry',
     imageGalleryTitle: 'Pictures',
     imageGallerySubtitle: 'Drop photos into this document and open them at full size when needed.',
+    imageGalleryReadOnlySubtitle: 'Pictures attached to this document.',
     imageGalleryBrowse: 'Browse',
     imageGalleryDropHint: 'Drop images here or click to browse.',
     imageGalleryDropActive: 'Release to add these images.',
@@ -185,6 +196,8 @@ const i18n = {
     furiganaOff: 'Furigana: Off',
     vocabOn: 'Vocab: On',
     vocabOff: 'Vocab: Off',
+    sidebarResizeLabel: 'Resize sidebar',
+    sidebarResizeTitle: 'Drag to resize the right sidebar. Double-click to reset.',
     languageToggle: '日本語 UI',
     modeEdit: 'Mode: Edit',
     modeRead: 'Mode: Reading',
@@ -346,6 +359,7 @@ const i18n = {
     documentUntitled: '無題',
     imageGalleryTitle: '画像',
     imageGallerySubtitle: 'この作文に画像を追加して、必要なときに拡大表示できます。',
+    imageGalleryReadOnlySubtitle: 'この作文に添付された画像です。',
     imageGalleryBrowse: '参照',
     imageGalleryDropHint: 'ここに画像をドロップ、またはクリックして追加します。',
     imageGalleryDropActive: 'ドロップして画像を追加します。',
@@ -392,6 +406,8 @@ const i18n = {
     furiganaOff: 'ふりがな: なし',
     vocabOn: '語彙: 表示',
     vocabOff: '語彙: 非表示',
+    sidebarResizeLabel: 'サイドバーの幅を変更',
+    sidebarResizeTitle: 'ドラッグして右側のサイドバー幅を変更。ダブルクリックで初期幅に戻します。',
     languageToggle: 'English UI',
     modeEdit: 'モード: 編集',
     modeRead: 'モード: 閲覧',
@@ -499,6 +515,7 @@ const state = {
   activePage: 'compose',
   language: 'en',
   mode: 'edit',
+  sidebarWidth: COMPOSE_SIDEBAR_DEFAULT_WIDTH,
   vocab: [],
   questions: [],
   correctionsBaseText: '',
@@ -590,6 +607,12 @@ let workspaceHydrating = false;
 let localStateLoaded = false;
 let workspaceDeletedDocumentIds = new Set();
 let flashcardAdvanceTimer = null;
+const composeSidebarResizeState = {
+  active: false,
+  pointerId: null,
+  startX: 0,
+  startWidth: COMPOSE_SIDEBAR_DEFAULT_WIDTH
+};
 
 function enqueueVocabApiTask(task) {
   vocabSaveQueue = vocabSaveQueue
@@ -679,6 +702,7 @@ const proofreadButton = document.querySelector('#proofread-button');
 const proofreadMeta = document.querySelector('#proofread-meta');
 const proofreadResult = document.querySelector('#proofread-result');
 const composePage = document.querySelector('#compose-page');
+const composeResizer = document.querySelector('#compose-resizer');
 const vocabularyPage = document.querySelector('#vocabulary-page');
 const pageNavCompose = document.querySelector('#page-nav-compose');
 const pageNavVocabulary = document.querySelector('#page-nav-vocabulary');
@@ -3768,6 +3792,7 @@ function renderImageGallery() {
     return;
   }
   const copy = i18n[state.language];
+  const isReadingMode = state.mode === 'read';
   const activeImage = getActiveGalleryImage();
   if (!activeImage && imageGalleryState.activeImageId) {
     imageGalleryState.activeImageId = '';
@@ -3777,14 +3802,18 @@ function renderImageGallery() {
     imageGalleryTitle.textContent = copy.imageGalleryTitle;
   }
   if (imageGallerySubtitle) {
-    imageGallerySubtitle.textContent = copy.imageGallerySubtitle;
+    imageGallerySubtitle.textContent = isReadingMode
+      ? copy.imageGalleryReadOnlySubtitle
+      : copy.imageGallerySubtitle;
   }
   if (imageGalleryBrowse) {
     setElementText(imageGalleryBrowse, copy.imageGalleryBrowse);
-    imageGalleryBrowse.disabled = imageGalleryState.status === 'loading';
+    imageGalleryBrowse.disabled = isReadingMode || imageGalleryState.status === 'loading';
+    imageGalleryBrowse.hidden = isReadingMode;
   }
+  imageDropzone.hidden = isReadingMode;
   imageDropzone.classList.toggle('is-dragging', imageGalleryState.dragActive);
-  imageDropzone.disabled = imageGalleryState.status === 'loading';
+  imageDropzone.disabled = isReadingMode || imageGalleryState.status === 'loading';
   imageDropzoneCopy.textContent = imageGalleryState.dragActive
     ? copy.imageGalleryDropActive
     : copy.imageGalleryDropHint;
@@ -3813,14 +3842,16 @@ function renderImageGallery() {
     const card = document.createElement('article');
     card.className = 'image-card';
 
-    const removeButton = document.createElement('button');
-    removeButton.className = 'image-thumb-remove';
-    removeButton.type = 'button';
-    removeButton.dataset.imageId = image.id;
-    removeButton.setAttribute('aria-label', `${copy.imageGalleryRemove}: ${image.name || copy.imageGalleryUntitled}`);
-    removeButton.title = copy.imageGalleryRemove;
-    removeButton.textContent = '×';
-    card.appendChild(removeButton);
+    if (!isReadingMode) {
+      const removeButton = document.createElement('button');
+      removeButton.className = 'image-thumb-remove';
+      removeButton.type = 'button';
+      removeButton.dataset.imageId = image.id;
+      removeButton.setAttribute('aria-label', `${copy.imageGalleryRemove}: ${image.name || copy.imageGalleryUntitled}`);
+      removeButton.title = copy.imageGalleryRemove;
+      removeButton.textContent = '×';
+      card.appendChild(removeButton);
+    }
 
     const thumbButton = document.createElement('button');
     thumbButton.className = 'image-thumb';
@@ -5432,6 +5463,156 @@ function setPanelCollapsed(panel, body, button, collapsed) {
     app.classList.toggle('document-drawer-collapsed', collapsed);
   }
   syncPanelToggle(panel, body, button, i18n[state.language]);
+  if (panel === documentsDrawer) {
+    applyComposeSidebarWidth();
+  }
+}
+
+function isComposeDesktopLayout() {
+  return typeof window !== 'undefined' && window.innerWidth > COMPOSE_LAYOUT_BREAKPOINT;
+}
+
+function getComposeDrawerWidth() {
+  return app?.classList.contains('document-drawer-collapsed')
+    ? COMPOSE_DRAWER_COLLAPSED_WIDTH
+    : COMPOSE_DRAWER_WIDTH;
+}
+
+function getComposeSidebarWidthBounds() {
+  const min = COMPOSE_SIDEBAR_MIN_WIDTH;
+  if (!composePage || !isComposeDesktopLayout()) {
+    return { min, max: COMPOSE_SIDEBAR_MAX_WIDTH };
+  }
+  const composeWidth = composePage.clientWidth || 0;
+  if (!composeWidth) {
+    return { min, max: COMPOSE_SIDEBAR_MAX_WIDTH };
+  }
+  const reservedWidth = getComposeDrawerWidth()
+    + COMPOSE_MAIN_MIN_WIDTH
+    + COMPOSE_RESIZER_WIDTH
+    + (COMPOSE_GRID_GAP * 3);
+  const maxByLayout = Math.floor(composeWidth - reservedWidth);
+  const max = Math.max(min, Math.min(COMPOSE_SIDEBAR_MAX_WIDTH, maxByLayout));
+  return { min, max };
+}
+
+function clampComposeSidebarWidth(width) {
+  const { min, max } = getComposeSidebarWidthBounds();
+  const numericWidth = Number.isFinite(width) ? width : COMPOSE_SIDEBAR_DEFAULT_WIDTH;
+  return Math.round(Math.min(max, Math.max(min, numericWidth)));
+}
+
+function updateComposeResizerControl(copy = i18n[state.language]) {
+  if (!composeResizer) {
+    return;
+  }
+  const { min, max } = getComposeSidebarWidthBounds();
+  const currentWidth = clampComposeSidebarWidth(state.sidebarWidth);
+  composeResizer.setAttribute('aria-label', copy.sidebarResizeLabel);
+  composeResizer.setAttribute('title', copy.sidebarResizeTitle);
+  composeResizer.setAttribute('aria-valuemin', String(min));
+  composeResizer.setAttribute('aria-valuemax', String(max));
+  composeResizer.setAttribute('aria-valuenow', String(currentWidth));
+  composeResizer.setAttribute('aria-disabled', String(!isComposeDesktopLayout()));
+  composeResizer.tabIndex = isComposeDesktopLayout() ? 0 : -1;
+}
+
+function applyComposeSidebarWidth({ persist = false, copy = i18n[state.language] } = {}) {
+  if (!composePage) {
+    return;
+  }
+  const nextWidth = clampComposeSidebarWidth(state.sidebarWidth);
+  state.sidebarWidth = nextWidth;
+  composePage.style.setProperty('--compose-sidebar-width', `${nextWidth}px`);
+  updateComposeResizerControl(copy);
+  if (persist) {
+    safeStorageSet(STORAGE_KEYS.sidebarWidth, String(nextWidth));
+  }
+}
+
+function hydrateLayoutPreferences() {
+  const storedSidebarWidth = Number.parseInt(safeStorageGet(STORAGE_KEYS.sidebarWidth) || '', 10);
+  if (Number.isFinite(storedSidebarWidth)) {
+    state.sidebarWidth = storedSidebarWidth;
+  }
+  applyComposeSidebarWidth();
+}
+
+function resetComposeSidebarWidth() {
+  state.sidebarWidth = COMPOSE_SIDEBAR_DEFAULT_WIDTH;
+  applyComposeSidebarWidth({ persist: true });
+}
+
+function updateComposeSidebarWidthFromPointer(clientX) {
+  const delta = composeSidebarResizeState.startX - clientX;
+  state.sidebarWidth = composeSidebarResizeState.startWidth + delta;
+  applyComposeSidebarWidth();
+}
+
+function stopComposeSidebarResize({ persist = true } = {}) {
+  if (!composeSidebarResizeState.active) {
+    return;
+  }
+  if (composeResizer && composeSidebarResizeState.pointerId !== null && typeof composeResizer.releasePointerCapture === 'function') {
+    try {
+      composeResizer.releasePointerCapture(composeSidebarResizeState.pointerId);
+    } catch (error) {
+      // Ignore capture cleanup failures.
+    }
+  }
+  composeSidebarResizeState.active = false;
+  composeSidebarResizeState.pointerId = null;
+  composeResizer?.classList.remove('is-resizing');
+  app?.classList.remove('sidebar-resizing');
+  document.body.classList.remove('sidebar-resizing');
+  if (persist) {
+    safeStorageSet(STORAGE_KEYS.sidebarWidth, String(state.sidebarWidth));
+  }
+}
+
+function startComposeSidebarResize(event) {
+  if (!(event instanceof PointerEvent) || event.button !== 0 || !isComposeDesktopLayout()) {
+    return;
+  }
+  event.preventDefault();
+  composeSidebarResizeState.active = true;
+  composeSidebarResizeState.pointerId = event.pointerId;
+  composeSidebarResizeState.startX = event.clientX;
+  composeSidebarResizeState.startWidth = clampComposeSidebarWidth(state.sidebarWidth);
+  composeResizer?.classList.add('is-resizing');
+  app?.classList.add('sidebar-resizing');
+  document.body.classList.add('sidebar-resizing');
+  if (composeResizer && typeof composeResizer.setPointerCapture === 'function') {
+    try {
+      composeResizer.setPointerCapture(event.pointerId);
+    } catch (error) {
+      // Ignore capture support failures.
+    }
+  }
+}
+
+function handleComposeSidebarResizeKeydown(event) {
+  if (!composeResizer || !isComposeDesktopLayout()) {
+    return;
+  }
+  const step = event.shiftKey ? 64 : 24;
+  const { min, max } = getComposeSidebarWidthBounds();
+  let nextWidth = null;
+  if (event.key === 'ArrowLeft') {
+    nextWidth = clampComposeSidebarWidth(state.sidebarWidth + step);
+  } else if (event.key === 'ArrowRight') {
+    nextWidth = clampComposeSidebarWidth(state.sidebarWidth - step);
+  } else if (event.key === 'Home') {
+    nextWidth = min;
+  } else if (event.key === 'End') {
+    nextWidth = max;
+  }
+  if (nextWidth === null) {
+    return;
+  }
+  event.preventDefault();
+  state.sidebarWidth = nextWidth;
+  applyComposeSidebarWidth({ persist: true });
 }
 
 function renderUI() {
@@ -5497,6 +5678,7 @@ function renderUI() {
   if (correctionsPanel) {
     correctionsPanel.hidden = !isCorrectionsMode;
   }
+  applyComposeSidebarWidth({ copy });
 
   renderDocumentControls();
   renderImageGallery();
@@ -6001,6 +6183,18 @@ function bindEvents() {
   documentsDrawerToggle?.addEventListener('click', () => {
     const nextCollapsed = !documentsDrawer?.classList.contains('is-collapsed');
     setPanelCollapsed(documentsDrawer, documentsDrawerBody, documentsDrawerToggle, nextCollapsed);
+  });
+
+  composeResizer?.addEventListener('pointerdown', (event) => {
+    startComposeSidebarResize(event);
+  });
+
+  composeResizer?.addEventListener('dblclick', () => {
+    resetComposeSidebarWidth();
+  });
+
+  composeResizer?.addEventListener('keydown', (event) => {
+    handleComposeSidebarResizeKeydown(event);
   });
 
   documentNew?.addEventListener('click', () => {
@@ -6606,6 +6800,30 @@ function bindEvents() {
     clearActiveHover();
   }, true);
 
+  window.addEventListener('pointermove', (event) => {
+    if (!composeSidebarResizeState.active) {
+      return;
+    }
+    if (composeSidebarResizeState.pointerId !== null && event.pointerId !== composeSidebarResizeState.pointerId) {
+      return;
+    }
+    updateComposeSidebarWidthFromPointer(event.clientX);
+  });
+
+  window.addEventListener('pointerup', (event) => {
+    if (!composeSidebarResizeState.active) {
+      return;
+    }
+    if (composeSidebarResizeState.pointerId !== null && event.pointerId !== composeSidebarResizeState.pointerId) {
+      return;
+    }
+    stopComposeSidebarResize({ persist: true });
+  });
+
+  window.addEventListener('pointercancel', () => {
+    stopComposeSidebarResize({ persist: true });
+  });
+
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') {
       return;
@@ -6614,6 +6832,14 @@ function bindEvents() {
     clearActiveHover();
     hideTooltip();
     hideSelectionTooltip();
+    stopComposeSidebarResize({ persist: true });
+  });
+
+  window.addEventListener('resize', () => {
+    if (!isComposeDesktopLayout()) {
+      stopComposeSidebarResize({ persist: false });
+    }
+    applyComposeSidebarWidth();
   });
 
   window.addEventListener('focus', () => {
@@ -6633,6 +6859,7 @@ function bindEvents() {
 
 async function init() {
   authState.notice = consumeAuthResultFromUrl();
+  hydrateLayoutPreferences();
   bindEvents();
   const canRenderWorkspace = await hydrateAuthAndWorkspace();
   if (!canRenderWorkspace) {
