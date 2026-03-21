@@ -7,8 +7,17 @@ import { fileURLToPath } from 'node:url';
 import {
   ASK_SYSTEM_PROMPT,
   PROOFREAD_SYSTEM_PROMPT,
-  SYNTHETIC_DOCUMENT_SYSTEM_PROMPT
+  SYNTHETIC_DOCUMENT_SYSTEM_PROMPT,
+  VOCAB_RESOLUTION_SYSTEM_PROMPT
 } from './openai-prompts.js';
+import {
+  buildDictionaryMeaning,
+  buildFallbackVocabEntry,
+  formatDictionaryCandidatesForPrompt,
+  normalizeLookupText,
+  parseVocabResolutionOutput,
+  resolveSelectionVocabEntry
+} from './vocab-resolver.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -660,6 +669,62 @@ const server = http.createServer(async (req, res) => {
       return;
     }
   }
+  if (requestUrl.pathname === '/api/vocab-resolve') {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const text = typeof body?.text === 'string' ? body.text.trim() : '';
+    const lookupTarget = typeof body?.lookupTarget === 'string' ? body.lookupTarget.trim() : '';
+
+    if (!text) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Missing text' }));
+      return;
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    const model = process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
+
+    try {
+      const dictionaryEntries = collectDictionaryCandidates([lookupTarget, text]);
+      const resolved = await resolveSelectionVocabEntry({
+        text,
+        lookupText: lookupTarget,
+        dictionaryEntries,
+        resolveWithModel: apiKey
+          ? ({ text: selectedText, lookupText: resolvedLookupText, dictionaryEntries: candidates }) => {
+              return requestOpenAiVocabResolution({
+                apiKey,
+                model,
+                text: selectedText,
+                lookupText: resolvedLookupText,
+                dictionaryEntries: candidates
+              });
+            }
+          : null
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        entry: resolved?.entry || buildFallbackVocabEntry(text),
+        source: resolved?.source || 'fallback',
+        model: resolved?.source === 'model' ? model : null
+      }));
+      return;
+    } catch (error) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        entry: buildFallbackVocabEntry(text),
+        source: 'fallback',
+        model: null
+      }));
+      return;
+    }
+  }
   if (requestUrl.pathname === '/api/translate') {
     if (req.method !== 'POST') {
       res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -997,7 +1062,7 @@ server.listen(port, () => {
   if (localDictionary) {
     console.log('Local JMdict lookup enabled.');
   } else {
-    console.log('Local JMdict lookup not found. Using Jisho API.');
+    console.log('Local JMdict lookup not found.');
   }
 });
 
@@ -1375,6 +1440,51 @@ function extractOpenAiText(payload) {
     });
   });
   return parts.join('\n').trim();
+}
+
+async function requestOpenAiVocabResolution({
+  apiKey,
+  model,
+  text,
+  lookupText,
+  dictionaryEntries
+}) {
+  if (!apiKey) {
+    return null;
+  }
+
+  const input = [
+    `Selected text: ${text}`,
+    lookupText ? `Lookup target: ${lookupText}` : '',
+    `Dictionary candidates:\n${formatDictionaryCandidatesForPrompt(dictionaryEntries, 6)}`
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        max_output_tokens: 180,
+        instructions: VOCAB_RESOLUTION_SYSTEM_PROMPT,
+        input
+      })
+    });
+    const data = await safeParseJson(response);
+    if (!response.ok) {
+      debug('OpenAI vocab resolution failed:', response.status, data?.error?.message || '');
+      return null;
+    }
+    return parseVocabResolutionOutput(extractOpenAiText(data), text);
+  } catch (error) {
+    debug('OpenAI vocab resolution request errored:', error);
+    return null;
+  }
 }
 
 function sqlString(value) {
@@ -2563,7 +2673,7 @@ const japaneseEdgeRegex = new RegExp(`^[^${japaneseCharRange}]+|[^${japaneseChar
 const kanjiRegex = /[\u3400-\u9fff]/;
 
 function normalizeKeyword(keyword) {
-  return keyword.trim().replace(japaneseEdgeRegex, '');
+  return normalizeLookupText(keyword);
 }
 
 function lookupLocalDictionary(keyword) {
@@ -2601,6 +2711,38 @@ function lookupLocalDictionary(keyword) {
 
   localLookupCache.set(normalized, data);
   return data;
+}
+
+function collectDictionaryCandidates(queries, limit = 8) {
+  const seen = new Set();
+  const items = [];
+
+  queries
+    .map((query) => normalizeKeyword(query || ''))
+    .filter(Boolean)
+    .forEach((query) => {
+      const entries = lookupLocalDictionary(query);
+      entries.forEach((entry) => {
+        if (items.length >= limit) {
+          return;
+        }
+        const key = buildDictionaryCandidateKey(entry);
+        if (seen.has(key)) {
+          return;
+        }
+        seen.add(key);
+        items.push(entry);
+      });
+    });
+
+  return items;
+}
+
+function buildDictionaryCandidateKey(entry) {
+  const forms = (Array.isArray(entry?.japanese) ? entry.japanese : [])
+    .map((form) => `${form?.word || ''}:${form?.reading || ''}`)
+    .join('|');
+  return `${forms}::${buildDictionaryMeaning(entry)}`;
 }
 
 function buildJapaneseForms(entry) {

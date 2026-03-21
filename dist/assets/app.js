@@ -1,5 +1,6 @@
 const PROXY_DICT_ENDPOINT = '/api/lookup?keyword=';
 const VOCAB_API_ENDPOINT = '/api/vocab';
+const VOCAB_RESOLVE_ENDPOINT = '/api/vocab-resolve';
 const SHARE_USER_API_ENDPOINT = '/api/share-user';
 const WORKFLOW_TRANSITION_API_ENDPOINT = '/api/workflow-transition';
 const AUTH_SESSION_ENDPOINT = '/api/auth/session';
@@ -3421,7 +3422,7 @@ async function lookupWord(word) {
   };
 }
 
-function pickKanjiFormForKana(entry, query) {
+function pickBestFormForKana(entry, query) {
   const kanaQuery = toHiragana(query);
   if (!kanaQuery) {
     return null;
@@ -3436,17 +3437,15 @@ function pickKanjiFormForKana(entry, query) {
       continue;
     }
     const word = typeof form.word === 'string' ? form.word : '';
-    if (!hasKanji(word)) {
-      continue;
-    }
     const reading = typeof form.reading === 'string' ? form.reading : '';
-    const readingKana = toHiragana(reading);
+    const fallbackReading = !hasKanji(word) && hasKana(word) ? word : '';
+    const readingKana = toHiragana(reading || fallbackReading);
     let score = -1;
     if (word === query) {
-      score = 210;
+      score = hasKanji(word) ? 240 : 220;
     }
     if (readingKana && readingKana === kanaQuery) {
-      score = Math.max(score, 220);
+      score = Math.max(score, hasKanji(word) ? 250 : 225);
     }
     if (score < 0) {
       continue;
@@ -3454,8 +3453,8 @@ function pickKanjiFormForKana(entry, query) {
     if (score > bestScore) {
       bestScore = score;
       best = {
-        word,
-        reading,
+        word: word || reading || query,
+        reading: reading || fallbackReading,
         score
       };
     }
@@ -3481,7 +3480,7 @@ async function lookupKanaWord(word) {
     if (!entry || typeof entry !== 'object') {
       continue;
     }
-    const matched = pickKanjiFormForKana(entry, normalized);
+    const matched = pickBestFormForKana(entry, normalized);
     if (!matched) {
       continue;
     }
@@ -5525,28 +5524,103 @@ function addToVocab(entry) {
   return true;
 }
 
-async function resolveSelectionVocabularyEntry(text) {
-  const normalized = normalizeLookupWord(text);
-  if (!normalized) {
+function normalizeSelectionVocabEntry(entry, fallbackText = '') {
+  const fallbackRaw = typeof fallbackText === 'string' ? fallbackText.trim() : '';
+  const fallbackWord = normalizeLookupWord(fallbackRaw) || fallbackRaw;
+  if (!entry || typeof entry !== 'object') {
+    if (!fallbackWord) {
+      return null;
+    }
+    return {
+      word: fallbackWord,
+      reading: !hasKanji(fallbackWord) && hasKana(fallbackWord) ? fallbackWord : '',
+      meaning: ''
+    };
+  }
+
+  const word = typeof entry.word === 'string' && entry.word.trim()
+    ? entry.word.trim()
+    : fallbackWord;
+  let reading = typeof entry.reading === 'string' ? entry.reading.trim() : '';
+  if (!reading && word && !hasKanji(word) && hasKana(word)) {
+    reading = word;
+  }
+  const meaning = typeof entry.meaning === 'string' ? entry.meaning.trim() : '';
+
+  if (!word && !reading && !meaning) {
     return null;
   }
+
+  return { word, reading, meaning };
+}
+
+function isInformativeSelectionVocabEntry(entry, fallbackText = '') {
+  const normalized = normalizeSelectionVocabEntry(entry, fallbackText);
+  if (!normalized) {
+    return false;
+  }
+  const fallbackRaw = typeof fallbackText === 'string' ? fallbackText.trim() : '';
+  const fallbackWord = normalizeLookupWord(fallbackRaw) || fallbackRaw;
+  return Boolean(
+    normalized.meaning
+    || (normalized.reading && normalized.reading !== fallbackWord)
+    || (normalized.word && normalized.word !== fallbackWord)
+  );
+}
+
+async function requestSelectionVocabularyResolution(text, lookupTarget) {
+  const response = await fetch(VOCAB_RESOLVE_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      lookupTarget
+    })
+  });
+  const data = await safeParseJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || 'Vocab resolution failed');
+  }
+  return data;
+}
+
+async function resolveSelectionVocabularyEntry(text) {
+  const selectionText = typeof text === 'string' ? text.trim() : '';
+  if (!selectionText) {
+    return null;
+  }
+  const normalized = normalizeLookupWord(selectionText);
   const selectionTokens = getLineTokens(normalized).filter((token) => token && token.text && !/^\s+$/.test(token.text));
   const lookupTarget = selectionTokens.length === 1
     ? (selectionTokens[0].lookup || normalized)
-    : normalized;
-  const cacheKey = normalizeLookupWord(lookupTarget) || normalized;
+    : (normalized || selectionText);
+  const cacheKey = normalizeLookupWord(lookupTarget) || normalized || selectionText;
   const cached = lookupCache.get(cacheKey) || lookupCache.get(normalized);
   if (cached) {
-    return cached;
+    return normalizeSelectionVocabEntry(cached, selectionText);
   }
 
-  const entry = await lookupDictionaryEntry(cacheKey);
+  if (cacheKey) {
+    const entry = await lookupDictionaryEntry(cacheKey);
+    if (entry) {
+      lookupCache.set(cacheKey, entry);
+      if (normalized && cacheKey !== normalized) {
+        lookupCache.set(normalized, entry);
+      }
+      return entry;
+    }
+  }
+
+  const resolved = await requestSelectionVocabularyResolution(selectionText, cacheKey);
+  const entry = normalizeSelectionVocabEntry(resolved?.entry, selectionText);
   if (!entry) {
     return null;
   }
-  lookupCache.set(cacheKey, entry);
-  if (cacheKey !== normalized) {
-    lookupCache.set(normalized, entry);
+  if (resolved?.source && resolved.source !== 'fallback' && isInformativeSelectionVocabEntry(entry, selectionText)) {
+    lookupCache.set(cacheKey, entry);
+    if (normalized && cacheKey !== normalized) {
+      lookupCache.set(normalized, entry);
+    }
   }
   return entry;
 }
@@ -6346,16 +6420,18 @@ function bindEvents() {
       setElementText(selectionAddToVocab, copy.selectionAddToVocabLoading);
 
       try {
-        const entry = await resolveSelectionVocabularyEntry(text);
-        if (!entry) {
-          status.textContent = copy.selectionAddToVocabMissing;
+        let entry = null;
+        try {
+          entry = await resolveSelectionVocabularyEntry(text);
+        } catch (error) {
+          entry = null;
+        }
+        const normalizedEntry = normalizeSelectionVocabEntry(entry, text);
+        if (!normalizedEntry) {
+          status.textContent = copy.selectionAddToVocabError;
           return;
         }
-        const added = addToVocab({
-          word: entry.word || text.trim(),
-          reading: entry.reading || '',
-          meaning: entry.meaning || ''
-        });
+        const added = addToVocab(normalizedEntry);
         status.textContent = added ? copy.selectionAddToVocabSuccess : copy.selectionAddToVocabDuplicate;
       } catch (error) {
         status.textContent = copy.selectionAddToVocabError;
