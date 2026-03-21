@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 import {
   ASK_SYSTEM_PROMPT,
   PROOFREAD_SYSTEM_PROMPT,
@@ -23,8 +24,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const distDir = path.join(root, 'dist');
 const dataDir = path.join(root, 'data');
+const localRawDictionaryPath = process.env.JMDICT_PATH || path.join(dataDir, 'JMdict_e');
 const localEntriesPath = process.env.JMDICT_ENTRIES_PATH || path.join(dataDir, 'jmdict-entries.json');
 const localIndexPath = process.env.JMDICT_INDEX_PATH || path.join(dataDir, 'jmdict-index.json');
+const jmdictDownloadUrl = process.env.JMDICT_DOWNLOAD_URL || 'https://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz';
 const vocabDbPath = process.env.VOCAB_DB_PATH || path.join(dataDir, 'vocab.sqlite');
 const workspaceDbPath = process.env.WORKSPACE_DB_PATH || path.join(dataDir, 'workspace.sqlite');
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1';
@@ -72,6 +75,78 @@ function debug(...args) {
     return;
   }
   console.log('[dev]', ...args);
+}
+
+async function pathExists(target) {
+  try {
+    await fs.access(target);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function runNodeScript(scriptPath, envOverrides = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath], {
+      env: {
+        ...process.env,
+        ...envOverrides
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(new Error(stderr.trim() || stdout.trim() || `Node script failed: ${scriptPath}`));
+    });
+  });
+}
+
+async function ensureLocalDictionaryAvailable() {
+  const hasEntries = await pathExists(localEntriesPath);
+  const hasIndex = await pathExists(localIndexPath);
+  if (hasEntries && hasIndex) {
+    return;
+  }
+
+  await fs.mkdir(dataDir, { recursive: true });
+
+  if (!await pathExists(localRawDictionaryPath)) {
+    console.log('Local JMdict files missing. Downloading JMdict_e.gz...');
+    const response = await fetch(jmdictDownloadUrl);
+    if (!response.ok) {
+      throw new Error(`JMdict download failed with status ${response.status}`);
+    }
+    const compressed = Buffer.from(await response.arrayBuffer());
+    const xml = gunzipSync(compressed);
+    await fs.writeFile(localRawDictionaryPath, xml);
+    console.log(`Downloaded JMdict source to ${localRawDictionaryPath}`);
+  }
+
+  console.log('Generating local JMdict lookup files...');
+  const buildResult = await runNodeScript(path.join(__dirname, 'jmdict-build.js'), {
+    JMDICT_PATH: localRawDictionaryPath,
+    JMDICT_ENTRIES_PATH: localEntriesPath,
+    JMDICT_INDEX_PATH: localIndexPath
+  });
+  if (buildResult.stdout.trim()) {
+    console.log(buildResult.stdout.trim());
+  }
+  if (buildResult.stderr.trim()) {
+    console.warn(buildResult.stderr.trim());
+  }
 }
 
 function getRequestPath(req) {
@@ -202,12 +277,24 @@ try {
 }
 
 debug('Loading local dictionary...');
+try {
+  await ensureLocalDictionaryAvailable();
+} catch (error) {
+  console.error('Failed to auto-fix local JMdict files:', error?.message || error);
+}
 const localDictionary = await loadLocalDictionary();
 const localLookupCache = new Map();
 debug(localDictionary ? 'Local dictionary loaded.' : 'Local dictionary not found.');
 
 debug('Running build script...');
 await import('./build.js');
+
+function logLookupDebug(stage, details = {}) {
+  const payload = typeof details === 'object' && details !== null
+    ? details
+    : { value: details };
+  console.log(`[lookup] ${stage}`, payload);
+}
 debug('Build complete.');
 
 const mimeTypes = {
@@ -656,14 +743,41 @@ const server = http.createServer(async (req, res) => {
     try {
       if (localDictionary) {
         const localResults = lookupLocalDictionary(keyword);
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ data: localResults }));
-        return;
+        logLookupDebug('local', {
+          keyword,
+          normalized: normalizeKeyword(keyword),
+          count: localResults.length
+        });
+        if (localResults.length) {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ data: localResults }));
+          return;
+        }
       }
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ data: [] }));
+
+      logLookupDebug('fallback:jisho:start', {
+        keyword,
+        normalized: normalizeKeyword(keyword)
+      });
+      const response = await fetch(
+        `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(keyword)}`
+      );
+      const body = await response.text();
+      logLookupDebug('fallback:jisho:done', {
+        keyword,
+        status: response.status,
+        ok: response.ok
+      });
+      res.writeHead(response.ok ? 200 : response.status, {
+        'Content-Type': 'application/json; charset=utf-8'
+      });
+      res.end(body);
       return;
     } catch (error) {
+      logLookupDebug('error', {
+        keyword,
+        message: error?.message || 'Lookup failed'
+      });
       res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ error: 'Lookup failed' }));
       return;
