@@ -2560,6 +2560,7 @@ async function loadLocalDictionary() {
 const japaneseCharRange =
   '\u3005\u3006\u3007\u303b\u3040-\u309f\u30a0-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9d';
 const japaneseEdgeRegex = new RegExp(`^[^${japaneseCharRange}]+|[^${japaneseCharRange}]+$`, 'g');
+const kanjiRegex = /[\u3400-\u9fff]/;
 
 function normalizeKeyword(keyword) {
   return keyword.trim().replace(japaneseEdgeRegex, '');
@@ -2578,7 +2579,7 @@ function lookupLocalDictionary(keyword) {
   }
 
   let entryIds = localDictionary.index[normalized];
-  if (!entryIds && normalized.length > 1) {
+  if (!entryIds && normalized.length > 1 && !kanjiRegex.test(normalized)) {
     const results = new Set();
     for (const key of localDictionary.keys) {
       if (key.startsWith(normalized)) {
