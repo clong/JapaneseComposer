@@ -125,6 +125,8 @@ const WORKFLOW_TRANSITION_ACTIONS = new Set(['submit', 'return_review', 'mark_fi
 const WORKFLOW_EVENT_ACTIONS = new Set(['share_start', 'share_update', 'submit', 'return_review', 'mark_final']);
 const STUDENT_WORKFLOW_ACTIONS = new Set(['submit', 'mark_final']);
 const TEACHER_WORKFLOW_ACTIONS = new Set(['return_review']);
+const MAX_IMAGES_PER_DOCUMENT = 8;
+const MAX_DOCUMENT_IMAGE_SOURCE_LENGTH = 500000;
 const AUTH_AUDIT_THROTTLE_MS = Math.max(1000, Number(process.env.AUTH_AUDIT_THROTTLE_MS || '5000'));
 const NOISY_AUTH_PATHS = new Set(['/api/auth/session', '/api/workspace']);
 const authAuditEventLogState = new Map();
@@ -1770,6 +1772,50 @@ function createWorkspaceDocumentId() {
   return `doc_${Date.now().toString(36)}_${randomBytes(8).toString('hex')}`;
 }
 
+function createWorkspaceAssetId(prefix = 'asset') {
+  const safePrefix = typeof prefix === 'string' && prefix.trim() ? prefix.trim() : 'asset';
+  return `${safePrefix}_${Date.now().toString(36)}_${randomBytes(8).toString('hex')}`;
+}
+
+function normalizeWorkspaceDocumentImages(images) {
+  if (!Array.isArray(images)) {
+    return [];
+  }
+  const now = Date.now();
+  const seenIds = new Set();
+  return images
+    .slice(0, MAX_IMAGES_PER_DOCUMENT)
+    .map((image) => {
+      if (!image || typeof image !== 'object') {
+        return null;
+      }
+      let id = typeof image.id === 'string' ? image.id.trim().slice(0, 160) : '';
+      if (!id || seenIds.has(id)) {
+        id = createWorkspaceAssetId('img');
+      }
+      seenIds.add(id);
+      const src = typeof image.src === 'string'
+        ? image.src.trim()
+        : (typeof image.dataUrl === 'string' ? image.dataUrl.trim() : '');
+      if (!src.startsWith('data:image/') || src.length > MAX_DOCUMENT_IMAGE_SOURCE_LENGTH) {
+        return null;
+      }
+      const name = typeof image.name === 'string' ? image.name.trim().slice(0, 180) : '';
+      const width = Number.isFinite(image.width) ? Math.max(1, Math.trunc(image.width)) : null;
+      const height = Number.isFinite(image.height) ? Math.max(1, Math.trunc(image.height)) : null;
+      const addedAt = Number.isFinite(image.addedAt) ? Math.trunc(image.addedAt) : now;
+      return {
+        id,
+        name,
+        src,
+        width,
+        height,
+        addedAt
+      };
+    })
+    .filter(Boolean);
+}
+
 function normalizeWorkspaceDocumentList(entries) {
   if (!Array.isArray(entries)) {
     return [];
@@ -1789,6 +1835,7 @@ function normalizeWorkspaceDocumentList(entries) {
       seenIds.add(id);
       const title = typeof entry.title === 'string' ? entry.title.slice(0, 200) : '';
       const text = typeof entry.text === 'string' ? entry.text.slice(0, 20000) : '';
+      const images = normalizeWorkspaceDocumentImages(entry.images);
       const vocab = normalizeShareVocabList(entry.vocab);
       const questions = normalizeShareQuestionList(entry.questions);
       const correctionsBaseText = typeof entry.correctionsBaseText === 'string'
@@ -1820,6 +1867,7 @@ function normalizeWorkspaceDocumentList(entries) {
         id,
         title,
         text,
+        images,
         vocab,
         questions,
         correctionsBaseText,

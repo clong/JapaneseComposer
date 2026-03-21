@@ -19,6 +19,13 @@ const STORAGE_KEYS = {
   activeDocument: 'jc_active_document',
   deletedDocuments: 'jc_deleted_documents'
 };
+const MAX_IMAGES_PER_DOCUMENT = 8;
+const MAX_DOCUMENT_IMAGE_SOURCE_LENGTH = 500000;
+const IMAGE_PROCESSING_STEPS = [
+  { maxEdge: 1400, quality: 0.82 },
+  { maxEdge: 1200, quality: 0.76 },
+  { maxEdge: 960, quality: 0.72 }
+];
 
 const kanjiRegex = /[\u3400-\u9fff]/;
 const japaneseCharRange =
@@ -129,6 +136,22 @@ const i18n = {
     documentDelete: 'Delete',
     documentDeleteConfirm: 'Delete this document? This cannot be undone.',
     documentUntitled: 'Untitled entry',
+    imageGalleryTitle: 'Pictures',
+    imageGallerySubtitle: 'Drop photos into this document and open them at full size when needed.',
+    imageGalleryBrowse: 'Browse',
+    imageGalleryDropHint: 'Drop images here or click to browse.',
+    imageGalleryDropActive: 'Release to add these images.',
+    imageGalleryEmpty: 'No pictures yet for this document.',
+    imageGalleryProcessing: 'Preparing {count} image(s)…',
+    imageGalleryAdded: 'Added {count} image(s).',
+    imageGallerySkipped: 'Skipped {count} file(s).',
+    imageGalleryLimitReached: 'You can add up to {count} images per document.',
+    imageGalleryUnsupported: 'Only image files can be added here.',
+    imageGalleryProcessError: 'One or more images could not be processed.',
+    imageGalleryRemove: 'Remove image',
+    imageGalleryZoom: 'Open image',
+    imageGalleryUntitled: 'Untitled image',
+    imageLightboxClose: 'Close',
     previewEmpty: 'Switch to edit mode to enable editing',
     vocabTitle: 'Vocabulary',
     vocabSubtitle: 'Saved words from your journal entry.',
@@ -195,7 +218,7 @@ const i18n = {
     shareSend: 'Start shared review',
     shareRequiresAuth: 'Sign in to share with another user.',
     shareMissingEmail: 'Enter a recipient email.',
-    shareMissingText: 'Enter some text to share.',
+    shareMissingText: 'Enter some text or add pictures to share.',
     shareSuccess: 'Shared review started.',
     shareError: 'Sharing failed.',
     workflowPanelTitle: 'Shared Review Workflow',
@@ -310,6 +333,22 @@ const i18n = {
     documentDelete: '削除',
     documentDeleteConfirm: 'この作文を削除しますか？元に戻せません。',
     documentUntitled: '無題',
+    imageGalleryTitle: '画像',
+    imageGallerySubtitle: 'この作文に画像を追加して、必要なときに拡大表示できます。',
+    imageGalleryBrowse: '参照',
+    imageGalleryDropHint: 'ここに画像をドロップ、またはクリックして追加します。',
+    imageGalleryDropActive: 'ドロップして画像を追加します。',
+    imageGalleryEmpty: 'この作文にはまだ画像がありません。',
+    imageGalleryProcessing: '{count}件の画像を準備中…',
+    imageGalleryAdded: '{count}件の画像を追加しました。',
+    imageGallerySkipped: '{count}件のファイルをスキップしました。',
+    imageGalleryLimitReached: '1つの作文に追加できる画像は{count}件までです。',
+    imageGalleryUnsupported: '画像ファイルのみ追加できます。',
+    imageGalleryProcessError: '一部の画像を処理できませんでした。',
+    imageGalleryRemove: '画像を削除',
+    imageGalleryZoom: '画像を開く',
+    imageGalleryUntitled: '無題の画像',
+    imageLightboxClose: '閉じる',
     previewEmpty: '入力するとここに表示されます。',
     vocabTitle: '語彙リスト',
     vocabSubtitle: '日記から保存した単語を表示します。',
@@ -376,7 +415,7 @@ const i18n = {
     shareSend: '添削ワークフロー開始',
     shareRequiresAuth: '共有するにはログインしてください。',
     shareMissingEmail: '共有先メールを入力してください。',
-    shareMissingText: '共有するテキストを入力してください。',
+    shareMissingText: '共有するテキストを入力するか、画像を追加してください。',
     shareSuccess: 'ワークフローを開始しました。',
     shareError: '共有に失敗しました。',
     workflowPanelTitle: '共有添削ワークフロー',
@@ -433,6 +472,7 @@ const state = {
   title: '',
   documents: [],
   text: '',
+  images: [],
   showFurigana: true,
   showVocab: true,
   activePage: 'compose',
@@ -494,6 +534,13 @@ const shareState = {
   lastSharedAt: null
 };
 
+const imageGalleryState = {
+  dragActive: false,
+  status: 'idle',
+  message: '',
+  activeImageId: ''
+};
+
 const authState = {
   enabled: false,
   loading: true,
@@ -541,6 +588,14 @@ const documentsList = document.querySelector('#document-list');
 const documentSave = document.querySelector('#document-save');
 const documentNew = document.querySelector('#document-new');
 const preview = document.querySelector('#preview');
+const imageGalleryTitle = document.querySelector('#image-gallery-title');
+const imageGallerySubtitle = document.querySelector('#image-gallery-subtitle');
+const imageGalleryBrowse = document.querySelector('#image-gallery-browse');
+const imageGalleryInput = document.querySelector('#image-gallery-input');
+const imageDropzone = document.querySelector('#image-dropzone');
+const imageDropzoneCopy = document.querySelector('#image-dropzone-copy');
+const imageDropzoneStatus = document.querySelector('#image-dropzone-status');
+const imageGalleryGrid = document.querySelector('#image-gallery-grid');
 const correctionsPanel = document.querySelector('#corrections-panel');
 const correctionsTitle = document.querySelector('#corrections-title');
 const correctionsSubtitle = document.querySelector('#corrections-subtitle');
@@ -628,6 +683,11 @@ const flashcardAnswer = document.querySelector('#flashcard-answer');
 const flashcardCheck = document.querySelector('#flashcard-check');
 const flashcardFeedback = document.querySelector('#flashcard-feedback');
 const flashcardSummary = document.querySelector('#flashcard-summary');
+const imageLightbox = document.querySelector('#image-lightbox');
+const imageLightboxBackdrop = document.querySelector('#image-lightbox-backdrop');
+const imageLightboxClose = document.querySelector('#image-lightbox-close');
+const imageLightboxImage = document.querySelector('#image-lightbox-image');
+const imageLightboxCaption = document.querySelector('#image-lightbox-caption');
 
 function normalizeFlashcardInput(value) {
   return String(value || '')
@@ -1616,6 +1676,168 @@ function generateDocumentId() {
   return `doc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function generateAssetId(prefix = 'asset') {
+  const safePrefix = typeof prefix === 'string' && prefix.trim() ? prefix.trim() : 'asset';
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${safePrefix}_${crypto.randomUUID()}`;
+  }
+  return `${safePrefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function formatCopy(template, replacements = {}) {
+  return String(template || '').replace(/\{(\w+)\}/g, (_match, key) => {
+    const value = replacements[key];
+    return value == null ? '' : String(value);
+  });
+}
+
+function isSupportedImageSource(value) {
+  return /^data:image\//i.test(String(value || '').trim());
+}
+
+function normalizeDocumentImages(images) {
+  if (!Array.isArray(images)) {
+    return [];
+  }
+  const now = Date.now();
+  const seenIds = new Set();
+  return images
+    .slice(0, MAX_IMAGES_PER_DOCUMENT)
+    .map((image) => {
+      if (!image || typeof image !== 'object') {
+        return null;
+      }
+      let id = typeof image.id === 'string' && image.id.trim()
+        ? image.id.trim().slice(0, 160)
+        : generateAssetId('img');
+      if (seenIds.has(id)) {
+        id = generateAssetId('img');
+      }
+      seenIds.add(id);
+      const src = typeof image.src === 'string'
+        ? image.src.trim()
+        : (typeof image.dataUrl === 'string' ? image.dataUrl.trim() : '');
+      if (!isSupportedImageSource(src) || src.length > MAX_DOCUMENT_IMAGE_SOURCE_LENGTH) {
+        return null;
+      }
+      const name = typeof image.name === 'string' ? image.name.trim().slice(0, 180) : '';
+      const width = Number.isFinite(image.width) ? Math.max(1, Math.trunc(image.width)) : null;
+      const height = Number.isFinite(image.height) ? Math.max(1, Math.trunc(image.height)) : null;
+      const addedAt = Number.isFinite(image.addedAt) ? Math.trunc(image.addedAt) : now;
+      return {
+        id,
+        name,
+        src,
+        width,
+        height,
+        addedAt
+      };
+    })
+    .filter(Boolean);
+}
+
+function hasDocumentContent(text = state.text, images = state.images) {
+  return Boolean(
+    (typeof text === 'string' && text.trim())
+      || (Array.isArray(images) && images.length)
+  );
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(new Error('Failed to read image file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageFromSource(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load image.'));
+    image.src = src;
+  });
+}
+
+function getScaledDimensions(width, height, maxEdge) {
+  const safeWidth = Math.max(1, Number(width) || 1);
+  const safeHeight = Math.max(1, Number(height) || 1);
+  const safeMaxEdge = Math.max(1, Number(maxEdge) || 1);
+  const longestSide = Math.max(safeWidth, safeHeight);
+  if (longestSide <= safeMaxEdge) {
+    return { width: safeWidth, height: safeHeight };
+  }
+  const scale = safeMaxEdge / longestSide;
+  return {
+    width: Math.max(1, Math.round(safeWidth * scale)),
+    height: Math.max(1, Math.round(safeHeight * scale))
+  };
+}
+
+function canvasToCompressedDataUrl(canvas, quality) {
+  let output = canvas.toDataURL('image/webp', quality);
+  if (!output.startsWith('data:image/webp')) {
+    output = canvas.toDataURL('image/jpeg', quality);
+  }
+  return output;
+}
+
+async function processDocumentImageFile(file) {
+  const sourceDataUrl = await readFileAsDataUrl(file);
+  if (!isSupportedImageSource(sourceDataUrl)) {
+    throw new Error('Unsupported image file.');
+  }
+  const image = await loadImageFromSource(sourceDataUrl);
+  const naturalWidth = image.naturalWidth || image.width || 1;
+  const naturalHeight = image.naturalHeight || image.height || 1;
+  let processedSource = '';
+  let processedWidth = naturalWidth;
+  let processedHeight = naturalHeight;
+
+  for (const step of IMAGE_PROCESSING_STEPS) {
+    const dimensions = getScaledDimensions(naturalWidth, naturalHeight, step.maxEdge);
+    const canvas = document.createElement('canvas');
+    canvas.width = dimensions.width;
+    canvas.height = dimensions.height;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      continue;
+    }
+    context.drawImage(image, 0, 0, dimensions.width, dimensions.height);
+    const candidateSource = canvasToCompressedDataUrl(canvas, step.quality);
+    if (!isSupportedImageSource(candidateSource)) {
+      continue;
+    }
+    processedSource = candidateSource;
+    processedWidth = dimensions.width;
+    processedHeight = dimensions.height;
+    if (candidateSource.length <= MAX_DOCUMENT_IMAGE_SOURCE_LENGTH) {
+      break;
+    }
+  }
+
+  if (!processedSource || processedSource.length > MAX_DOCUMENT_IMAGE_SOURCE_LENGTH) {
+    throw new Error('Image is too large to store.');
+  }
+
+  const normalized = normalizeDocumentImages([{
+    id: generateAssetId('img'),
+    name: file?.name || '',
+    src: processedSource,
+    width: processedWidth,
+    height: processedHeight,
+    addedAt: Date.now()
+  }]);
+
+  if (!normalized[0]) {
+    throw new Error('Processed image is invalid.');
+  }
+
+  return normalized[0];
+}
+
 function normalizeVocabEntries(entries) {
   if (!Array.isArray(entries)) {
     return [];
@@ -1823,6 +2045,7 @@ function normalizeDocumentEntries(entries) {
       seenIds.add(id);
       const title = typeof entry.title === 'string' ? entry.title : '';
       const text = typeof entry.text === 'string' ? entry.text : '';
+      const images = normalizeDocumentImages(entry.images);
       const vocab = normalizeVocabEntries(entry.vocab);
       const questions = normalizeQuestionEntries(entry.questions);
       const correctionsBaseText = normalizeCorrectionsBaseText(entry.correctionsBaseText, text);
@@ -1838,6 +2061,7 @@ function normalizeDocumentEntries(entries) {
         id,
         title,
         text,
+        images,
         vocab,
         questions,
         correctionsBaseText,
@@ -2059,12 +2283,14 @@ function isBootstrapDocument(doc) {
   }
   const title = typeof doc.title === 'string' ? doc.title.trim() : '';
   const text = typeof doc.text === 'string' ? doc.text : '';
+  const images = Array.isArray(doc.images) ? doc.images : [];
   const vocab = Array.isArray(doc.vocab) ? doc.vocab : [];
   const questions = Array.isArray(doc.questions) ? doc.questions : [];
   const proofreadContent = typeof doc.proofreadContent === 'string' ? doc.proofreadContent.trim() : '';
   const workflowId = typeof doc.workflow?.id === 'string' ? doc.workflow.id.trim() : '';
   return !title
     && text === defaultText
+    && !images.length
     && !vocab.length
     && !questions.length
     && !proofreadContent
@@ -2511,6 +2737,7 @@ function enqueueVocabDelete(entry) {
 function createDocument({
   title = getDefaultDocumentTitle(),
   text = '',
+  images = [],
   vocab = [],
   questions = [],
   correctionsBaseText = text,
@@ -2531,6 +2758,7 @@ function createDocument({
     id: generateDocumentId(),
     title,
     text,
+    images: normalizeDocumentImages(images),
     vocab: normalizeVocabEntries(vocab),
     questions: normalizeQuestionEntries(questions),
     correctionsBaseText: normalizeCorrectionsBaseText(correctionsBaseText, text),
@@ -2547,6 +2775,7 @@ function applyDocumentToState(doc) {
   state.documentId = doc.id;
   state.title = doc.title || '';
   state.text = doc.text || '';
+  state.images = normalizeDocumentImages(doc.images);
   state.vocab = normalizeVocabEntries(doc.vocab);
   state.questions = normalizeQuestionEntries(doc.questions);
   state.correctionsBaseText = normalizeCorrectionsBaseText(doc.correctionsBaseText, state.text);
@@ -2635,9 +2864,11 @@ function persistActiveDocument({
     return;
   }
   const now = Date.now();
+  const normalizedImages = normalizeDocumentImages(state.images);
   const normalizedVocab = normalize ? normalizeVocabEntries(state.vocab) : state.vocab;
   const normalizedQuestions = normalize ? normalizeQuestionEntries(state.questions) : state.questions;
   const normalizedWorkflow = normalizeDocumentWorkflow(state.workflow);
+  state.images = normalizedImages;
   if (normalize) {
     state.vocab = normalizedVocab;
     state.questions = normalizedQuestions;
@@ -2655,6 +2886,7 @@ function persistActiveDocument({
       id: state.documentId,
       title: state.title,
       text: state.text,
+      images: normalizedImages,
       vocab: normalizedVocab,
       questions: normalizedQuestions,
       correctionsBaseText: normalizeCorrectionsBaseText(state.correctionsBaseText, state.text),
@@ -2669,6 +2901,7 @@ function persistActiveDocument({
     const doc = state.documents[index];
     doc.title = state.title;
     doc.text = state.text;
+    doc.images = normalizedImages;
     doc.vocab = normalizedVocab;
     doc.questions = normalizedQuestions;
     doc.correctionsBaseText = normalizeCorrectionsBaseText(state.correctionsBaseText, state.text);
@@ -2701,7 +2934,11 @@ function setActiveDocument(doc, { resetProofread = false } = {}) {
     documentTitleInput.value = state.title;
   }
   composerInput.value = state.text;
+  imageGalleryState.dragActive = false;
+  imageGalleryState.status = 'idle';
+  imageGalleryState.message = '';
   renderPreview();
+  renderImageGallery();
   renderCorrections();
   renderVocab();
   renderQuestions();
@@ -2724,6 +2961,7 @@ function buildLegacyDocument() {
     id: generateDocumentId(),
     title: '',
     text: storedEntry || defaultText,
+    images: [],
     correctionsBaseText: storedEntry || defaultText,
     vocab: legacyVocab,
     questions: legacyQuestions,
@@ -2777,6 +3015,115 @@ function saveQuestions() {
   setActiveDocumentSavedState(false);
   updateDocumentSaveControls();
   persistActiveDocument();
+}
+
+function buildImageGalleryStatusMessage(copy, { addedCount = 0, skippedCount = 0, failedCount = 0 } = {}) {
+  const parts = [];
+  if (addedCount > 0) {
+    parts.push(formatCopy(copy.imageGalleryAdded, { count: addedCount }));
+  }
+  if (skippedCount > 0) {
+    parts.push(formatCopy(copy.imageGallerySkipped, { count: skippedCount }));
+  }
+  if (failedCount > 0) {
+    parts.push(copy.imageGalleryProcessError);
+  }
+  return parts.join(' ').trim();
+}
+
+async function addImagesToActiveDocument(fileList) {
+  const copy = i18n[state.language];
+  const rawFiles = Array.from(fileList || []);
+  if (!rawFiles.length) {
+    if (imageGalleryInput) {
+      imageGalleryInput.value = '';
+    }
+    return;
+  }
+
+  const imageFiles = rawFiles.filter((file) => String(file?.type || '').startsWith('image/'));
+  const unsupportedCount = rawFiles.length - imageFiles.length;
+  if (!imageFiles.length) {
+    if (imageGalleryInput) {
+      imageGalleryInput.value = '';
+    }
+    setImageGalleryStatus('error', copy.imageGalleryUnsupported);
+    return;
+  }
+
+  const availableSlots = Math.max(0, MAX_IMAGES_PER_DOCUMENT - state.images.length);
+  if (!availableSlots) {
+    if (imageGalleryInput) {
+      imageGalleryInput.value = '';
+    }
+    setImageGalleryStatus('error', formatCopy(copy.imageGalleryLimitReached, { count: MAX_IMAGES_PER_DOCUMENT }));
+    return;
+  }
+
+  const queuedFiles = imageFiles.slice(0, availableSlots);
+  const limitSkippedCount = Math.max(0, imageFiles.length - queuedFiles.length);
+  setImageGalleryStatus('loading', formatCopy(copy.imageGalleryProcessing, { count: queuedFiles.length }));
+
+  const nextImages = [];
+  let failedCount = 0;
+  for (const file of queuedFiles) {
+    try {
+      const processedImage = await processDocumentImageFile(file);
+      if (processedImage) {
+        nextImages.push(processedImage);
+      } else {
+        failedCount += 1;
+      }
+    } catch (error) {
+      failedCount += 1;
+    }
+  }
+
+  imageGalleryState.dragActive = false;
+  const skippedCount = unsupportedCount + limitSkippedCount;
+  if (nextImages.length) {
+    state.images = normalizeDocumentImages([...state.images, ...nextImages]);
+    setActiveDocumentSavedState(false);
+    updateDocumentSaveControls();
+    persistActiveDocument();
+  }
+
+  const statusMessage = buildImageGalleryStatusMessage(copy, {
+    addedCount: nextImages.length,
+    skippedCount,
+    failedCount
+  });
+  if (nextImages.length) {
+    setImageGalleryStatus('success', statusMessage);
+  } else if (failedCount > 0) {
+    setImageGalleryStatus('error', statusMessage || copy.imageGalleryProcessError);
+  } else if (skippedCount > 0) {
+    setImageGalleryStatus('error', statusMessage || formatCopy(copy.imageGalleryLimitReached, { count: MAX_IMAGES_PER_DOCUMENT }));
+  } else {
+    setImageGalleryStatus('error', copy.imageGalleryUnsupported);
+  }
+
+  if (imageGalleryInput) {
+    imageGalleryInput.value = '';
+  }
+}
+
+function removeImageFromActiveDocument(imageId) {
+  if (!imageId) {
+    return;
+  }
+  const nextImages = state.images.filter((image) => image.id !== imageId);
+  if (nextImages.length === state.images.length) {
+    return;
+  }
+  state.images = nextImages;
+  setActiveDocumentSavedState(false);
+  updateDocumentSaveControls();
+  persistActiveDocument();
+  if (imageGalleryState.activeImageId === imageId) {
+    closeImageLightbox();
+  }
+  setImageGalleryStatus('idle', '');
 }
 
 function deleteDocumentById(targetDocumentId = state.documentId) {
@@ -3080,6 +3427,167 @@ function renderPreview() {
       preview.appendChild(document.createElement('br'));
     }
   });
+}
+
+function getActiveGalleryImage() {
+  const activeImageId = imageGalleryState.activeImageId;
+  if (!activeImageId) {
+    return null;
+  }
+  return state.images.find((image) => image.id === activeImageId) || null;
+}
+
+function formatImageMeta(image) {
+  const parts = [];
+  if (Number.isFinite(image?.width) && Number.isFinite(image?.height)) {
+    parts.push(`${image.width} × ${image.height}`);
+  }
+  return parts.join(' · ');
+}
+
+function setImageGalleryStatus(status = 'idle', message = '') {
+  imageGalleryState.status = status;
+  imageGalleryState.message = message;
+  renderImageGallery();
+}
+
+function openImageLightbox(imageId) {
+  if (!imageId || !state.images.some((image) => image.id === imageId)) {
+    return;
+  }
+  imageGalleryState.activeImageId = imageId;
+  renderImageLightbox();
+  requestAnimationFrame(() => {
+    imageLightboxClose?.focus();
+  });
+}
+
+function closeImageLightbox() {
+  if (!imageGalleryState.activeImageId) {
+    return;
+  }
+  imageGalleryState.activeImageId = '';
+  renderImageLightbox();
+}
+
+function renderImageLightbox() {
+  if (!imageLightbox || !imageLightboxImage || !imageLightboxCaption || !imageLightboxClose) {
+    return;
+  }
+  const copy = i18n[state.language];
+  const activeImage = getActiveGalleryImage();
+  const isOpen = Boolean(activeImage);
+  imageLightbox.hidden = !isOpen;
+  imageLightbox.setAttribute('aria-hidden', String(!isOpen));
+  document.body.classList.toggle('image-lightbox-open', isOpen);
+  imageLightboxClose.textContent = copy.imageLightboxClose;
+  imageLightboxClose.setAttribute('aria-label', copy.imageLightboxClose);
+
+  if (!isOpen) {
+    imageLightboxImage.src = '';
+    imageLightboxImage.alt = '';
+    imageLightboxCaption.textContent = '';
+    return;
+  }
+
+  const imageName = activeImage.name || copy.imageGalleryUntitled;
+  const imageMeta = formatImageMeta(activeImage);
+  imageLightboxImage.src = activeImage.src;
+  imageLightboxImage.alt = imageName;
+  imageLightboxCaption.textContent = imageMeta ? `${imageName} · ${imageMeta}` : imageName;
+}
+
+function renderImageGallery() {
+  if (!imageGalleryGrid || !imageDropzone || !imageDropzoneCopy || !imageDropzoneStatus) {
+    renderImageLightbox();
+    return;
+  }
+  const copy = i18n[state.language];
+  const activeImage = getActiveGalleryImage();
+  if (!activeImage && imageGalleryState.activeImageId) {
+    imageGalleryState.activeImageId = '';
+  }
+
+  if (imageGalleryTitle) {
+    imageGalleryTitle.textContent = copy.imageGalleryTitle;
+  }
+  if (imageGallerySubtitle) {
+    imageGallerySubtitle.textContent = copy.imageGallerySubtitle;
+  }
+  if (imageGalleryBrowse) {
+    imageGalleryBrowse.textContent = copy.imageGalleryBrowse;
+    imageGalleryBrowse.disabled = imageGalleryState.status === 'loading';
+  }
+  imageDropzone.classList.toggle('is-dragging', imageGalleryState.dragActive);
+  imageDropzone.disabled = imageGalleryState.status === 'loading';
+  imageDropzoneCopy.textContent = imageGalleryState.dragActive
+    ? copy.imageGalleryDropActive
+    : copy.imageGalleryDropHint;
+
+  imageDropzoneStatus.textContent = imageGalleryState.message || '';
+  imageDropzoneStatus.className = 'image-dropzone-status';
+  if (imageGalleryState.status === 'loading') {
+    imageDropzoneStatus.classList.add('is-loading');
+  } else if (imageGalleryState.status === 'success') {
+    imageDropzoneStatus.classList.add('is-success');
+  } else if (imageGalleryState.status === 'error') {
+    imageDropzoneStatus.classList.add('is-error');
+  }
+
+  imageGalleryGrid.replaceChildren();
+  if (!state.images.length) {
+    const empty = document.createElement('p');
+    empty.className = 'image-gallery-empty';
+    empty.textContent = copy.imageGalleryEmpty;
+    imageGalleryGrid.appendChild(empty);
+    renderImageLightbox();
+    return;
+  }
+
+  state.images.forEach((image) => {
+    const card = document.createElement('article');
+    card.className = 'image-card';
+
+    const removeButton = document.createElement('button');
+    removeButton.className = 'image-thumb-remove';
+    removeButton.type = 'button';
+    removeButton.dataset.imageId = image.id;
+    removeButton.setAttribute('aria-label', `${copy.imageGalleryRemove}: ${image.name || copy.imageGalleryUntitled}`);
+    removeButton.title = copy.imageGalleryRemove;
+    removeButton.textContent = '×';
+    card.appendChild(removeButton);
+
+    const thumbButton = document.createElement('button');
+    thumbButton.className = 'image-thumb';
+    thumbButton.type = 'button';
+    thumbButton.dataset.imageId = image.id;
+    thumbButton.setAttribute('aria-label', `${copy.imageGalleryZoom}: ${image.name || copy.imageGalleryUntitled}`);
+
+    const previewShell = document.createElement('div');
+    previewShell.className = 'image-thumb-preview';
+    const previewImage = document.createElement('img');
+    previewImage.src = image.src;
+    previewImage.alt = image.name || copy.imageGalleryUntitled;
+    previewShell.appendChild(previewImage);
+    thumbButton.appendChild(previewShell);
+
+    const meta = document.createElement('div');
+    meta.className = 'image-thumb-meta';
+    const name = document.createElement('div');
+    name.className = 'image-thumb-name';
+    name.textContent = image.name || copy.imageGalleryUntitled;
+    const size = document.createElement('div');
+    size.className = 'image-thumb-size';
+    size.textContent = formatImageMeta(image);
+    meta.appendChild(name);
+    meta.appendChild(size);
+    thumbButton.appendChild(meta);
+
+    card.appendChild(thumbButton);
+    imageGalleryGrid.appendChild(card);
+  });
+
+  renderImageLightbox();
 }
 
 async function renderSyntheticResultText(text, outputContainer = syntheticResult) {
@@ -3952,7 +4460,7 @@ function buildSharePayload() {
   if (!doc) {
     throw new Error(i18n[state.language].workflowStartError);
   }
-  if (!state.text.trim()) {
+  if (!hasDocumentContent(state.text, state.images)) {
     throw new Error(i18n[state.language].shareMissingText);
   }
   const hasProofread = proofreadState.status === 'success' && Boolean(proofreadState.content);
@@ -3967,6 +4475,7 @@ function buildSharePayload() {
     id: state.documentId,
     title: state.title,
     text: state.text,
+    images: normalizeDocumentImages(state.images),
     correctionsBaseText: normalizeCorrectionsBaseText(state.correctionsBaseText, state.text),
     vocab: normalizeVocabEntries(state.vocab),
     questions: normalizeQuestionEntries(state.questions),
@@ -4191,6 +4700,7 @@ function mergeDocumentFromServer(documentPayload) {
     }
     composerInput.value = state.text;
     renderPreview();
+    renderImageGallery();
     renderCorrections();
     renderVocab();
     renderQuestions();
@@ -4725,6 +5235,7 @@ function renderUI() {
   }
 
   renderDocumentControls();
+  renderImageGallery();
   renderCorrections();
   renderProofread();
   renderSharePanel();
@@ -5138,6 +5649,71 @@ function bindEvents() {
     documentTitleInput?.focus();
   });
 
+  imageGalleryBrowse?.addEventListener('click', () => {
+    if (imageGalleryState.status === 'loading') {
+      return;
+    }
+    imageGalleryInput?.click();
+  });
+
+  imageDropzone?.addEventListener('click', () => {
+    if (imageGalleryState.status === 'loading') {
+      return;
+    }
+    imageGalleryInput?.click();
+  });
+
+  imageGalleryInput?.addEventListener('change', async (event) => {
+    await addImagesToActiveDocument(event.target?.files);
+  });
+
+  imageDropzone?.addEventListener('dragenter', (event) => {
+    event.preventDefault();
+    imageGalleryState.dragActive = true;
+    renderImageGallery();
+  });
+
+  imageDropzone?.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    if (!imageGalleryState.dragActive) {
+      imageGalleryState.dragActive = true;
+      renderImageGallery();
+    }
+  });
+
+  imageDropzone?.addEventListener('dragleave', (event) => {
+    event.preventDefault();
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && imageDropzone.contains(nextTarget)) {
+      return;
+    }
+    imageGalleryState.dragActive = false;
+    renderImageGallery();
+  });
+
+  imageDropzone?.addEventListener('drop', async (event) => {
+    event.preventDefault();
+    imageGalleryState.dragActive = false;
+    renderImageGallery();
+    await addImagesToActiveDocument(event.dataTransfer?.files);
+  });
+
+  imageGalleryGrid?.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    const removeButton = target.closest('.image-thumb-remove');
+    if (removeButton instanceof HTMLElement) {
+      removeImageFromActiveDocument(removeButton.dataset.imageId || '');
+      return;
+    }
+    const thumbButton = target.closest('.image-thumb');
+    if (thumbButton instanceof HTMLElement) {
+      openImageLightbox(thumbButton.dataset.imageId || '');
+    }
+  });
+
   authGoogle?.addEventListener('click', () => {
     if (!authState.enabled) {
       return;
@@ -5285,7 +5861,7 @@ function bindEvents() {
       renderSharePanel();
       return;
     }
-    if (!state.text.trim()) {
+    if (!hasDocumentContent(state.text, state.images)) {
       shareState.error = copy.shareMissingText;
       shareState.message = '';
       renderSharePanel();
@@ -5635,6 +6211,14 @@ function bindEvents() {
     }
   });
 
+  imageLightboxClose?.addEventListener('click', () => {
+    closeImageLightbox();
+  });
+
+  imageLightboxBackdrop?.addEventListener('click', () => {
+    closeImageLightbox();
+  });
+
   document.addEventListener('pointerdown', (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) {
@@ -5657,6 +6241,7 @@ function bindEvents() {
     if (event.key !== 'Escape') {
       return;
     }
+    closeImageLightbox();
     clearActiveHover();
     hideTooltip();
     hideSelectionTooltip();

@@ -24,4 +24,6 @@ test('build completes and outputs artifacts', async () => {
 
   const html = await fs.readFile(buildPath('dist/index.html'), 'utf8');
   assert.ok(!html.includes('@@BUILD_TIMESTAMP@@'));
+  assert.ok(html.includes('id="image-gallery-grid"'));
+  assert.ok(html.includes('id="image-lightbox"'));
 });
