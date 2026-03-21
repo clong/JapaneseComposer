@@ -396,7 +396,22 @@ export function AppShell() {
               </Card>
             </Card>
 
-            <aside className="side-panel">
+            <div
+              className="compose-resizer"
+              id="compose-resizer"
+              role="separator"
+              aria-label="Resize sidebar"
+              aria-controls="compose-side-panel"
+              aria-orientation="vertical"
+              aria-valuemin="340"
+              aria-valuemax="620"
+              aria-valuenow="400"
+              tabIndex={0}
+            >
+              <span className="compose-resizer-grip" aria-hidden="true" />
+            </div>
+
+            <aside className="side-panel" id="compose-side-panel">
               <Card className="panel vocab-panel" id="vocab-panel">
                 <div className="panel-header panel-header-actions">
                   <div>

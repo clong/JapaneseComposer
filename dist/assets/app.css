@@ -27795,13 +27795,88 @@ body::before {
   display: grid;
 }
 .compose-page {
-  grid-template-columns: minmax(280px, 320px) minmax(460px, 2.2fr) minmax(340px, 1.5fr);
-  gap: 20px;
+  --compose-sidebar-width: 400px;
+  --compose-resizer-width: 14px;
+  grid-template-columns: minmax(280px, 320px) minmax(460px, 1fr) var(--compose-resizer-width) minmax(340px, var(--compose-sidebar-width));
+  gap: 24px;
   align-items: stretch;
   transition: grid-template-columns 0.2s ease;
 }
 .app.document-drawer-collapsed .compose-page {
-  grid-template-columns: minmax(64px, 64px) minmax(460px, 2.2fr) minmax(340px, 1.5fr);
+  grid-template-columns: minmax(84px, 84px) minmax(460px, 1fr) var(--compose-resizer-width) minmax(340px, var(--compose-sidebar-width));
+}
+.app.sidebar-resizing .compose-page {
+  transition: none;
+}
+.compose-resizer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  width: var(--compose-resizer-width);
+  border-radius: 999px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+.compose-resizer::before {
+  content: "";
+  position: absolute;
+  inset: 0 2px;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(217, 95, 76, 0.08),
+      rgba(59, 42, 31, 0.14));
+  opacity: 0.75;
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease,
+    background 0.18s ease;
+}
+.compose-resizer-grip {
+  position: relative;
+  width: 4px;
+  height: 92px;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(217, 95, 76, 0.55),
+      rgba(109, 82, 61, 0.45));
+  box-shadow: 0 10px 24px rgba(58, 40, 29, 0.12);
+}
+.compose-resizer:hover::before,
+.compose-resizer:focus-visible::before,
+.compose-resizer.is-resizing::before {
+  opacity: 1;
+  transform: scaleX(1.08);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(217, 95, 76, 0.16),
+      rgba(59, 42, 31, 0.2));
+}
+.compose-resizer:focus-visible .compose-resizer-grip,
+.compose-resizer.is-resizing .compose-resizer-grip {
+  background:
+    linear-gradient(
+      180deg,
+      rgba(217, 95, 76, 0.9),
+      rgba(181, 68, 52, 0.7));
+}
+.compose-resizer[aria-disabled=true] {
+  pointer-events: none;
+}
+body.sidebar-resizing,
+body.sidebar-resizing * {
+  cursor: col-resize !important;
+}
+body.sidebar-resizing {
+  user-select: none;
 }
 .vocabulary-page {
   margin: 0;
@@ -28926,6 +29001,10 @@ textarea#composer-input::placeholder {
 .image-dropzone-status.is-error {
   color: #b54434;
 }
+.app.reading-mode #image-gallery-browse,
+.app.reading-mode #image-dropzone {
+  display: none !important;
+}
 .image-gallery-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -29570,6 +29649,9 @@ body.image-lightbox-open {
   .compose-page {
     grid-template-columns: 1fr;
   }
+  .compose-resizer {
+    display: none;
+  }
   .panel {
     min-height: auto;
   }
@@ -29943,12 +30025,24 @@ body::before {
   min-height: 1.2em;
 }
 .compose-page {
-  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr) minmax(340px, 390px);
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr) var(--compose-resizer-width) minmax(340px, var(--compose-sidebar-width));
   gap: 24px;
-  align-items: start;
+  align-items: stretch;
 }
 .app.document-drawer-collapsed .compose-page {
-  grid-template-columns: 84px minmax(0, 1fr) minmax(340px, 390px);
+  grid-template-columns: 84px minmax(0, 1fr) var(--compose-resizer-width) minmax(340px, var(--compose-sidebar-width));
+}
+.compose-page > .document-drawer {
+  grid-column: 1;
+}
+.compose-page > .editor-panel {
+  grid-column: 2;
+}
+.compose-page > .compose-resizer {
+  grid-column: 3;
+}
+.compose-page > .side-panel {
+  grid-column: 4;
 }
 .panel {
   padding: 22px;
@@ -30489,6 +30583,12 @@ textarea#composer-input {
   .compose-page,
   .app.document-drawer-collapsed .compose-page {
     grid-template-columns: 1fr;
+  }
+  .compose-page > .document-drawer,
+  .compose-page > .editor-panel,
+  .compose-page > .compose-resizer,
+  .compose-page > .side-panel {
+    grid-column: 1;
   }
   .header-utility-stack {
     flex-basis: auto;
