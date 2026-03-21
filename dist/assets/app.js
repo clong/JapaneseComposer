@@ -575,6 +575,15 @@ const authState = {
 
 const lookupCache = new Map();
 const pendingLookups = new Map();
+function logDictionaryDebug(stage, details = {}) {
+  if (typeof console === 'undefined' || typeof console.debug !== 'function') {
+    return;
+  }
+  const payload = typeof details === 'object' && details !== null
+    ? details
+    : { value: details };
+  console.debug(`[dictionary] ${stage}`, payload);
+}
 let pendingRender = false;
 let pendingCorrectionsRender = false;
 let pendingCorrectionResetOnInput = false;
@@ -1403,10 +1412,16 @@ async function resolveReadingForToken(token) {
     return '';
   }
   if (lookupCache.has(lookupKey)) {
-    return lookupCache.get(lookupKey)?.reading || '';
+    const cached = lookupCache.get(lookupKey);
+    if (cached) {
+      return cached.reading || '';
+    }
+    lookupCache.delete(lookupKey);
   }
   const result = await lookupWord(lookupKey);
-  lookupCache.set(lookupKey, result);
+  if (result) {
+    lookupCache.set(lookupKey, result);
+  }
   return result?.reading || '';
 }
 
@@ -3387,11 +3402,18 @@ async function fetchDictionaryEntries(word) {
     return [];
   }
   const proxyUrl = `${PROXY_DICT_ENDPOINT}${encodeURIComponent(normalized)}`;
+  logDictionaryDebug('fetch:start', { query: word, normalized, proxyUrl });
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 6000);
   try {
     const data = await fetchJson(proxyUrl, controller.signal);
-    return Array.isArray(data?.data) ? data.data : [];
+    const entries = Array.isArray(data?.data) ? data.data : [];
+    logDictionaryDebug('fetch:done', {
+      query: word,
+      normalized,
+      count: entries.length
+    });
+    return entries;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -3403,25 +3425,39 @@ async function lookupWord(word) {
   }
   const lookupEntries = await fetchDictionaryEntries(word);
   if (!lookupEntries.length) {
+    logDictionaryDebug('lookup:kanji:none', { query: word });
     return null;
   }
   const selection = selectBestEntry(lookupEntries, word);
   if (!selection) {
+    logDictionaryDebug('lookup:kanji:no-selection', {
+      query: word,
+      candidates: lookupEntries.length
+    });
     return null;
   }
   const { entry, form } = selection;
   if (!entry || !form) {
+    logDictionaryDebug('lookup:kanji:invalid-selection', { query: word });
     return null;
   }
   const reading = form.reading || '';
   const resolvedWord = form.word || word;
-
-  return {
+  const result = {
     word: resolvedWord,
     reading,
     meaning: buildDictionaryMeaning(entry),
     exact: selection.exact !== false
   };
+  logDictionaryDebug('lookup:kanji:selected', {
+    query: word,
+    resolvedWord: result.word,
+    reading: result.reading,
+    exact: result.exact,
+    hasMeaning: Boolean(result.meaning)
+  });
+
+  return result;
 }
 
 function pickKanjiFormForKana(entry, query) {
@@ -3482,6 +3518,7 @@ async function lookupKanaWord(word) {
   }
   const lookupEntries = await fetchDictionaryEntries(normalized);
   if (!lookupEntries.length) {
+    logDictionaryDebug('lookup:kana:none', { query: word, normalized });
     return null;
   }
   const kanaQuery = toHiragana(normalized);
@@ -3508,6 +3545,14 @@ async function lookupKanaWord(word) {
     }
   }
 
+  logDictionaryDebug('lookup:kana:selected', {
+    query: word,
+    normalized,
+    resolvedWord: best?.word || '',
+    reading: best?.reading || '',
+    exact: best?.exact !== false,
+    hasMeaning: Boolean(best?.meaning)
+  });
   return best;
 }
 
@@ -3567,10 +3612,18 @@ async function fetchJson(url, signal) {
   try {
     const response = await fetch(url, { signal });
     if (!response.ok) {
+      logDictionaryDebug('fetch:error-response', {
+        url,
+        status: response.status
+      });
       return null;
     }
     return await response.json();
   } catch (error) {
+    logDictionaryDebug('fetch:error', {
+      url,
+      message: error?.message || 'Request failed'
+    });
     return null;
   }
 }
@@ -3599,9 +3652,20 @@ function ensureLookup(word) {
     return;
   }
 
+  logDictionaryDebug('queue', { query: word, normalized });
   const lookupPromise = lookupDictionaryEntry(normalized).then((result) => {
-    lookupCache.set(normalized, result);
+    if (result) {
+      lookupCache.set(normalized, result);
+    } else {
+      lookupCache.delete(normalized);
+    }
     pendingLookups.delete(normalized);
+    logDictionaryDebug('queue:resolved', {
+      normalized,
+      hit: Boolean(result),
+      word: result?.word || '',
+      exact: result?.exact !== false
+    });
     schedulePreviewRender();
   });
 
@@ -5577,6 +5641,9 @@ async function resolveSelectionVocabularyEntry(text) {
 function showTooltip(word, target) {
   const copy = i18n[state.language];
   const lookupKey = normalizeLookupWord(word);
+  if (lookupKey && lookupCache.has(lookupKey) && !lookupCache.get(lookupKey)) {
+    lookupCache.delete(lookupKey);
+  }
   if (lookupKey && !lookupCache.has(lookupKey) && !pendingLookups.has(lookupKey)) {
     ensureLookup(lookupKey);
   }
@@ -5607,6 +5674,14 @@ function showTooltip(word, target) {
     : (sourceReading || info?.reading || '');
   tooltip.dataset.meaning = info?.meaning || '';
   tooltipAdd.disabled = pending || !info?.meaning;
+
+  if (!pending && !info) {
+    logDictionaryDebug('tooltip:miss', {
+      lookupKey,
+      surfaceWord,
+      sourceReading
+    });
+  }
 
   tooltipWord.textContent = surfaceWord;
   tooltipReading.textContent = readingText;

@@ -7,8 +7,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const dataDir = path.join(root, 'data');
 const inputPath = process.env.JMDICT_PATH || path.join(dataDir, 'JMdict_e');
-const entriesPath = path.join(dataDir, 'jmdict-entries.json');
-const indexPath = path.join(dataDir, 'jmdict-index.json');
+const entriesPath = process.env.JMDICT_ENTRIES_PATH || path.join(dataDir, 'jmdict-entries.json');
+const indexPath = process.env.JMDICT_INDEX_PATH || path.join(dataDir, 'jmdict-index.json');
 
 await fs.mkdir(dataDir, { recursive: true });
 
