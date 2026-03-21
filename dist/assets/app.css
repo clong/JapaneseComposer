@@ -29001,6 +29001,10 @@ textarea#composer-input::placeholder {
 .image-dropzone-status.is-error {
   color: #b54434;
 }
+.app.reading-mode #image-gallery-browse,
+.app.reading-mode #image-dropzone {
+  display: none !important;
+}
 .image-gallery-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
