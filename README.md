@@ -25,7 +25,7 @@ Then visit the printed local URL.
 
 ### Authentication
 
-The dev server requires basic authentication. Set the password via:
+Basic authentication is optional. Enable it via:
 
 ```bash
 BASIC_AUTH_PASSWORD=your_password npm run dev
@@ -48,8 +48,12 @@ When enabled, the app syncs full workspace state (documents/posts, vocab, Q&A/pr
 
 Optional auth/session env vars:
 
+- `REQUIRE_GOOGLE_AUTH=1` to block access to the composer until a Google session exists
+- `ALLOWED_GOOGLE_EMAILS=user1@gmail.com,user2@gmail.com` to restrict sign-in to specific Google accounts
 - `SESSION_COOKIE_NAME` (default: `jc_session`)
 - `SESSION_MAX_AGE_MS` (default: 30 days)
+
+When `REQUIRE_GOOGLE_AUTH=1` is set, the app shows a Google sign-in gate before the composer loads, and backend API access is restricted to authenticated sessions. If `ALLOWED_GOOGLE_EMAILS` is set, only those addresses can complete sign-in.
 
 ## Tests
 

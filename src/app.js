@@ -266,7 +266,15 @@ const i18n = {
     authSyncReady: 'Account sync ready.',
     authSyncing: 'Account sync: Syncing…',
     authSynced: 'Account sync',
-    authSyncError: 'Account sync failed.'
+    authSyncError: 'Account sync failed.',
+    authGateEyebrow: 'Private workspace',
+    authGateTitle: 'Sign in with Google to continue',
+    authGateMessage: 'Only approved Google accounts can access this application.',
+    authGateLoading: 'Checking your session…',
+    authGateSessionUnavailable: 'Unable to verify access. Reload and try again.',
+    authGateFailed: 'Sign-in failed. Try again.',
+    authGateDenied: 'This Google account is not allowed to access the app.',
+    authGateUnavailable: 'Google sign-in is not configured on this server.'
   },
   ja: {
     appTitle: '日本語コンポーザー',
@@ -463,7 +471,15 @@ const i18n = {
     authSyncReady: 'アカウント同期の準備完了。',
     authSyncing: 'アカウント同期中…',
     authSynced: 'アカウント同期',
-    authSyncError: 'アカウント同期に失敗しました。'
+    authSyncError: 'アカウント同期に失敗しました。',
+    authGateEyebrow: '限定ワークスペース',
+    authGateTitle: '続行するにはGoogleでログインしてください',
+    authGateMessage: '許可されたGoogleアカウントのみこのアプリを利用できます。',
+    authGateLoading: 'セッションを確認中…',
+    authGateSessionUnavailable: 'アクセス確認に失敗しました。再読み込みしてもう一度お試しください。',
+    authGateFailed: 'ログインに失敗しました。もう一度お試しください。',
+    authGateDenied: 'このGoogleアカウントにはアクセス権がありません。',
+    authGateUnavailable: 'このサーバーではGoogleログインが設定されていません。'
   }
 };
 
@@ -543,12 +559,14 @@ const imageGalleryState = {
 
 const authState = {
   enabled: false,
+  required: false,
   loading: true,
   authenticated: false,
   user: null,
   syncing: false,
   syncError: '',
-  lastSyncedAt: null
+  lastSyncedAt: null,
+  notice: ''
 };
 
 const lookupCache = new Map();
@@ -564,6 +582,7 @@ let workspaceSyncInFlight = false;
 let workspaceRefreshTimer = null;
 let workspaceRefreshInFlight = false;
 let workspaceHydrating = false;
+let localStateLoaded = false;
 let workspaceDeletedDocumentIds = new Set();
 let flashcardAdvanceTimer = null;
 
@@ -643,6 +662,12 @@ const authUser = document.querySelector('#auth-user');
 const authAvatar = document.querySelector('#auth-avatar');
 const authName = document.querySelector('#auth-name');
 const authSyncStatus = document.querySelector('#auth-sync-status');
+const authGate = document.querySelector('#auth-gate');
+const authGateEyebrow = document.querySelector('#auth-gate-eyebrow');
+const authGateTitle = document.querySelector('#auth-gate-title');
+const authGateMessage = document.querySelector('#auth-gate-message');
+const authGateGoogle = document.querySelector('#auth-gate-google');
+const authGateStatus = document.querySelector('#auth-gate-status');
 const proofreadTitle = document.querySelector('#proofread-title');
 const proofreadSubtitle = document.querySelector('#proofread-subtitle');
 const proofreadButton = document.querySelector('#proofread-button');
@@ -2432,12 +2457,126 @@ function clearWorkspaceSyncQueue() {
   workspaceSyncInFlight = false;
 }
 
+function consumeAuthResultFromUrl() {
+  if (typeof window === 'undefined' || !window.location) {
+    return '';
+  }
+  let url;
+  try {
+    url = new URL(window.location.href);
+  } catch (error) {
+    return '';
+  }
+  const auth = url.searchParams.get('auth') || '';
+  const reason = url.searchParams.get('reason') || '';
+  if (!auth && !reason) {
+    return '';
+  }
+  url.searchParams.delete('auth');
+  url.searchParams.delete('reason');
+  if (window.history && typeof window.history.replaceState === 'function') {
+    const nextSearch = url.searchParams.toString();
+    const nextUrl = `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${url.hash}`;
+    window.history.replaceState({}, document.title, nextUrl);
+  }
+  if (auth === 'success') {
+    return '';
+  }
+  if (auth === 'failed') {
+    return reason || 'failed';
+  }
+  return auth || reason;
+}
+
+function getAuthGateStatus(copy) {
+  if (authState.loading) {
+    return copy.authGateLoading;
+  }
+  if (authState.notice === 'session_unavailable') {
+    return copy.authGateSessionUnavailable;
+  }
+  if (authState.notice === 'not_allowed') {
+    return copy.authGateDenied;
+  }
+  if (
+    authState.notice === 'state_mismatch'
+    || authState.notice === 'invalid_grant'
+    || authState.notice === 'redirect_uri_mismatch'
+    || authState.notice === 'token_exchange_failed'
+    || authState.notice === 'profile_fetch_failed'
+    || authState.notice === 'profile_missing'
+    || authState.notice === 'failed'
+  ) {
+    return copy.authGateFailed;
+  }
+  if (authState.notice === 'db_unavailable' || authState.notice === 'db_error') {
+    return copy.authSyncError;
+  }
+  if (authState.notice === 'disabled' || !authState.enabled) {
+    return copy.authGateUnavailable;
+  }
+  if (authState.syncError && authState.required && !authState.authenticated) {
+    return authState.syncError;
+  }
+  return '';
+}
+
+function renderAuthGate() {
+  const copy = i18n[state.language];
+  const isVisible = authState.required && !authState.authenticated;
+  const isLoading = authState.loading;
+  if (app) {
+    app.classList.toggle('auth-loading', isLoading);
+    app.classList.toggle('auth-gated', isVisible);
+  }
+  if (!authGate) {
+    return;
+  }
+  authGate.hidden = !(isLoading || isVisible);
+  if (!isLoading && !isVisible) {
+    return;
+  }
+  if (authGateEyebrow) {
+    authGateEyebrow.textContent = copy.authGateEyebrow;
+  }
+  if (authGateTitle) {
+    authGateTitle.textContent = copy.authGateTitle;
+  }
+  if (authGateMessage) {
+    authGateMessage.textContent = copy.authGateMessage;
+  }
+  if (authGateGoogle) {
+    authGateGoogle.textContent = copy.authSignIn;
+    authGateGoogle.disabled = authState.loading || !authState.enabled;
+  }
+  if (authGateStatus) {
+    authGateStatus.textContent = getAuthGateStatus(copy);
+  }
+}
+
+function syncAppAccessLock() {
+  const isLocked = authState.required && !authState.authenticated;
+  const isTeacherWorkflow = isTeacherWorkflowWorkflow(state.workflow);
+  if (composePage) {
+    composePage.toggleAttribute('inert', isLocked);
+    composePage.setAttribute('aria-hidden', String(isLocked));
+  }
+  if (vocabularyPage) {
+    vocabularyPage.toggleAttribute('inert', isLocked);
+    vocabularyPage.setAttribute('aria-hidden', String(isLocked));
+  }
+  if (composerInput) {
+    composerInput.readOnly = isLocked || state.mode === 'read' || (isTeacherWorkflow && state.mode === 'edit');
+  }
+}
+
 function renderAuthControls() {
   const copy = i18n[state.language];
+  const gateVisible = authState.required && !authState.authenticated;
   if (authGoogle) {
     authGoogle.textContent = copy.authSignIn;
     authGoogle.disabled = authState.loading || !authState.enabled || authState.authenticated;
-    authGoogle.hidden = Boolean(authState.authenticated) || !authState.enabled;
+    authGoogle.hidden = gateVisible || Boolean(authState.authenticated) || !authState.enabled;
   }
   if (authLogout) {
     authLogout.textContent = copy.authSignOut;
@@ -2472,7 +2611,7 @@ function renderAuthControls() {
     } else if (!authState.enabled) {
       statusText = copy.authDisabled;
     } else if (!authState.authenticated) {
-      statusText = copy.authSyncLocal;
+      statusText = authState.required ? '' : copy.authSyncLocal;
     } else if (authState.syncing) {
       statusText = copy.authSyncing;
     } else if (authState.syncError) {
@@ -2485,6 +2624,8 @@ function renderAuthControls() {
     }
     authSyncStatus.textContent = statusText;
   }
+  renderAuthGate();
+  syncAppAccessLock();
 }
 
 function scheduleWorkspaceSync({ immediate = false } = {}) {
@@ -2602,20 +2743,39 @@ async function hydrateAuthAndWorkspace() {
   try {
     session = await requestAuthSession();
   } catch (error) {
-    session = null;
+    authState.required = true;
+    authState.enabled = false;
+    authState.user = null;
+    authState.authenticated = false;
+    authState.notice = authState.notice || 'session_unavailable';
+    authState.loading = false;
+    renderAuthControls();
+    clearWorkspaceSyncQueue();
+    stopWorkspaceRefreshLoop();
+    return false;
   }
 
+  authState.required = Boolean(session?.required);
   authState.enabled = Boolean(session?.enabled);
   authState.user = normalizeAuthUser(session?.user);
   authState.authenticated = Boolean(session?.authenticated && authState.user);
+  if (authState.authenticated) {
+    authState.notice = '';
+  }
   authState.loading = false;
   renderAuthControls();
 
   if (!authState.authenticated) {
     clearWorkspaceSyncQueue();
     stopWorkspaceRefreshLoop();
-    return;
+    if (authState.required) {
+      return false;
+    }
+    ensureLocalStateLoaded();
+    return true;
   }
+
+  ensureLocalStateLoaded();
 
   try {
     const remoteWorkspace = await requestWorkspace();
@@ -2639,6 +2799,7 @@ async function hydrateAuthAndWorkspace() {
     authState.syncError = error?.message || i18n[state.language].authSyncError;
     renderAuthControls();
   }
+  return true;
 }
 
 async function fetchVocabFromApi() {
@@ -2665,7 +2826,7 @@ async function fetchVocabFromApi() {
 }
 
 async function hydrateVocabFromApi() {
-  if (authState.authenticated) {
+  if (authState.authenticated || authState.required) {
     return;
   }
   if (state.documents.length > 1 || state.vocab.length) {
@@ -2681,7 +2842,7 @@ async function hydrateVocabFromApi() {
 }
 
 async function persistVocabToApi(items) {
-  if (authState.authenticated) {
+  if (authState.authenticated || authState.required) {
     return;
   }
   if (!vocabApiAvailable) {
@@ -2704,7 +2865,7 @@ async function persistVocabToApi(items) {
 }
 
 async function deleteVocabEntryFromApi(entry) {
-  if (authState.authenticated) {
+  if (authState.authenticated || authState.required) {
     return;
   }
   if (!vocabApiAvailable) {
@@ -2990,6 +3151,14 @@ function loadState() {
     ? state.documents.find((doc) => doc.id === storedActiveId)
     : null;
   setActiveDocument(activeDocument || state.documents[0], { resetProofread: false });
+}
+
+function ensureLocalStateLoaded() {
+  if (localStateLoaded) {
+    return;
+  }
+  loadState();
+  localStateLoaded = true;
 }
 
 function saveEntry() {
@@ -5616,6 +5785,13 @@ function clearActiveHover() {
   }
 }
 
+function startGoogleAuthFlow() {
+  if (!authState.enabled) {
+    return;
+  }
+  window.location.assign(AUTH_GOOGLE_START_ENDPOINT);
+}
+
 function bindEvents() {
   pageNavCompose?.addEventListener('click', () => {
     setActivePage('compose');
@@ -5715,10 +5891,11 @@ function bindEvents() {
   });
 
   authGoogle?.addEventListener('click', () => {
-    if (!authState.enabled) {
-      return;
-    }
-    window.location.assign(AUTH_GOOGLE_START_ENDPOINT);
+    startGoogleAuthFlow();
+  });
+
+  authGateGoogle?.addEventListener('click', () => {
+    startGoogleAuthFlow();
   });
 
   authLogout?.addEventListener('click', async () => {
@@ -5728,6 +5905,10 @@ function bindEvents() {
     authLogout.disabled = true;
     try {
       await requestAuthLogout();
+      if (authState.required) {
+        window.location.assign('/');
+        return;
+      }
       authState.authenticated = false;
       authState.user = null;
       authState.syncing = false;
@@ -6263,14 +6444,13 @@ function bindEvents() {
 }
 
 async function init() {
-  loadState();
-  await hydrateAuthAndWorkspace();
-  composerInput.value = state.text;
-  renderUI();
-  renderPreview();
-  renderQuestions();
+  authState.notice = consumeAuthResultFromUrl();
   bindEvents();
-  if (!authState.authenticated) {
+  const canRenderWorkspace = await hydrateAuthAndWorkspace();
+  if (!canRenderWorkspace) {
+    return;
+  }
+  if (!authState.authenticated && !authState.required) {
     void hydrateVocabFromApi();
   }
   void initKuromoji().then((tokenizer) => {

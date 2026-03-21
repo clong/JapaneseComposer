@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="./assets/app.css" />
   </head>
   <body>
-    <div class="app" id="app">
+    <div class="app auth-loading" id="app">
       <header class="app-header">
         <div class="app-header-top">
           <div class="brand">
@@ -48,6 +48,18 @@
           </button>
         </div>
       </header>
+
+      <section class="auth-gate" id="auth-gate" hidden>
+        <div class="auth-gate-card">
+          <div class="auth-gate-eyebrow" id="auth-gate-eyebrow">Private workspace</div>
+          <h1 class="auth-gate-title" id="auth-gate-title">Sign in with Google to continue</h1>
+          <p class="auth-gate-message" id="auth-gate-message">Only approved Google accounts can access this application.</p>
+          <div class="auth-gate-actions">
+            <button class="primary" id="auth-gate-google" type="button" disabled>Sign in with Google</button>
+          </div>
+          <div class="auth-gate-status" id="auth-gate-status" role="status" aria-live="polite"></div>
+        </div>
+      </section>
 
       <main class="app-main page-view compose-page is-active" id="compose-page">
         <aside class="document-drawer panel is-open" id="documents-drawer">

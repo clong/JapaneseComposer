@@ -150,6 +150,97 @@ body::before {
   min-height: 1.2em;
 }
 
+.auth-gate {
+  display: flex;
+  justify-content: center;
+  margin: 20px 0 32px;
+}
+
+.auth-gate[hidden] {
+  display: none !important;
+}
+
+.auth-gate-card {
+  width: min(640px, 100%);
+  border: var(--border);
+  border-radius: 32px;
+  background:
+    radial-gradient(circle at top right, rgba(217, 95, 76, 0.16), transparent 32%),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.96), rgba(250, 245, 238, 0.98));
+  box-shadow: var(--shadow);
+  padding: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.auth-gate-eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
+}
+
+.auth-gate-title {
+  margin: 0;
+  font-family: 'DM Serif Display', 'Noto Serif JP', serif;
+  font-size: clamp(32px, 5vw, 46px);
+  line-height: 1.05;
+}
+
+.auth-gate-message {
+  margin: 0;
+  max-width: 48ch;
+  color: var(--ink-muted);
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.auth-gate-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.auth-gate-status {
+  min-height: 1.3em;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.app.auth-gated .account-controls,
+.app.auth-gated .page-nav,
+.app.auth-gated .app-main,
+.app.auth-gated .app-footer {
+  display: none;
+}
+
+.app.auth-loading .account-controls,
+.app.auth-loading .page-nav,
+.app.auth-loading .app-main,
+.app.auth-loading .app-footer {
+  display: none;
+}
+
+.app.auth-loading .auth-gate[hidden] {
+  display: flex !important;
+}
+
+.app.auth-gated .page-view,
+.app.auth-loading .page-view {
+  display: none !important;
+}
+
+.app.auth-gated #mode-toggle,
+.app.auth-loading #mode-toggle,
+.app.auth-gated #furigana-toggle,
+.app.auth-loading #furigana-toggle,
+.app.auth-gated #vocab-toggle,
+.app.auth-loading #vocab-toggle {
+  display: none;
+}
+
 .chip {
   padding: 10px 16px;
   border-radius: 999px;
@@ -2139,6 +2230,11 @@ body.image-lightbox-open {
   .app-header {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .auth-gate-card {
+    padding: 28px 22px;
+    border-radius: 24px;
   }
 
   .page-nav {
