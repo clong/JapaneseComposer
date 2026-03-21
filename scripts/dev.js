@@ -116,6 +116,13 @@ const BASIC_AUTH_REALM = process.env.BASIC_AUTH_REALM || 'Japanese Composer';
 const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || '';
 const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || '';
 const GOOGLE_OAUTH_REDIRECT_URI = process.env.GOOGLE_OAUTH_REDIRECT_URI || '';
+const REQUIRE_GOOGLE_AUTH = process.env.REQUIRE_GOOGLE_AUTH === '1';
+const ALLOWED_GOOGLE_EMAILS = new Set(
+  String(process.env.ALLOWED_GOOGLE_EMAILS || '')
+    .split(',')
+    .map((value) => normalizeEmail(value))
+    .filter(Boolean)
+);
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || 'jc_session';
 const OAUTH_STATE_COOKIE_NAME = 'jc_oauth_state';
 const SESSION_MAX_AGE_MS = Math.max(60 * 60 * 1000, Number(process.env.SESSION_MAX_AGE_MS) || (1000 * 60 * 60 * 24 * 30));
@@ -219,10 +226,7 @@ function auditAuthEvent({ ok, reason, username, req }) {
 
 function requireBasicAuth(req, res) {
   if (!BASIC_AUTH_PASSWORD) {
-    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('Server authentication is not configured.');
-    auditAuthEvent({ ok: false, reason: 'missing_password', username: '', req });
-    return false;
+    return true;
   }
 
   const credentials = parseBasicAuth(req.headers.authorization);
@@ -289,6 +293,26 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   const requestUrl = new URL(req.url || '/', 'http://localhost');
+  const isPublicAuthRoute = requestUrl.pathname === '/api/auth/session'
+    || requestUrl.pathname === '/api/auth/google/start'
+    || requestUrl.pathname === '/api/auth/google/callback'
+    || requestUrl.pathname === '/api/auth/logout';
+  if (REQUIRE_GOOGLE_AUTH && requestUrl.pathname.startsWith('/api/') && !isPublicAuthRoute) {
+    if (!isGoogleOauthConfigured()) {
+      res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Google OAuth is not configured' }));
+      return;
+    }
+    if (!workspaceDbReady) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Workspace database unavailable' }));
+      return;
+    }
+    const user = await requireAuthenticatedUser(workspaceDbPath, req, res);
+    if (!user) {
+      return;
+    }
+  }
   if (requestUrl.pathname === '/api/auth/session') {
     if (req.method !== 'GET') {
       res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -311,6 +335,7 @@ const server = http.createServer(async (req, res) => {
     });
     res.end(JSON.stringify({
       enabled: isGoogleOauthConfigured() && workspaceDbReady,
+      required: REQUIRE_GOOGLE_AUTH,
       authenticated: Boolean(user),
       user: user ? {
         id: user.id,
@@ -395,6 +420,9 @@ const server = http.createServer(async (req, res) => {
       const user = normalizeGoogleUserProfile(profile);
       if (!user) {
         throw new Error('Missing Google profile');
+      }
+      if (!isAllowedGoogleUser(user)) {
+        throw new Error('Google account not allowed');
       }
       await upsertUser(workspaceDbPath, user);
       const sessionToken = createSessionToken();
@@ -1240,17 +1268,29 @@ function normalizeGoogleUserProfile(profile) {
   }
   const id = typeof profile.sub === 'string' ? profile.sub.trim().slice(0, 200) : '';
   const email = normalizeEmail(profile.email).slice(0, 320);
+  const emailVerified = profile.email_verified === true || profile.email_verified === 'true';
   const name = typeof profile.name === 'string' ? profile.name.trim().slice(0, 160) : '';
   const picture = typeof profile.picture === 'string' ? profile.picture.trim().slice(0, 1000) : '';
-  if (!id) {
+  if (!id || !email || !emailVerified) {
     return null;
   }
   return {
     id,
     email,
+    emailVerified,
     name,
     picture
   };
+}
+
+function isAllowedGoogleUser(user) {
+  if (!user || !user.email) {
+    return false;
+  }
+  if (!ALLOWED_GOOGLE_EMAILS.size) {
+    return true;
+  }
+  return ALLOWED_GOOGLE_EMAILS.has(normalizeEmail(user.email));
 }
 
 function classifyOauthCallbackError(error) {
@@ -1274,6 +1314,9 @@ function classifyOauthCallbackError(error) {
   }
   if (normalized.includes('missing google profile')) {
     return { reason: 'profile_missing', message };
+  }
+  if (normalized.includes('google account not allowed')) {
+    return { reason: 'not_allowed', message };
   }
   if (normalized.includes('sqlite3')) {
     return { reason: 'db_error', message };
