@@ -101,6 +101,26 @@
             ></textarea>
             <div id="preview" class="preview overlay-preview" aria-live="polite"></div>
           </div>
+          <div class="image-gallery-panel">
+            <div class="image-gallery-header">
+              <div>
+                <h3 id="image-gallery-title">Pictures</h3>
+                <p id="image-gallery-subtitle">Drag images here or click to add them to this document.</p>
+              </div>
+              <button class="ghost" id="image-gallery-browse" type="button">Browse</button>
+            </div>
+            <input id="image-gallery-input" type="file" accept="image/*" multiple hidden />
+            <button
+              class="image-dropzone"
+              id="image-dropzone"
+              type="button"
+              aria-describedby="image-dropzone-copy image-dropzone-status"
+            >
+              <span id="image-dropzone-copy">Drop images here or click to browse.</span>
+              <span id="image-dropzone-status" class="image-dropzone-status" aria-live="polite"></span>
+            </button>
+            <div class="image-gallery-grid" id="image-gallery-grid" aria-live="polite"></div>
+          </div>
           <div class="corrections-panel" id="corrections-panel" hidden>
             <div class="corrections-header">
               <h3 id="corrections-title">Tracked Changes</h3>
@@ -306,7 +326,7 @@
       </main>
 
       <footer class="app-footer">
-        <span id="build-stamp">Build 2026-03-08T04:49:54.127Z</span>
+        <span id="build-stamp">Build 2026-03-21T15:33:07.976Z</span>
       </footer>
     </div>
 
@@ -331,6 +351,15 @@
         <button class="primary" id="selection-ask-submit" type="submit">Send</button>
       </form>
       <div class="selection-result" id="selection-result"></div>
+    </div>
+
+    <div class="image-lightbox" id="image-lightbox" hidden aria-hidden="true">
+      <div class="image-lightbox-backdrop" id="image-lightbox-backdrop"></div>
+      <div class="image-lightbox-dialog" role="dialog" aria-modal="true" aria-labelledby="image-lightbox-caption">
+        <button class="ghost image-lightbox-close" id="image-lightbox-close" type="button">Close</button>
+        <img class="image-lightbox-image" id="image-lightbox-image" src="" alt="" />
+        <div class="image-lightbox-caption" id="image-lightbox-caption"></div>
+      </div>
     </div>
 
     <script src="./assets/kuromoji.js"></script>
