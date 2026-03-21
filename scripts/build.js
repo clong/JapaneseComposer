@@ -1,12 +1,17 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { build as esbuild } from 'esbuild';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const srcDir = path.join(root, 'src');
 const distDir = path.join(root, 'dist');
 const assetsDir = path.join(distDir, 'assets');
+const tempUiBundlePath = path.join(root, '.codex-ui-shell.cjs');
 const faviconPath = path.join(srcDir, 'favicon.ico');
 const kuromojiDir = path.join(root, 'node_modules', 'kuromoji');
 const kuromojiDistScriptPath = path.join(kuromojiDir, 'dist', 'kuromoji.js');
@@ -26,8 +31,26 @@ await fs.rm(distDir, { recursive: true, force: true });
 await fs.mkdir(assetsDir, { recursive: true });
 
 const htmlPath = path.join(srcDir, 'index.html');
+const buildTimestamp = new Date().toISOString();
+
+await esbuild({
+  entryPoints: [path.join(srcDir, 'ui.jsx')],
+  outfile: tempUiBundlePath,
+  bundle: true,
+  format: 'cjs',
+  platform: 'node',
+  jsx: 'automatic',
+  external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/server'],
+  logLevel: 'silent'
+});
+
+const require = createRequire(import.meta.url);
+const { AppShell } = require(tempUiBundlePath);
 const html = await fs.readFile(htmlPath, 'utf8');
-const stampedHtml = html.replace('@@BUILD_TIMESTAMP@@', new Date().toISOString());
+const appShellHtml = renderToStaticMarkup(React.createElement(AppShell));
+const stampedHtml = html
+  .replace('@@APP_SHELL@@', appShellHtml)
+  .replaceAll('@@BUILD_TIMESTAMP@@', buildTimestamp);
 await fs.writeFile(path.join(distDir, 'index.html'), stampedHtml);
 
 if (await pathExists(faviconPath)) {
@@ -35,7 +58,12 @@ if (await pathExists(faviconPath)) {
 }
 
 await fs.copyFile(path.join(srcDir, 'app.js'), path.join(assetsDir, 'app.js'));
-await fs.copyFile(path.join(srcDir, 'styles.css'), path.join(assetsDir, 'app.css'));
+await esbuild({
+  entryPoints: [path.join(srcDir, 'styles.css')],
+  outfile: path.join(assetsDir, 'app.css'),
+  bundle: true,
+  logLevel: 'silent'
+});
 
 const kuromojiScriptPath = (await pathExists(kuromojiDistScriptPath))
   ? kuromojiDistScriptPath
@@ -50,5 +78,7 @@ if (await pathExists(kuromojiScriptPath) && await pathExists(kuromojiDictPath)) 
 } else {
   console.log('Kuromoji assets not found. Install `kuromoji` to enable tokenizer.');
 }
+
+await fs.rm(tempUiBundlePath, { force: true });
 
 console.log('Build complete.');

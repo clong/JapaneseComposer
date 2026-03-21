@@ -1035,7 +1035,7 @@ function renderFlashcardReview() {
     flashcardExit.title = copy.flashcardExitLabel || 'Exit';
   }
   if (flashcardStart) {
-    flashcardStart.textContent = copy.flashcardStart;
+    setElementText(flashcardStart, copy.flashcardStart);
     flashcardStart.hidden = isRunning;
     flashcardStart.disabled = isRunning || !selectedCount;
   }
@@ -1121,6 +1121,33 @@ const selectionAskLabel = document.querySelector('#selection-ask-label');
 const selectionAskInput = document.querySelector('#selection-ask-input');
 const selectionAskSubmit = document.querySelector('#selection-ask-submit');
 const selectionResult = document.querySelector('#selection-result');
+
+function getLabeledTextTarget(element) {
+  if (!(element instanceof Element)) {
+    return null;
+  }
+  return element.querySelector('[data-label]');
+}
+
+function setElementText(element, text) {
+  if (!element) {
+    return;
+  }
+  const labelTarget = getLabeledTextTarget(element);
+  if (labelTarget) {
+    labelTarget.textContent = text;
+    return;
+  }
+  element.textContent = text;
+}
+
+function getElementText(element) {
+  if (!element) {
+    return '';
+  }
+  const labelTarget = getLabeledTextTarget(element);
+  return labelTarget?.textContent || element.textContent || '';
+}
 let activeHoverBase = null;
 let lastSelectionPoint = null;
 
@@ -2546,7 +2573,7 @@ function renderAuthGate() {
     authGateMessage.textContent = copy.authGateMessage;
   }
   if (authGateGoogle) {
-    authGateGoogle.textContent = copy.authSignIn;
+    setElementText(authGateGoogle, copy.authSignIn);
     authGateGoogle.disabled = authState.loading || !authState.enabled;
   }
   if (authGateStatus) {
@@ -2574,12 +2601,12 @@ function renderAuthControls() {
   const copy = i18n[state.language];
   const gateVisible = authState.required && !authState.authenticated;
   if (authGoogle) {
-    authGoogle.textContent = copy.authSignIn;
+    setElementText(authGoogle, copy.authSignIn);
     authGoogle.disabled = authState.loading || !authState.enabled || authState.authenticated;
     authGoogle.hidden = gateVisible || Boolean(authState.authenticated) || !authState.enabled;
   }
   if (authLogout) {
-    authLogout.textContent = copy.authSignOut;
+    setElementText(authLogout, copy.authSignOut);
     authLogout.hidden = !authState.authenticated;
     authLogout.disabled = authState.loading;
   }
@@ -2997,7 +3024,7 @@ function updateDocumentSaveControls() {
   }
   const isSaved = isActiveDocumentSavedState();
   const copy = i18n[state.language];
-  documentSave.textContent = isSaved ? copy.documentSaved : copy.documentSave;
+  setElementText(documentSave, isSaved ? copy.documentSaved : copy.documentSave);
   documentSave.disabled = isSaved;
   if (documentTitleInput) {
     documentTitleInput.readOnly = isSaved;
@@ -3649,7 +3676,7 @@ function renderImageLightbox() {
   imageLightbox.hidden = !isOpen;
   imageLightbox.setAttribute('aria-hidden', String(!isOpen));
   document.body.classList.toggle('image-lightbox-open', isOpen);
-  imageLightboxClose.textContent = copy.imageLightboxClose;
+  setElementText(imageLightboxClose, copy.imageLightboxClose);
   imageLightboxClose.setAttribute('aria-label', copy.imageLightboxClose);
 
   if (!isOpen) {
@@ -3684,7 +3711,7 @@ function renderImageGallery() {
     imageGallerySubtitle.textContent = copy.imageGallerySubtitle;
   }
   if (imageGalleryBrowse) {
-    imageGalleryBrowse.textContent = copy.imageGalleryBrowse;
+    setElementText(imageGalleryBrowse, copy.imageGalleryBrowse);
     imageGalleryBrowse.disabled = imageGalleryState.status === 'loading';
   }
   imageDropzone.classList.toggle('is-dragging', imageGalleryState.dragActive);
@@ -4378,7 +4405,7 @@ function renderSyntheticGeneratorPanel() {
   if (syntheticCategoryLabel) {
     syntheticCategoryLabel.textContent = copy.syntheticCategoryLabel;
   }
-  syntheticGenerateButton.textContent = isLoading ? copy.syntheticGenerating : copy.syntheticGenerate;
+  setElementText(syntheticGenerateButton, isLoading ? copy.syntheticGenerating : copy.syntheticGenerate);
   syntheticGenerateButton.disabled = isLoading || !selectedCount;
   syntheticGenerateButton.setAttribute('aria-busy', String(isLoading));
   syntheticGenerateButton.hidden = isFlashcardReviewRunning;
@@ -4451,12 +4478,12 @@ function renderPageView() {
   }
 
   if (pageNavCompose) {
-    pageNavCompose.textContent = copySafe(i18n[state.language].pageCompose, 'Compose');
+    setElementText(pageNavCompose, copySafe(i18n[state.language].pageCompose, 'Compose'));
     pageNavCompose.setAttribute('aria-pressed', String(isCompose));
     pageNavCompose.setAttribute('aria-current', isCompose ? 'page' : 'false');
   }
   if (pageNavVocabulary) {
-    pageNavVocabulary.textContent = copySafe(i18n[state.language].pageVocabulary, 'Vocabulary');
+    setElementText(pageNavVocabulary, copySafe(i18n[state.language].pageVocabulary, 'Vocabulary'));
     pageNavVocabulary.setAttribute('aria-pressed', String(!isCompose));
     pageNavVocabulary.setAttribute('aria-current', !isCompose ? 'page' : 'false');
   }
@@ -4943,7 +4970,7 @@ function renderSharePanel() {
   shareTitle.textContent = hasWorkflow ? copy.workflowPanelTitle : copy.shareTitle;
   shareSubtitle.textContent = hasWorkflow ? copy.workflowPanelSubtitle : copy.shareSubtitle;
   shareUserLabel.textContent = copy.shareUserLabel;
-  shareSend.textContent = copy.shareSend;
+  setElementText(shareSend, copy.shareSend);
   shareSend.hidden = isTeacherWorkflowRole;
   shareUserEmailInput.placeholder = copy.shareUserPlaceholder;
   shareUserEmailInput.disabled = !authState.authenticated || shareState.sending || !showShareForm;
@@ -4980,7 +5007,7 @@ function renderSharePanel() {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = entry.primary ? 'primary' : 'ghost';
-      button.textContent = getWorkflowActionLabel(copy, entry.action);
+      setElementText(button, getWorkflowActionLabel(copy, entry.action));
       button.disabled = !authState.authenticated || shareState.sending;
       button.addEventListener('click', () => {
         void handleWorkflowTransition(entry.action);
@@ -5298,11 +5325,11 @@ function renderDocumentControls() {
     documentTitleInput.classList.toggle('is-read-only', isActiveDocumentSavedState());
   }
   if (documentSave) {
-    documentSave.textContent = isActiveDocumentSavedState() ? copy.documentSaved : copy.documentSave;
+    setElementText(documentSave, isActiveDocumentSavedState() ? copy.documentSaved : copy.documentSave);
     documentSave.disabled = isActiveDocumentSavedState();
   }
   if (documentNew) {
-    documentNew.textContent = copy.documentNew;
+    setElementText(documentNew, copy.documentNew);
   }
   renderDocumentList();
 }
@@ -5319,13 +5346,12 @@ function syncPanelToggle(panel, body, button, copy) {
     return;
   }
   const isCollapsed = panel.classList.contains('is-collapsed');
+  const nextLabel = isCollapsed ? copy.expand : copy.collapse;
   body.setAttribute('aria-hidden', String(isCollapsed));
   button.setAttribute('aria-expanded', String(!isCollapsed));
-  if (panel === documentsDrawer) {
-    button.textContent = isCollapsed ? '+' : '−';
-    return;
-  }
-  button.textContent = isCollapsed ? copy.expand : copy.collapse;
+  button.setAttribute('aria-label', nextLabel);
+  button.setAttribute('title', nextLabel);
+  setElementText(button, nextLabel);
 }
 
 function setPanelCollapsed(panel, body, button, collapsed) {
@@ -5353,22 +5379,22 @@ function renderUI() {
   app.classList.toggle('reading-mode', isReadingMode);
   app.classList.toggle('corrections-mode', isCorrectionsMode);
 
-  languageToggle.textContent = copy.languageToggle;
+  setElementText(languageToggle, copy.languageToggle);
   languageToggle.setAttribute('aria-pressed', state.language === 'ja');
 
   if (state.mode === 'read') {
-    modeToggle.textContent = copy.modeRead;
+    setElementText(modeToggle, copy.modeRead);
   } else if (state.mode === 'corrections' && canUseCorrections) {
-    modeToggle.textContent = copy.modeCorrections;
+    setElementText(modeToggle, copy.modeCorrections);
   } else {
-    modeToggle.textContent = copy.modeEdit;
+    setElementText(modeToggle, copy.modeEdit);
   }
   modeToggle.setAttribute('aria-pressed', String(state.mode !== 'edit'));
 
-  furiganaToggle.textContent = state.showFurigana ? copy.furiganaOn : copy.furiganaOff;
+  setElementText(furiganaToggle, state.showFurigana ? copy.furiganaOn : copy.furiganaOff);
   furiganaToggle.setAttribute('aria-pressed', state.showFurigana);
 
-  vocabToggle.textContent = state.showVocab ? copy.vocabOn : copy.vocabOff;
+  setElementText(vocabToggle, state.showVocab ? copy.vocabOn : copy.vocabOff);
   vocabToggle.setAttribute('aria-pressed', state.showVocab);
 
   vocabPanel.style.display = state.showVocab ? 'flex' : 'none';
@@ -5376,16 +5402,16 @@ function renderUI() {
   syncPanelToggle(questionsPanel, questionsBody, questionsCollapse, copy);
   syncPanelToggle(sharePanel, shareBody, shareCollapse, copy);
   syncPanelToggle(documentsDrawer, documentsDrawerBody, documentsDrawerToggle, copy);
-  clearVocab.textContent = copy.clear;
-  tooltipAdd.textContent = copy.addToVocab;
+  setElementText(clearVocab, copy.clear);
+  setElementText(tooltipAdd, copy.addToVocab);
   selectionTitle.textContent = copy.selectionTitle;
-  selectionTranslate.textContent = copy.selectionTranslate;
+  setElementText(selectionTranslate, copy.selectionTranslate);
   if (selectionAddToVocab) {
-    selectionAddToVocab.textContent = copy.selectionAddToVocab;
+    setElementText(selectionAddToVocab, copy.selectionAddToVocab);
   }
-  selectionCopy.textContent = copy.selectionCopy;
-  selectionAsk.textContent = copy.selectionAsk;
-  selectionAskSubmit.textContent = copy.selectionAskSubmit;
+  setElementText(selectionCopy, copy.selectionCopy);
+  setElementText(selectionAsk, copy.selectionAsk);
+  setElementText(selectionAskSubmit, copy.selectionAskSubmit);
   selectionAskLabel.textContent = copy.selectionAskLabel;
   selectionAskInput.placeholder = copy.selectionAskPlaceholder;
 
@@ -5676,7 +5702,7 @@ function renderProofread() {
 
   proofreadTitle.textContent = copy.proofreadTitle;
   proofreadSubtitle.textContent = copy.proofreadSubtitle;
-  proofreadButton.textContent = copy.proofreadButton;
+  setElementText(proofreadButton, copy.proofreadButton);
 
   const hasText = Boolean(state.text.trim());
   const isLoading = proofreadState.status === 'loading';
@@ -6251,14 +6277,14 @@ function bindEvents() {
       if (!text) {
         return;
       }
-      const originalLabel = selectionAddToVocab.textContent;
+      const originalLabel = getElementText(selectionAddToVocab);
       const status = document.createElement('div');
       status.className = 'selection-translation';
       status.textContent = copy.selectionAddToVocabLoading;
       selectionResult.replaceChildren(status);
       selectionTooltip.classList.add('expanded');
       selectionAddToVocab.disabled = true;
-      selectionAddToVocab.textContent = copy.selectionAddToVocabLoading;
+      setElementText(selectionAddToVocab, copy.selectionAddToVocabLoading);
 
       try {
         const entry = await resolveSelectionVocabularyEntry(text);
@@ -6276,7 +6302,7 @@ function bindEvents() {
         status.textContent = copy.selectionAddToVocabError;
       } finally {
         selectionAddToVocab.disabled = false;
-        selectionAddToVocab.textContent = originalLabel || copy.selectionAddToVocab;
+        setElementText(selectionAddToVocab, originalLabel || copy.selectionAddToVocab);
       }
     });
   }
@@ -6380,14 +6406,14 @@ function bindEvents() {
     }
     try {
       await navigator.clipboard.writeText(text);
-      selectionCopy.textContent = copy.selectionCopied;
+      setElementText(selectionCopy, copy.selectionCopied);
       setTimeout(() => {
-        selectionCopy.textContent = copy.selectionCopy;
+        setElementText(selectionCopy, copy.selectionCopy);
       }, 1200);
     } catch (error) {
-      selectionCopy.textContent = copy.selectionError;
+      setElementText(selectionCopy, copy.selectionError);
       setTimeout(() => {
-        selectionCopy.textContent = copy.selectionCopy;
+        setElementText(selectionCopy, copy.selectionCopy);
       }, 1200);
     }
   });
