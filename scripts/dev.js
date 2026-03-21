@@ -1362,12 +1362,21 @@ async function readSessionUserFromRequest(dbPath, req) {
     return null;
   }
   const row = rows[0] || {};
-  return {
+  const user = {
     id: typeof row.id === 'string' ? row.id : '',
     email: typeof row.email === 'string' ? row.email : '',
     name: typeof row.name === 'string' ? row.name : '',
     picture: typeof row.picture === 'string' ? row.picture : ''
   };
+  if (!isAllowedGoogleUser(user)) {
+    try {
+      await deleteUserSession(dbPath, token);
+    } catch (error) {
+      // Ignore cleanup failures and treat the session as unauthenticated.
+    }
+    return null;
+  }
+  return user;
 }
 
 async function upsertUser(dbPath, user) {

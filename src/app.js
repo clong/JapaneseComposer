@@ -271,6 +271,7 @@ const i18n = {
     authGateTitle: 'Sign in with Google to continue',
     authGateMessage: 'Only approved Google accounts can access this application.',
     authGateLoading: 'Checking your session…',
+    authGateSessionUnavailable: 'Unable to verify access. Reload and try again.',
     authGateFailed: 'Sign-in failed. Try again.',
     authGateDenied: 'This Google account is not allowed to access the app.',
     authGateUnavailable: 'Google sign-in is not configured on this server.'
@@ -475,6 +476,7 @@ const i18n = {
     authGateTitle: '続行するにはGoogleでログインしてください',
     authGateMessage: '許可されたGoogleアカウントのみこのアプリを利用できます。',
     authGateLoading: 'セッションを確認中…',
+    authGateSessionUnavailable: 'アクセス確認に失敗しました。再読み込みしてもう一度お試しください。',
     authGateFailed: 'ログインに失敗しました。もう一度お試しください。',
     authGateDenied: 'このGoogleアカウントにはアクセス権がありません。',
     authGateUnavailable: 'このサーバーではGoogleログインが設定されていません。'
@@ -580,6 +582,7 @@ let workspaceSyncInFlight = false;
 let workspaceRefreshTimer = null;
 let workspaceRefreshInFlight = false;
 let workspaceHydrating = false;
+let localStateLoaded = false;
 let workspaceDeletedDocumentIds = new Set();
 let flashcardAdvanceTimer = null;
 
@@ -2489,6 +2492,9 @@ function getAuthGateStatus(copy) {
   if (authState.loading) {
     return copy.authGateLoading;
   }
+  if (authState.notice === 'session_unavailable') {
+    return copy.authGateSessionUnavailable;
+  }
   if (authState.notice === 'not_allowed') {
     return copy.authGateDenied;
   }
@@ -2737,7 +2743,16 @@ async function hydrateAuthAndWorkspace() {
   try {
     session = await requestAuthSession();
   } catch (error) {
-    session = null;
+    authState.required = true;
+    authState.enabled = false;
+    authState.user = null;
+    authState.authenticated = false;
+    authState.notice = authState.notice || 'session_unavailable';
+    authState.loading = false;
+    renderAuthControls();
+    clearWorkspaceSyncQueue();
+    stopWorkspaceRefreshLoop();
+    return false;
   }
 
   authState.required = Boolean(session?.required);
@@ -2753,8 +2768,14 @@ async function hydrateAuthAndWorkspace() {
   if (!authState.authenticated) {
     clearWorkspaceSyncQueue();
     stopWorkspaceRefreshLoop();
-    return;
+    if (authState.required) {
+      return false;
+    }
+    ensureLocalStateLoaded();
+    return true;
   }
+
+  ensureLocalStateLoaded();
 
   try {
     const remoteWorkspace = await requestWorkspace();
@@ -2778,6 +2799,7 @@ async function hydrateAuthAndWorkspace() {
     authState.syncError = error?.message || i18n[state.language].authSyncError;
     renderAuthControls();
   }
+  return true;
 }
 
 async function fetchVocabFromApi() {
@@ -3129,6 +3151,14 @@ function loadState() {
     ? state.documents.find((doc) => doc.id === storedActiveId)
     : null;
   setActiveDocument(activeDocument || state.documents[0], { resetProofread: false });
+}
+
+function ensureLocalStateLoaded() {
+  if (localStateLoaded) {
+    return;
+  }
+  loadState();
+  localStateLoaded = true;
 }
 
 function saveEntry() {
@@ -6414,14 +6444,12 @@ function bindEvents() {
 }
 
 async function init() {
-  loadState();
   authState.notice = consumeAuthResultFromUrl();
-  await hydrateAuthAndWorkspace();
-  composerInput.value = state.text;
-  renderUI();
-  renderPreview();
-  renderQuestions();
   bindEvents();
+  const canRenderWorkspace = await hydrateAuthAndWorkspace();
+  if (!canRenderWorkspace) {
+    return;
+  }
   if (!authState.authenticated && !authState.required) {
     void hydrateVocabFromApi();
   }
