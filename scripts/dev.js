@@ -1951,6 +1951,28 @@ function appendWorkflowEvent(existingEvents, event) {
   return next.slice(-80);
 }
 
+function isSameWorkflowSnapshot(currentWorkflow, incomingWorkflow) {
+  if (!currentWorkflow || !incomingWorkflow) {
+    return false;
+  }
+  return currentWorkflow.id === incomingWorkflow.id
+    && currentWorkflow.version === incomingWorkflow.version
+    && currentWorkflow.status === incomingWorkflow.status;
+}
+
+function hasPendingWorkflowEdits(document, workflow) {
+  if (!document || !workflow) {
+    return false;
+  }
+  const documentUpdatedAt = Number.isFinite(document.updatedAt)
+    ? Math.trunc(document.updatedAt)
+    : 0;
+  const workflowTransitionAt = Number.isFinite(workflow.lastTransitionAt)
+    ? Math.trunc(workflow.lastTransitionAt)
+    : 0;
+  return documentUpdatedAt > workflowTransitionAt;
+}
+
 function resolveWorkflowStatusForAction(action) {
   if (action === 'submit') {
     return 'submitted';
@@ -2235,6 +2257,13 @@ async function shareDocumentWithGoogleUser(dbPath, {
   const ownerName = (incomingWorkflow?.ownerName || (typeof sender.name === 'string' ? sender.name : '')).slice(0, 160);
   const senderRole = ownerUserId === sender.id ? 'student' : 'teacher';
   const recipientRole = senderRole === 'student' ? 'teacher' : 'student';
+  const isWorkflowUpdate = Boolean(incomingWorkflow?.id);
+  if (isWorkflowUpdate && senderRole !== 'student') {
+    throw createHttpError(403, 'Only students can update an active submission');
+  }
+  if (isWorkflowUpdate && incomingWorkflow.status !== 'submitted') {
+    throw createHttpError(409, 'This review changed. Refresh before updating the submission.');
+  }
   const nextStatus = senderRole === 'student'
     ? 'submitted'
     : normalizeWorkflowStatus(incomingWorkflow?.status, 'reviewed');
@@ -2280,6 +2309,12 @@ async function shareDocumentWithGoogleUser(dbPath, {
   const senderWorkspace = await readUserWorkspace(dbPath, sender.id);
   const senderDocuments = normalizeWorkspaceDocumentList(senderWorkspace?.documents);
   const senderIndex = senderDocuments.findIndex((entry) => entry.id === sourceDocumentId);
+  const senderExistingWorkflow = senderIndex >= 0
+    ? normalizeDocumentWorkflow(senderDocuments[senderIndex]?.workflow)
+    : null;
+  if (isWorkflowUpdate && !isSameWorkflowSnapshot(senderExistingWorkflow, incomingWorkflow)) {
+    throw createHttpError(409, 'This review changed. Refresh before updating the submission.');
+  }
   const senderCreatedAt = senderIndex >= 0 && Number.isFinite(senderDocuments[senderIndex]?.createdAt)
     ? Math.trunc(senderDocuments[senderIndex].createdAt)
     : now;
@@ -2315,6 +2350,15 @@ async function shareDocumentWithGoogleUser(dbPath, {
   const recipientWorkspace = await readUserWorkspace(dbPath, recipient.id);
   const recipientDocuments = normalizeWorkspaceDocumentList(recipientWorkspace?.documents);
   const recipientIndex = recipientDocuments.findIndex((entry) => entry.workflow?.id === workflowId);
+  const recipientExistingWorkflow = recipientIndex >= 0
+    ? normalizeDocumentWorkflow(recipientDocuments[recipientIndex]?.workflow)
+    : null;
+  if (isWorkflowUpdate && !isSameWorkflowSnapshot(recipientExistingWorkflow, incomingWorkflow)) {
+    throw createHttpError(409, 'This review changed. Refresh before updating the submission.');
+  }
+  if (isWorkflowUpdate && hasPendingWorkflowEdits(recipientDocuments[recipientIndex], recipientExistingWorkflow)) {
+    throw createHttpError(409, 'The reviewer has unsent edits. Ask them to return the review before updating the submission.');
+  }
   const sharedDocumentId = recipientIndex >= 0
     ? recipientDocuments[recipientIndex].id
     : createWorkflowParticipantDocumentId(workflowId, recipient.id);

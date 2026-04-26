@@ -252,10 +252,11 @@ const i18n = {
     workflowStatusRevisionRequested: 'Revision requested',
     workflowStatusFinal: 'Final',
     workflowActionSubmit: 'Submit for review',
+    workflowActionUpdateSubmission: 'Update submission',
     workflowActionReturnReview: 'Return to student',
     workflowActionMarkFinal: 'Mark final',
     workflowNoHistory: 'No transitions yet.',
-    workflowHintSubmittedStudent: 'Waiting for the teacher to return feedback.',
+    workflowHintSubmittedStudent: 'Waiting for the teacher to return feedback. You can still update the submission.',
     workflowHintSubmittedTeacher: 'Review in Corrections mode, then return to student.',
     workflowHintRevisionStudent: 'Teacher requested another revision.',
     workflowHintReviewedStudent: 'Teacher returned edits. Revise and submit again or mark final.',
@@ -265,11 +266,14 @@ const i18n = {
     workflowTransitionError: 'Workflow update failed.',
     workflowTransitionSuccess: 'Workflow updated.',
     workflowEventShared: 'Shared and submitted',
+    workflowEventUpdateSubmission: 'Updated submission',
     workflowEventSubmit: 'Submitted for review',
     workflowEventReturnReview: 'Returned review',
     workflowEventMarkFinal: 'Marked final',
     workflowEventTo: 'to',
     workflowActorUnknown: 'User',
+    shareUpdateSuccess: 'Submission updated.',
+    shareUpdateError: 'Submission update failed.',
     correctionsTitle: 'Tracked Changes',
     correctionsSubtitle: 'Tracked edits from the original text.',
     correctionsEmpty: 'No tracked edits yet.',
@@ -462,10 +466,11 @@ const i18n = {
     workflowStatusRevisionRequested: '再提出依頼',
     workflowStatusFinal: '完了',
     workflowActionSubmit: '添削を依頼',
+    workflowActionUpdateSubmission: '提出内容を更新',
     workflowActionReturnReview: '学習者へ返却',
     workflowActionMarkFinal: '完了にする',
     workflowNoHistory: 'まだ遷移履歴がありません。',
-    workflowHintSubmittedStudent: '先生の返却を待っています。',
+    workflowHintSubmittedStudent: '先生の返却を待っています。返却前でも提出内容を更新できます。',
     workflowHintSubmittedTeacher: '添削モードで編集して返却してください。',
     workflowHintRevisionStudent: '先生から再提出依頼があります。',
     workflowHintReviewedStudent: '先生が返却しました。修正して再提出するか完了にしてください。',
@@ -475,11 +480,14 @@ const i18n = {
     workflowTransitionError: 'ワークフロー更新に失敗しました。',
     workflowTransitionSuccess: 'ワークフローを更新しました。',
     workflowEventShared: '共有して提出',
+    workflowEventUpdateSubmission: '提出内容を更新',
     workflowEventSubmit: '添削依頼',
     workflowEventReturnReview: '返却',
     workflowEventMarkFinal: '完了',
     workflowEventTo: 'へ',
     workflowActorUnknown: 'ユーザー',
+    shareUpdateSuccess: '提出内容を更新しました。',
+    shareUpdateError: '提出内容の更新に失敗しました。',
     correctionsTitle: '添削履歴',
     correctionsSubtitle: '元の文章からの変更点を表示します。',
     correctionsEmpty: 'まだ変更はありません。',
@@ -4903,8 +4911,11 @@ function getWorkflowStatusLabel(copy, status) {
 }
 
 function getWorkflowEventLabel(copy, action) {
-  if (action === 'share_start' || action === 'share_update') {
+  if (action === 'share_start') {
     return copy.workflowEventShared;
+  }
+  if (action === 'share_update') {
+    return copy.workflowEventUpdateSubmission;
   }
   if (action === 'submit') {
     return copy.workflowEventSubmit;
@@ -4958,6 +4969,9 @@ function listWorkflowActions(workflow) {
   }
   if (workflow.role === 'student') {
     const actions = [];
+    if (workflow.status === 'submitted') {
+      actions.push({ action: 'share_update', primary: true });
+    }
     if (workflow.status !== 'submitted') {
       actions.push({ action: 'submit', primary: true });
     }
@@ -4977,6 +4991,9 @@ function listWorkflowActions(workflow) {
 function getWorkflowActionLabel(copy, action) {
   if (action === 'submit') {
     return copy.workflowActionSubmit;
+  }
+  if (action === 'share_update') {
+    return copy.workflowActionUpdateSubmission;
   }
   if (action === 'return_review') {
     return copy.workflowActionReturnReview;
@@ -5118,6 +5135,53 @@ async function handleWorkflowTransition(action) {
   }
 }
 
+async function handleWorkflowShareUpdate() {
+  const copy = i18n[state.language];
+  if (!authState.authenticated) {
+    shareState.error = copy.shareRequiresAuth;
+    shareState.message = '';
+    renderSharePanel();
+    return;
+  }
+  const activeDocument = getActiveDocumentFromState();
+  const workflow = normalizeDocumentWorkflow(activeDocument?.workflow || state.workflow);
+  const recipientEmail = normalizeEmailValue(workflow?.partnerEmail);
+  if (!workflow || !workflow.id || workflow.role !== 'student' || workflow.status !== 'submitted' || !recipientEmail) {
+    shareState.error = copy.shareUpdateError;
+    shareState.message = '';
+    renderSharePanel();
+    return;
+  }
+  shareState.sending = true;
+  shareState.error = '';
+  shareState.message = '';
+  renderSharePanel();
+  try {
+    const result = await requestShareWithGoogleUser(recipientEmail, buildSharePayload());
+    if (result?.senderDocument) {
+      mergeDocumentFromServer(result.senderDocument);
+    }
+    await refreshWorkspaceFromServer().catch(() => {});
+    shareState.message = copy.shareUpdateSuccess;
+    shareState.error = '';
+    shareState.lastSharedAt = new Date();
+  } catch (error) {
+    shareState.error = error?.message || copy.shareUpdateError;
+    shareState.message = '';
+  } finally {
+    shareState.sending = false;
+    renderSharePanel();
+  }
+}
+
+function handleWorkflowAction(action) {
+  if (action === 'share_update') {
+    void handleWorkflowShareUpdate();
+    return;
+  }
+  void handleWorkflowTransition(action);
+}
+
 function renderSharePanel() {
   const copy = i18n[state.language];
   const activeDocument = getActiveDocumentFromState();
@@ -5174,7 +5238,7 @@ function renderSharePanel() {
       setElementText(button, getWorkflowActionLabel(copy, entry.action));
       button.disabled = !authState.authenticated || shareState.sending;
       button.addEventListener('click', () => {
-        void handleWorkflowTransition(entry.action);
+        handleWorkflowAction(entry.action);
       });
       workflowActions.appendChild(button);
     });
