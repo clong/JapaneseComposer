@@ -132,6 +132,8 @@ When signed in, use the in-app "Share with Google User" panel to send the curren
 - Proofreading output
 - Questions and answers
 
+After a student submits a shared review, they can use the workflow panel's "Update submission" action to push a revised snapshot to the reviewer before feedback is returned. The update is blocked if the reviewer already has unsent edits in progress.
+
 ## Dev server-only features
 
 - Translation, proofreading, and selected text Q&A require the dev server (`npm run dev`). Opening `dist/index.html` directly will not enable these API-backed features.
