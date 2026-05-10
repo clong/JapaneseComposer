@@ -28,11 +28,13 @@ import {
   FileTextIcon,
   GlobeIcon,
   MagicWandIcon,
+  MoonIcon,
   PaperPlaneIcon,
   PersonIcon,
   PlusIcon,
   ReaderIcon,
   RocketIcon,
+  SunIcon,
   TrashIcon
 } from '@radix-ui/react-icons';
 
@@ -152,6 +154,19 @@ export function AppShell() {
                       className="chip toolbar-chip"
                       aria-pressed="true"
                     />
+                    <Button
+                      id="theme-toggle"
+                      type="button"
+                      variant="surface"
+                      size="2"
+                      radius="full"
+                      className="chip toolbar-chip theme-toggle"
+                      aria-pressed="false"
+                    >
+                      <MoonIcon aria-hidden="true" className="button-icon theme-icon theme-icon-moon" />
+                      <SunIcon aria-hidden="true" className="button-icon theme-icon theme-icon-sun" />
+                      <span data-label>Dark mode</span>
+                    </Button>
                   </div>
 
                   <div className="account-controls">

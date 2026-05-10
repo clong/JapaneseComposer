@@ -19,7 +19,8 @@ const STORAGE_KEYS = {
   documents: 'jc_documents',
   activeDocument: 'jc_active_document',
   deletedDocuments: 'jc_deleted_documents',
-  sidebarWidth: 'jc_sidebar_width'
+  sidebarWidth: 'jc_sidebar_width',
+  theme: 'jc_theme'
 };
 const MAX_IMAGES_PER_DOCUMENT = 8;
 const MAX_DOCUMENT_IMAGE_SOURCE_LENGTH = 500000;
@@ -199,6 +200,8 @@ const i18n = {
     sidebarResizeLabel: 'Resize sidebar',
     sidebarResizeTitle: 'Drag to resize the right sidebar. Double-click to reset.',
     languageToggle: '日本語 UI',
+    themeToDark: 'Dark mode',
+    themeToLight: 'Light mode',
     modeEdit: 'Mode: Edit',
     modeRead: 'Mode: Reading',
     modeCorrections: 'Mode: Corrections',
@@ -413,6 +416,8 @@ const i18n = {
     sidebarResizeLabel: 'サイドバーの幅を変更',
     sidebarResizeTitle: 'ドラッグして右側のサイドバー幅を変更。ダブルクリックで初期幅に戻します。',
     languageToggle: 'English UI',
+    themeToDark: 'ダークモード',
+    themeToLight: 'ライトモード',
     modeEdit: 'モード: 編集',
     modeRead: 'モード: 閲覧',
     modeCorrections: 'モード: 添削',
@@ -512,6 +517,23 @@ const i18n = {
   }
 };
 
+const THEMES = new Set(['light', 'dark']);
+
+function normalizeTheme(value) {
+  return THEMES.has(value) ? value : '';
+}
+
+function getSystemThemePreference() {
+  if (typeof matchMedia !== 'function') {
+    return 'light';
+  }
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function resolveInitialTheme() {
+  return normalizeTheme(safeStorageGet(STORAGE_KEYS.theme)) || getSystemThemePreference();
+}
+
 const state = {
   documentId: '',
   title: '',
@@ -522,6 +544,7 @@ const state = {
   showVocab: true,
   activePage: 'compose',
   language: 'en',
+  theme: resolveInitialTheme(),
   mode: 'edit',
   sidebarWidth: COMPOSE_SIDEBAR_DEFAULT_WIDTH,
   vocab: [],
@@ -640,6 +663,7 @@ let kuromojiTokenizer = null;
 let kuromojiInitPromise = null;
 
 const app = document.querySelector('#app');
+const themeRoot = document.querySelector('.radix-themes');
 const composerInput = document.querySelector('#composer-input');
 const documentTitleInput = document.querySelector('#document-title');
 const documentTitleLabel = document.querySelector('#document-title-label');
@@ -697,6 +721,7 @@ const workflowHistoryTitle = document.querySelector('#workflow-history-title');
 const workflowHistoryList = document.querySelector('#workflow-history-list');
 const shareStatus = document.querySelector('#share-status');
 const languageToggle = document.querySelector('#language-toggle');
+const themeToggle = document.querySelector('#theme-toggle');
 const modeToggle = document.querySelector('#mode-toggle');
 const furiganaToggle = document.querySelector('#furigana-toggle');
 const vocabToggle = document.querySelector('#vocab-toggle');
@@ -1794,6 +1819,25 @@ function safeStorageSet(key, value) {
   } catch (error) {
     // Ignore storage errors.
   }
+}
+
+function applyTheme() {
+  const theme = normalizeTheme(state.theme) || 'light';
+  state.theme = theme;
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  document.body.dataset.theme = theme;
+  document.body.style.colorScheme = theme;
+  if (themeRoot) {
+    themeRoot.dataset.theme = theme;
+    themeRoot.classList.toggle('light', theme === 'light');
+    themeRoot.classList.toggle('dark', theme === 'dark');
+    themeRoot.style.colorScheme = theme;
+  }
+}
+
+function saveThemePreference() {
+  safeStorageSet(STORAGE_KEYS.theme, state.theme);
 }
 
 function generateDocumentId() {
@@ -5752,6 +5796,7 @@ function renderUI() {
   const isCorrectionsMode = state.mode === 'corrections' && canUseCorrections;
 
   document.documentElement.lang = state.language;
+  applyTheme();
 
   app.classList.toggle('furigana-off', !state.showFurigana);
   app.classList.toggle('reading-mode', isReadingMode);
@@ -5759,6 +5804,9 @@ function renderUI() {
 
   setElementText(languageToggle, copy.languageToggle);
   languageToggle.setAttribute('aria-pressed', state.language === 'ja');
+
+  setElementText(themeToggle, state.theme === 'dark' ? copy.themeToLight : copy.themeToDark);
+  themeToggle?.setAttribute('aria-pressed', String(state.theme === 'dark'));
 
   if (state.mode === 'read') {
     setElementText(modeToggle, copy.modeRead);
@@ -6507,6 +6555,12 @@ function bindEvents() {
     renderQuestions();
   });
 
+  themeToggle?.addEventListener('click', () => {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    saveThemePreference();
+    renderUI();
+  });
+
   modeToggle.addEventListener('click', () => {
     if (isTeacherWorkflowWorkflow(state.workflow)) {
       state.mode = state.mode === 'read' ? 'corrections' : 'read';
@@ -6998,6 +7052,7 @@ function bindEvents() {
 
 async function init() {
   authState.notice = consumeAuthResultFromUrl();
+  applyTheme();
   hydrateLayoutPreferences();
   bindEvents();
   const canRenderWorkspace = await hydrateAuthAndWorkspace();

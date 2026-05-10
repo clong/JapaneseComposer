@@ -5,6 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Japanese Composer</title>
     <link rel="icon" href="./favicon.ico" sizes="any" type="image/x-icon" />
+    <script>
+      (() => {
+        try {
+          const storedTheme = localStorage.getItem('jc_theme');
+          const systemTheme = window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          const theme = storedTheme === 'light' || storedTheme === 'dark' ? storedTheme : systemTheme;
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch (error) {
+          document.documentElement.dataset.theme = 'light';
+          document.documentElement.style.colorScheme = 'light';
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="./assets/app.css" />
   </head>
   <body>

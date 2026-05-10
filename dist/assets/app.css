@@ -29923,14 +29923,14 @@ body::before {
   justify-content: space-between;
   align-items: flex-end;
   justify-self: end;
-  width: max-content;
+  width: min(100%, 640px);
   max-width: 100%;
 }
 .controls {
   width: 100%;
   justify-content: flex-end;
   gap: 10px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
 }
 .toolbar-chip,
@@ -30549,6 +30549,323 @@ textarea#composer-input {
 .image-lightbox-close .button-icon {
   width: 16px;
   height: 16px;
+}
+.theme-toggle {
+  min-width: 132px;
+}
+.theme-icon-sun {
+  display: none;
+}
+html[data-theme=dark] {
+  color-scheme: dark;
+  --ink: #f4efe7;
+  --ink-muted: #b8ac9f;
+  --paper: #171918;
+  --paper-strong: rgba(31, 32, 29, 0.9);
+  --accent: #e4a15e;
+  --accent-deep: #f2c486;
+  --accent-soft: rgba(228, 161, 94, 0.16);
+  --highlight: rgba(84, 133, 125, 0.56);
+  --shadow: 0 30px 74px rgba(0, 0, 0, 0.38);
+  --border: 1px solid rgba(232, 214, 185, 0.14);
+  --dark-surface:
+    linear-gradient(
+      180deg,
+      rgba(31, 32, 29, 0.94),
+      rgba(24, 26, 24, 0.78));
+  --dark-surface-strong:
+    linear-gradient(
+      180deg,
+      rgba(41, 42, 38, 0.96),
+      rgba(27, 29, 27, 0.9));
+  --dark-control:
+    linear-gradient(
+      180deg,
+      rgba(50, 51, 46, 0.9),
+      rgba(31, 33, 31, 0.76));
+  --dark-control-hover:
+    linear-gradient(
+      180deg,
+      rgba(59, 58, 51, 0.96),
+      rgba(37, 39, 36, 0.88));
+  --dark-line: rgba(232, 214, 185, 0.14);
+  --dark-line-strong: rgba(228, 161, 94, 0.34);
+}
+html[data-theme=dark] body {
+  background:
+    radial-gradient(
+      circle at 12% 10%,
+      rgba(228, 161, 94, 0.18),
+      transparent 28%),
+    radial-gradient(
+      circle at 86% 16%,
+      rgba(81, 144, 137, 0.16),
+      transparent 30%),
+    radial-gradient(
+      circle at 22% 84%,
+      rgba(122, 98, 157, 0.12),
+      transparent 28%),
+    linear-gradient(
+      180deg,
+      #111312 0%,
+      #171917 52%,
+      #111412 100%);
+  color: var(--ink);
+}
+html[data-theme=dark] body::before {
+  opacity: 0.18;
+  background:
+    linear-gradient(rgba(232, 214, 185, 0.035) 1px, transparent 1px),
+    linear-gradient(
+      90deg,
+      rgba(232, 214, 185, 0.035) 1px,
+      transparent 1px);
+  background-size: 28px 28px;
+}
+html[data-theme=dark] .radix-themes {
+  color: var(--ink);
+}
+html[data-theme=dark] .theme-icon-moon {
+  display: none;
+}
+html[data-theme=dark] .theme-icon-sun {
+  display: block;
+}
+html[data-theme=dark] .ambient-orb-a {
+  background:
+    radial-gradient(
+      circle,
+      rgba(228, 161, 94, 0.2),
+      transparent 62%);
+}
+html[data-theme=dark] .ambient-orb-b {
+  background:
+    radial-gradient(
+      circle,
+      rgba(75, 139, 132, 0.2),
+      transparent 60%);
+}
+html[data-theme=dark] .ambient-grid {
+  background:
+    linear-gradient(transparent 0%, rgba(232, 214, 185, 0.04) 100%),
+    radial-gradient(
+      circle at center,
+      rgba(81, 144, 137, 0.08),
+      transparent 62%);
+}
+html[data-theme=dark] .app-header,
+html[data-theme=dark] .panel,
+html[data-theme=dark] .auth-gate-card,
+html[data-theme=dark] .image-gallery-panel,
+html[data-theme=dark] .proofread-panel,
+html[data-theme=dark] .corrections-panel,
+html[data-theme=dark] .workflow-card,
+html[data-theme=dark] .flashcard-review,
+html[data-theme=dark] .image-lightbox-dialog,
+html[data-theme=dark] .tooltip {
+  background: var(--dark-surface);
+  border-color: var(--dark-line);
+  box-shadow: 0 1px 0 rgba(255, 244, 226, 0.06) inset, var(--shadow);
+}
+html[data-theme=dark] .toolbar-chip,
+html[data-theme=dark] .page-chip,
+html[data-theme=dark] .account-button,
+html[data-theme=dark] .ghost,
+html[data-theme=dark] .account-user,
+html[data-theme=dark] .rt-TextFieldRoot.document-input,
+html[data-theme=dark] .rt-TextFieldRoot.share-user-input,
+html[data-theme=dark] .rt-TextFieldRoot.flashcard-answer-input-shell,
+html[data-theme=dark] .selection-ask .rt-TextAreaRoot,
+html[data-theme=dark] .synthetic-select {
+  background: var(--dark-control);
+  border-color: var(--dark-line);
+  color: var(--ink);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.18);
+}
+html[data-theme=dark] .toolbar-chip:hover,
+html[data-theme=dark] .page-chip:hover,
+html[data-theme=dark] .account-button:hover,
+html[data-theme=dark] .ghost:hover,
+html[data-theme=dark] .synthetic-select:hover {
+  background: var(--dark-control-hover);
+  border-color: rgba(228, 161, 94, 0.28);
+  color: var(--ink);
+}
+html[data-theme=dark] .chip[aria-pressed=true],
+html[data-theme=dark] .page-chip[aria-current=page] {
+  background:
+    linear-gradient(
+      135deg,
+      rgba(228, 161, 94, 0.22),
+      rgba(84, 133, 125, 0.2));
+  border-color: var(--dark-line-strong);
+  box-shadow: 0 16px 30px rgba(228, 161, 94, 0.12);
+}
+html[data-theme=dark] .primary {
+  background:
+    linear-gradient(
+      180deg,
+      rgba(228, 161, 94, 0.98),
+      rgba(173, 107, 49, 0.98));
+  color: #18130e;
+  box-shadow: 0 16px 26px rgba(0, 0, 0, 0.28);
+}
+html[data-theme=dark] .primary:hover {
+  background:
+    linear-gradient(
+      180deg,
+      rgba(242, 190, 128, 0.98),
+      rgba(196, 128, 62, 0.98));
+}
+html[data-theme=dark] .composer-surface,
+html[data-theme=dark] .proofread-result,
+html[data-theme=dark] .synthetic-result,
+html[data-theme=dark] .selection-result,
+html[data-theme=dark] .corrections-track,
+html[data-theme=dark] .document-row,
+html[data-theme=dark] .image-card,
+html[data-theme=dark] .question-card,
+html[data-theme=dark] .vocab-card,
+html[data-theme=dark] .workflow-event,
+html[data-theme=dark] .vocab-row,
+html[data-theme=dark] .flashcard-card-inner,
+html[data-theme=dark] .flashcard-card-back,
+html[data-theme=dark] .flashcard-summary,
+html[data-theme=dark] .flashcard-prompt {
+  background: var(--dark-surface-strong);
+  border-color: var(--dark-line);
+  box-shadow: 0 1px 0 rgba(255, 244, 226, 0.05) inset, 0 18px 36px rgba(0, 0, 0, 0.24);
+}
+html[data-theme=dark] .composer-surface::before {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(232, 214, 185, 0.055) 1px,
+      transparent 1px),
+    linear-gradient(rgba(232, 214, 185, 0.055) 1px, transparent 1px);
+  opacity: 0.34;
+}
+html[data-theme=dark] .document-row:hover,
+html[data-theme=dark] .document-row.is-active,
+html[data-theme=dark] .vocab-row.vocab-head {
+  background:
+    linear-gradient(
+      180deg,
+      rgba(54, 50, 42, 0.96),
+      rgba(31, 34, 31, 0.88));
+  border-color: var(--dark-line-strong);
+}
+html[data-theme=dark] .image-dropzone {
+  background:
+    linear-gradient(
+      135deg,
+      rgba(36, 38, 35, 0.96),
+      rgba(27, 29, 27, 0.88)),
+    radial-gradient(
+      circle at top right,
+      rgba(228, 161, 94, 0.16),
+      transparent 38%);
+  border-color: rgba(228, 161, 94, 0.26);
+  color: var(--ink);
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.2);
+}
+html[data-theme=dark] .image-dropzone:hover,
+html[data-theme=dark] .image-dropzone:focus-visible,
+html[data-theme=dark] .image-dropzone.is-dragging {
+  border-color: rgba(228, 161, 94, 0.46);
+  box-shadow: 0 22px 42px rgba(0, 0, 0, 0.3);
+}
+html[data-theme=dark] .questions-empty,
+html[data-theme=dark] .vocab-empty,
+html[data-theme=dark] .document-list-empty,
+html[data-theme=dark] .image-gallery-empty {
+  background: rgba(31, 32, 29, 0.58);
+  border-color: rgba(232, 214, 185, 0.18);
+}
+html[data-theme=dark] .field-icon,
+html[data-theme=dark] .panel-toggle-icon,
+html[data-theme=dark] .native-select-shell::after {
+  color: rgba(232, 214, 185, 0.7);
+}
+html[data-theme=dark] .document-field label,
+html[data-theme=dark] .synthetic-field label,
+html[data-theme=dark] .share-field label,
+html[data-theme=dark] .workflow-label,
+html[data-theme=dark] .flashcard-answer-label,
+html[data-theme=dark] .question-label,
+html[data-theme=dark] .flashcard-progress,
+html[data-theme=dark] .flashcard-prompt-label,
+html[data-theme=dark] .document-list-section-title,
+html[data-theme=dark] .share-status,
+html[data-theme=dark] .synthetic-status,
+html[data-theme=dark] .proofread-meta,
+html[data-theme=dark] .workflow-event-meta,
+html[data-theme=dark] .workflow-history-empty,
+html[data-theme=dark] .app-footer {
+  color: var(--ink-muted);
+}
+html[data-theme=dark] .native-select-shell::after {
+  border-color: rgba(232, 214, 185, 0.72);
+}
+html[data-theme=dark] .flashcard-exit {
+  background: rgba(38, 40, 37, 0.92);
+  border-color: var(--dark-line);
+  color: var(--ink);
+}
+html[data-theme=dark] .flashcard-exit:hover,
+html[data-theme=dark] .flashcard-exit:focus-visible {
+  background: rgba(58, 50, 43, 0.98);
+  border-color: rgba(228, 161, 94, 0.34);
+  color: var(--accent-deep);
+}
+html[data-theme=dark] textarea#composer-input::placeholder {
+  color: rgba(244, 239, 231, 0.42);
+}
+html[data-theme=dark] .preview rt {
+  color: rgba(222, 211, 195, 0.88);
+}
+html[data-theme=dark] .preview .kanji {
+  color: #f7ead9;
+}
+html[data-theme=dark] .document-row-delete,
+html[data-theme=dark] .image-thumb-remove,
+html[data-theme=dark] .vocab-delete,
+html[data-theme=dark] .ghost.danger {
+  background: rgba(221, 111, 86, 0.14);
+  border-color: rgba(221, 111, 86, 0.26);
+  color: #f1a08d;
+}
+html[data-theme=dark] .vocab-edit {
+  background: rgba(98, 137, 204, 0.16);
+  color: #a8c2ff;
+}
+html[data-theme=dark] .vocab-save,
+html[data-theme=dark] .vocab-action.vocab-add {
+  background: rgba(71, 148, 118, 0.18);
+  color: #8ad5b8;
+}
+html[data-theme=dark] .correction-removed {
+  background: rgba(221, 111, 86, 0.18);
+  color: #f3ac9d;
+}
+html[data-theme=dark] .correction-added {
+  background: rgba(71, 148, 118, 0.22);
+  color: #9be4c6;
+}
+html[data-theme=dark] .proofread-result.markdown code,
+html[data-theme=dark] .proofread-result.markdown pre {
+  background: rgba(255, 244, 226, 0.08);
+}
+html[data-theme=dark] .image-lightbox-backdrop {
+  background: rgba(8, 9, 8, 0.82);
+}
+html[data-theme=dark] .image-thumb-preview,
+html[data-theme=dark] .image-lightbox-image {
+  background:
+    linear-gradient(
+      145deg,
+      #232521,
+      #181a18);
 }
 .app-footer {
   margin-top: 18px;
