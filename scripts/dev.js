@@ -69,6 +69,7 @@ const MAX_DOCUMENT_IMAGE_SOURCE_LENGTH = 500000;
 const AUTH_AUDIT_THROTTLE_MS = Math.max(1000, Number(process.env.AUTH_AUDIT_THROTTLE_MS || '5000'));
 const NOISY_AUTH_PATHS = new Set(['/api/auth/session', '/api/workspace']);
 const authAuditEventLogState = new Map();
+const sqliteQueues = new Map();
 
 function debug(...args) {
   if (!debugEnabled) {
@@ -1606,10 +1607,32 @@ function sqlString(value) {
 }
 
 async function runSqlite(dbPath, sql, { json = false } = {}) {
-  const args = json ? ['-json', '-bail', dbPath] : ['-bail', dbPath];
-  const timeoutMs = Number(process.env.SQLITE_TIMEOUT_MS) || 8000;
+  const queueKey = path.resolve(dbPath);
+  const previous = sqliteQueues.get(queueKey) || Promise.resolve();
+  const current = previous.then(() => runSqliteProcess(dbPath, sql, { json }));
+  const tail = current.catch(() => {});
+  sqliteQueues.set(queueKey, tail);
+  tail.finally(() => {
+    if (sqliteQueues.get(queueKey) === tail) {
+      sqliteQueues.delete(queueKey);
+    }
+  });
+  return await current;
+}
+
+async function runSqliteProcess(dbPath, sql, { json = false } = {}) {
+  const timeoutMs = Math.max(1000, Number(process.env.SQLITE_TIMEOUT_MS) || 12000);
+  const requestedBusyTimeoutMs = Number(process.env.SQLITE_BUSY_TIMEOUT_MS) || 8000;
+  const busyTimeoutMs = Math.max(0, Math.min(requestedBusyTimeoutMs, timeoutMs - 500));
+  const args = [
+    '-cmd',
+    `.timeout ${busyTimeoutMs}`,
+    ...(json ? ['-json'] : []),
+    '-bail',
+    dbPath
+  ];
   const preview = sql.replace(/\s+/g, ' ').trim().slice(0, 160);
-  debug('sqlite3 start', { dbPath, json, timeoutMs, sql: preview });
+  debug('sqlite3 start', { dbPath, json, timeoutMs, busyTimeoutMs, sql: preview });
   return await new Promise((resolve, reject) => {
     const child = spawn('sqlite3', args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
@@ -1649,9 +1672,15 @@ async function runSqlite(dbPath, sql, { json = false } = {}) {
         return;
       }
       if (code !== 0) {
-        const error = new Error(`sqlite3 exited with code ${code}`);
+        const stderrMessage = stderr.trim();
+        const error = new Error(
+          stderrMessage
+            ? `sqlite3 exited with code ${code}: ${stderrMessage}`
+            : `sqlite3 exited with code ${code}`
+        );
         error.code = code;
-        error.stderr = stderr;
+        error.stderr = stderrMessage;
+        error.sqlPreview = preview;
         debug('sqlite3 error', error.message);
         reject(error);
         return;
@@ -1672,6 +1701,8 @@ async function runSqlite(dbPath, sql, { json = false } = {}) {
 
 async function ensureVocabDb(dbPath) {
   const sql = `
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
     CREATE TABLE IF NOT EXISTS vocab_state (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       payload TEXT NOT NULL,
@@ -1686,6 +1717,8 @@ async function ensureVocabDb(dbPath) {
 
 async function ensureWorkspaceDb(dbPath) {
   const sql = `
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
