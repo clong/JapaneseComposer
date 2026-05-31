@@ -661,6 +661,7 @@ function enqueueVocabApiTask(task) {
 }
 let kuromojiTokenizer = null;
 let kuromojiInitPromise = null;
+let kuromojiScriptPromise = null;
 
 const app = document.querySelector('#app');
 const themeRoot = document.querySelector('.radix-themes');
@@ -1443,14 +1444,35 @@ function initKuromoji() {
   if (kuromojiInitPromise) {
     return kuromojiInitPromise;
   }
-  const api = typeof window !== 'undefined' ? window.kuromoji : null;
-  if (!api) {
-    kuromojiInitPromise = Promise.resolve(null);
-    return kuromojiInitPromise;
-  }
   const basePath = new URL('./', window.location.href).pathname;
-  const dicPath = `${basePath}assets/kuromoji-dict/`;
-  kuromojiInitPromise = new Promise((resolve) => {
+  const loadApi = () => {
+    const existingApi = typeof window !== 'undefined' ? window.kuromoji : null;
+    if (existingApi) {
+      return Promise.resolve(existingApi);
+    }
+    if (kuromojiScriptPromise) {
+      return kuromojiScriptPromise;
+    }
+    kuromojiScriptPromise = new Promise((resolve) => {
+      const script = document.createElement('script');
+      script.src = `${basePath}assets/kuromoji.js`;
+      script.async = true;
+      script.onload = () => resolve(window.kuromoji || null);
+      script.onerror = () => {
+        console.warn('Kuromoji script failed to load', script.src);
+        resolve(null);
+      };
+      document.head.appendChild(script);
+    });
+    return kuromojiScriptPromise;
+  };
+
+  kuromojiInitPromise = loadApi().then((api) => new Promise((resolve) => {
+    if (!api) {
+      resolve(null);
+      return;
+    }
+    const dicPath = `${basePath}assets/kuromoji-dict/`;
     api.builder({ dicPath }).build((error, tokenizer) => {
       if (error) {
         console.warn('Kuromoji init failed', error, dicPath);
@@ -1460,8 +1482,25 @@ function initKuromoji() {
       kuromojiTokenizer = tokenizer;
       resolve(tokenizer);
     });
-  });
+  }));
   return kuromojiInitPromise;
+}
+
+function maybeInitializeKuromojiForPreview() {
+  if (
+    kuromojiTokenizer
+    || kuromojiInitPromise
+    || state.mode !== 'read'
+    || !state.showFurigana
+    || !hasJapaneseChars(state.text)
+  ) {
+    return;
+  }
+  void initKuromoji().then((tokenizer) => {
+    if (tokenizer) {
+      schedulePreviewRender();
+    }
+  });
 }
 
 async function resolveReadingForToken(token) {
@@ -1484,6 +1523,9 @@ async function resolveReadingForToken(token) {
 }
 
 async function buildRomajiForText(text) {
+  if (!kuromojiTokenizer && hasJapaneseChars(text)) {
+    await initKuromoji();
+  }
   const lines = text.split('\n');
   const outputLines = [];
 
@@ -6573,11 +6615,13 @@ function bindEvents() {
     clearActiveHover();
     hideTooltip();
     hideSelectionTooltip();
+    maybeInitializeKuromojiForPreview();
   });
 
   furiganaToggle.addEventListener('click', () => {
     state.showFurigana = !state.showFurigana;
     renderUI();
+    maybeInitializeKuromojiForPreview();
   });
 
   vocabToggle.addEventListener('click', () => {
@@ -7062,11 +7106,6 @@ async function init() {
   if (!authState.authenticated && !authState.required) {
     void hydrateVocabFromApi();
   }
-  void initKuromoji().then((tokenizer) => {
-    if (tokenizer) {
-      schedulePreviewRender();
-    }
-  });
 }
 
 void init();
