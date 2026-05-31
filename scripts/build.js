@@ -57,11 +57,20 @@ if (await pathExists(faviconPath)) {
   await fs.copyFile(faviconPath, path.join(distDir, 'favicon.ico'));
 }
 
-await fs.copyFile(path.join(srcDir, 'app.js'), path.join(assetsDir, 'app.js'));
+await esbuild({
+  entryPoints: [path.join(srcDir, 'app.js')],
+  outfile: path.join(assetsDir, 'app.js'),
+  format: 'esm',
+  minify: true,
+  legalComments: 'none',
+  logLevel: 'silent'
+});
 await esbuild({
   entryPoints: [path.join(srcDir, 'styles.css')],
   outfile: path.join(assetsDir, 'app.css'),
   bundle: true,
+  minify: true,
+  legalComments: 'none',
   logLevel: 'silent'
 });
 
