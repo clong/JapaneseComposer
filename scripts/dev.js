@@ -69,7 +69,9 @@ const MAX_DOCUMENT_IMAGE_SOURCE_LENGTH = 500000;
 const LOOKUP_HIT_TTL_MS = 5 * 60 * 1000;
 const LOOKUP_MISS_TTL_MS = 10 * 60 * 1000;
 const LOOKUP_ERROR_TTL_MS = 60 * 1000;
-const JISHO_LOOKUP_TIMEOUT_MS = 5000;
+const JISHO_LOOKUP_TIMEOUT_MS = 2500;
+const JISHO_LOOKUP_CONCURRENCY_LIMIT = 2;
+const JISHO_UPSTREAM_COOLDOWN_MS = 15000;
 const TRANSLATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const TRANSLATION_TIMEOUT_MS = 10000;
 const WORKSPACE_IMAGE_PATH_PREFIX = '/api/workspace-image/';
@@ -80,6 +82,8 @@ const authAuditEventLogState = new Map();
 const sqliteQueues = new Map();
 const lookupResponseCache = new Map();
 const translationResponseCache = new Map();
+let activeJishoLookupCount = 0;
+let jishoUnavailableUntil = 0;
 
 function debug(...args) {
   if (!debugEnabled) {
@@ -327,6 +331,20 @@ function setTimedCacheEntry(cache, key, value, ttlMs) {
     ...value,
     expiresAt: Date.now() + ttlMs
   });
+}
+
+function cacheAndWriteEmptyLookup(res, normalizedKeyword, status, reason) {
+  const lookupStatus = status === 'miss' ? 'miss' : 'error';
+  const body = { data: [], lookupStatus };
+  setTimedCacheEntry(lookupResponseCache, normalizedKeyword, {
+    status: lookupStatus,
+    httpStatus: 200,
+    body
+  }, lookupStatus === 'miss' ? LOOKUP_MISS_TTL_MS : LOOKUP_ERROR_TTL_MS);
+  if (reason) {
+    logLookupDebug(reason, { normalized: normalizedKeyword, status: lookupStatus });
+  }
+  writeJson(res, 200, body);
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
@@ -931,15 +949,34 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      if (Date.now() < jishoUnavailableUntil) {
+        cacheAndWriteEmptyLookup(res, normalizedKeyword, 'error', 'fallback:jisho:cooldown');
+        return;
+      }
+      if (activeJishoLookupCount >= JISHO_LOOKUP_CONCURRENCY_LIMIT) {
+        cacheAndWriteEmptyLookup(res, normalizedKeyword, 'error', 'fallback:jisho:saturated');
+        return;
+      }
+
       logLookupDebug('fallback:jisho:start', {
         keyword,
-        normalized: normalizedKeyword
+        normalized: normalizedKeyword,
+        active: activeJishoLookupCount
       });
-      const response = await fetchWithTimeout(
-        `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(keyword)}`,
-        {},
-        JISHO_LOOKUP_TIMEOUT_MS
-      );
+      activeJishoLookupCount += 1;
+      let response;
+      try {
+        response = await fetchWithTimeout(
+          `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(keyword)}`,
+          {},
+          JISHO_LOOKUP_TIMEOUT_MS
+        );
+      } catch (error) {
+        jishoUnavailableUntil = Date.now() + JISHO_UPSTREAM_COOLDOWN_MS;
+        throw error;
+      } finally {
+        activeJishoLookupCount = Math.max(0, activeJishoLookupCount - 1);
+      }
       const data = await response.json().catch(() => null);
       const entries = Array.isArray(data?.data) ? data.data : [];
       logLookupDebug('fallback:jisho:done', {
@@ -951,6 +988,9 @@ const server = http.createServer(async (req, res) => {
       const cacheStatus = response.ok
         ? (entries.length ? 'hit' : 'miss')
         : 'error';
+      if (!response.ok) {
+        jishoUnavailableUntil = Date.now() + JISHO_UPSTREAM_COOLDOWN_MS;
+      }
       const body = response.ok && data
         ? { ...data, lookupStatus: cacheStatus }
         : { data: [], lookupStatus: 'error' };

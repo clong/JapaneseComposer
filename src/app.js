@@ -26,6 +26,8 @@ const STORAGE_KEYS = {
 const MAX_IMAGES_PER_DOCUMENT = 8;
 const MAX_DOCUMENT_IMAGE_SOURCE_LENGTH = 500000;
 const LOOKUP_CONCURRENCY_LIMIT = 4;
+const LOOKUP_START_INTERVAL_MS = 250;
+const LOOKUP_REQUEST_TIMEOUT_MS = 10000;
 const LOOKUP_MISS_TTL_MS = 10 * 60 * 1000;
 const LOOKUP_ERROR_TTL_MS = 60 * 1000;
 const TRANSLATION_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -637,6 +639,8 @@ const lookupQueue = [];
 const queuedLookups = new Set();
 const translationCache = new Map();
 let activeLookupCount = 0;
+let lookupQueueTimer = null;
+let lastLookupStartAt = 0;
 let selectionTranslationController = null;
 let lastWorkspaceRefreshRequestAt = 0;
 function logDictionaryDebug(stage, details = {}) {
@@ -3645,7 +3649,7 @@ async function fetchDictionaryEntries(word) {
   const proxyUrl = `${PROXY_DICT_ENDPOINT}${encodeURIComponent(normalized)}`;
   logDictionaryDebug('fetch:start', { query: word, normalized, proxyUrl });
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  const timeoutId = setTimeout(() => controller.abort(), LOOKUP_REQUEST_TIMEOUT_MS);
   try {
     const result = await fetchJson(proxyUrl, controller.signal);
     const entries = Array.isArray(result?.data?.data) ? result.data.data : [];
@@ -3914,8 +3918,27 @@ function cacheLookupCooldown(normalized, status) {
   });
 }
 
+function scheduleLookupQueue(delayMs = 0) {
+  if (lookupQueueTimer) {
+    return;
+  }
+  lookupQueueTimer = setTimeout(() => {
+    lookupQueueTimer = null;
+    processLookupQueue();
+  }, Math.max(0, delayMs));
+}
+
 function processLookupQueue() {
+  if (lookupQueueTimer) {
+    return;
+  }
   while (activeLookupCount < LOOKUP_CONCURRENCY_LIMIT && lookupQueue.length) {
+    const now = Date.now();
+    const startDelay = Math.max(0, lastLookupStartAt + LOOKUP_START_INTERVAL_MS - now);
+    if (startDelay > 0) {
+      scheduleLookupQueue(startDelay);
+      return;
+    }
     const item = lookupQueue.shift();
     if (!item || !item.normalized) {
       continue;
@@ -3929,6 +3952,7 @@ function processLookupQueue() {
     }
 
     activeLookupCount += 1;
+    lastLookupStartAt = Date.now();
     void lookupDictionaryEntry(normalized)
       .then((outcome) => {
         const result = outcome?.entry || null;
