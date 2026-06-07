@@ -66,10 +66,20 @@ const STUDENT_WORKFLOW_ACTIONS = new Set(['submit', 'mark_final']);
 const TEACHER_WORKFLOW_ACTIONS = new Set(['return_review']);
 const MAX_IMAGES_PER_DOCUMENT = 8;
 const MAX_DOCUMENT_IMAGE_SOURCE_LENGTH = 500000;
+const LOOKUP_HIT_TTL_MS = 5 * 60 * 1000;
+const LOOKUP_MISS_TTL_MS = 10 * 60 * 1000;
+const LOOKUP_ERROR_TTL_MS = 60 * 1000;
+const JISHO_LOOKUP_TIMEOUT_MS = 5000;
+const TRANSLATION_CACHE_TTL_MS = 5 * 60 * 1000;
+const TRANSLATION_TIMEOUT_MS = 10000;
+const WORKSPACE_IMAGE_PATH_PREFIX = '/api/workspace-image/';
+const JAPANESE_TEXT_REGEX = /[\u3005\u3006\u3007\u303b\u3040-\u309f\u30a0-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9d]/;
 const AUTH_AUDIT_THROTTLE_MS = Math.max(1000, Number(process.env.AUTH_AUDIT_THROTTLE_MS || '5000'));
 const NOISY_AUTH_PATHS = new Set(['/api/auth/session', '/api/workspace']);
 const authAuditEventLogState = new Map();
 const sqliteQueues = new Map();
+const lookupResponseCache = new Map();
+const translationResponseCache = new Map();
 
 function debug(...args) {
   if (!debugEnabled) {
@@ -296,6 +306,49 @@ function logLookupDebug(stage, details = {}) {
     : { value: details };
   console.log(`[lookup] ${stage}`, payload);
 }
+
+function getTimedCacheEntry(cache, key) {
+  if (!key || !cache.has(key)) {
+    return null;
+  }
+  const entry = cache.get(key);
+  if (!entry || !Number.isFinite(entry.expiresAt) || entry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+function setTimedCacheEntry(cache, key, value, ttlMs) {
+  if (!key) {
+    return;
+  }
+  cache.set(key, {
+    ...value,
+    expiresAt: Date.now() + ttlMs
+  });
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function writeJson(res, statusCode, payload, headers = {}) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    ...headers
+  });
+  res.end(JSON.stringify(payload));
+}
 debug('Build complete.');
 
 const mimeTypes = {
@@ -517,6 +570,112 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ ok: true }));
     return;
   }
+  if (requestUrl.pathname.startsWith(WORKSPACE_IMAGE_PATH_PREFIX)) {
+    if (!workspaceDbReady) {
+      writeJson(res, 500, { error: 'Workspace database unavailable' });
+      return;
+    }
+    const user = await requireAuthenticatedUser(workspaceDbPath, req, res);
+    if (!user) {
+      return;
+    }
+    if (req.method !== 'GET') {
+      writeJson(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    const parsed = parseWorkspaceImagePathname(requestUrl.pathname);
+    if (!parsed) {
+      writeJson(res, 400, { error: 'Invalid image path' });
+      return;
+    }
+    try {
+      const row = await readWorkspaceImageSource(
+        workspaceDbPath,
+        user.id,
+        parsed.documentId,
+        parsed.imageId
+      );
+      const image = parseDataImageSource(row?.src || '');
+      if (!image) {
+        writeJson(res, 404, { error: 'Image not found' });
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': image.mimeType,
+        'Cache-Control': 'private, max-age=31536000'
+      });
+      res.end(image.bytes);
+      return;
+    } catch (error) {
+      writeJson(res, 502, { error: 'Image lookup failed' });
+      return;
+    }
+  }
+  if (requestUrl.pathname === '/api/workspace/document') {
+    if (!workspaceDbReady) {
+      writeJson(res, 500, { error: 'Workspace database unavailable' });
+      return;
+    }
+    const user = await requireAuthenticatedUser(workspaceDbPath, req, res);
+    if (!user) {
+      return;
+    }
+    if (req.method !== 'PUT') {
+      writeJson(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    const body = await readJsonBody(req);
+    const document = body?.document;
+    if (!document || typeof document !== 'object') {
+      writeJson(res, 400, { error: 'Missing document' });
+      return;
+    }
+    try {
+      const result = await writeUserDocument(
+        workspaceDbPath,
+        user.id,
+        document,
+        typeof body?.activeDocumentId === 'string' ? body.activeDocumentId : ''
+      );
+      writeJson(res, 200, { ok: true, updatedAt: result.updatedAt });
+      return;
+    } catch (error) {
+      writeJson(res, 502, { error: 'Workspace document update failed' });
+      return;
+    }
+  }
+  if (requestUrl.pathname.startsWith('/api/workspace/document/')) {
+    if (!workspaceDbReady) {
+      writeJson(res, 500, { error: 'Workspace database unavailable' });
+      return;
+    }
+    const user = await requireAuthenticatedUser(workspaceDbPath, req, res);
+    if (!user) {
+      return;
+    }
+    if (req.method !== 'DELETE') {
+      writeJson(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    let documentId = '';
+    try {
+      documentId = decodeURIComponent(requestUrl.pathname.slice('/api/workspace/document/'.length));
+    } catch (error) {
+      documentId = '';
+    }
+    if (!documentId.trim()) {
+      writeJson(res, 400, { error: 'Missing document id' });
+      return;
+    }
+    try {
+      const result = await deleteUserDocument(workspaceDbPath, user.id, documentId);
+      writeJson(res, 200, { ok: true, updatedAt: result.updatedAt });
+      return;
+    } catch (error) {
+      writeJson(res, 502, { error: 'Workspace document delete failed' });
+      return;
+    }
+  }
   if (requestUrl.pathname === '/api/workspace') {
     if (!workspaceDbReady) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -736,8 +895,19 @@ const server = http.createServer(async (req, res) => {
   if (requestUrl.pathname === '/api/lookup') {
     const keyword = requestUrl.searchParams.get('keyword');
     if (!keyword) {
-      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Missing keyword' }));
+      writeJson(res, 400, { error: 'Missing keyword' });
+      return;
+    }
+    const normalizedKeyword = normalizeKeyword(keyword);
+    const cached = getTimedCacheEntry(lookupResponseCache, normalizedKeyword);
+    if (cached) {
+      logLookupDebug('cache', {
+        keyword,
+        normalized: normalizedKeyword,
+        status: cached.status,
+        count: Array.isArray(cached.body?.data) ? cached.body.data.length : 0
+      });
+      writeJson(res, cached.httpStatus || 200, cached.body);
       return;
     }
 
@@ -746,41 +916,65 @@ const server = http.createServer(async (req, res) => {
         const localResults = lookupLocalDictionary(keyword);
         logLookupDebug('local', {
           keyword,
-          normalized: normalizeKeyword(keyword),
+          normalized: normalizedKeyword,
           count: localResults.length
         });
         if (localResults.length) {
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ data: localResults }));
+          const body = { data: localResults, lookupStatus: 'hit' };
+          setTimedCacheEntry(lookupResponseCache, normalizedKeyword, {
+            status: 'hit',
+            httpStatus: 200,
+            body
+          }, LOOKUP_HIT_TTL_MS);
+          writeJson(res, 200, body);
           return;
         }
       }
 
       logLookupDebug('fallback:jisho:start', {
         keyword,
-        normalized: normalizeKeyword(keyword)
+        normalized: normalizedKeyword
       });
-      const response = await fetch(
-        `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(keyword)}`
+      const response = await fetchWithTimeout(
+        `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(keyword)}`,
+        {},
+        JISHO_LOOKUP_TIMEOUT_MS
       );
-      const body = await response.text();
+      const data = await response.json().catch(() => null);
+      const entries = Array.isArray(data?.data) ? data.data : [];
       logLookupDebug('fallback:jisho:done', {
         keyword,
         status: response.status,
-        ok: response.ok
+        ok: response.ok,
+        count: entries.length
       });
-      res.writeHead(response.ok ? 200 : response.status, {
-        'Content-Type': 'application/json; charset=utf-8'
-      });
-      res.end(body);
+      const cacheStatus = response.ok
+        ? (entries.length ? 'hit' : 'miss')
+        : 'error';
+      const body = response.ok && data
+        ? { ...data, lookupStatus: cacheStatus }
+        : { data: [], lookupStatus: 'error' };
+      setTimedCacheEntry(lookupResponseCache, normalizedKeyword, {
+        status: cacheStatus,
+        httpStatus: response.ok ? 200 : 200,
+        body
+      }, cacheStatus === 'hit'
+        ? LOOKUP_HIT_TTL_MS
+        : (cacheStatus === 'miss' ? LOOKUP_MISS_TTL_MS : LOOKUP_ERROR_TTL_MS));
+      writeJson(res, 200, body);
       return;
     } catch (error) {
       logLookupDebug('error', {
         keyword,
         message: error?.message || 'Lookup failed'
       });
-      res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Lookup failed' }));
+      const body = { data: [], lookupStatus: 'error' };
+      setTimedCacheEntry(lookupResponseCache, normalizedKeyword, {
+        status: 'error',
+        httpStatus: 200,
+        body
+      }, LOOKUP_ERROR_TTL_MS);
+      writeJson(res, 200, body);
       return;
     }
   }
@@ -842,40 +1036,34 @@ const server = http.createServer(async (req, res) => {
   }
   if (requestUrl.pathname === '/api/translate') {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      writeJson(res, 405, { error: 'Method not allowed' });
       return;
     }
 
     const apiKey = process.env.GOOGLE_TRANSLATE_API_KEY;
     if (!apiKey) {
-      res.writeHead(501, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Missing GOOGLE_TRANSLATE_API_KEY' }));
+      writeJson(res, 501, { error: 'Missing GOOGLE_TRANSLATE_API_KEY' });
       return;
     }
 
     const body = await readJsonBody(req);
     const text = typeof body?.text === 'string' ? body.text.trim() : '';
     if (!text) {
-      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Missing text' }));
+      writeJson(res, 400, { error: 'Missing text' });
       return;
     }
 
     try {
-      const detectResponse = await fetch(
-        `https://translation.googleapis.com/language/translate/v2/detect?q=${encodeURIComponent(text)}`,
-        {
-          method: 'POST',
-          headers: { 'X-goog-api-key': apiKey }
-        }
-      );
-      const detectData = await detectResponse.json();
-      const detectedLanguage =
-        detectData?.data?.detections?.[0]?.[0]?.language || 'en';
+      const detectedLanguage = JAPANESE_TEXT_REGEX.test(text) ? 'ja' : 'en';
       const targetLanguage = detectedLanguage === 'en' ? 'ja' : 'en';
+      const cacheKey = `${targetLanguage}:${text}`;
+      const cached = getTimedCacheEntry(translationResponseCache, cacheKey);
+      if (cached) {
+        writeJson(res, 200, cached.body);
+        return;
+      }
 
-      const translateResponse = await fetch(
+      const translateResponse = await fetchWithTimeout(
         'https://translation.googleapis.com/language/translate/v2',
         {
           method: 'POST',
@@ -884,27 +1072,30 @@ const server = http.createServer(async (req, res) => {
             'X-goog-api-key': apiKey
           },
           body: JSON.stringify({ q: text, target: targetLanguage, format: 'text' })
-        }
+        },
+        TRANSLATION_TIMEOUT_MS
       );
       const translateData = await translateResponse.json();
       const translation = translateData?.data?.translations?.[0]?.translatedText;
 
       if (!translation) {
-        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: 'Translation failed' }));
+        writeJson(res, translateResponse.ok ? 502 : translateResponse.status, { error: 'Translation failed' });
         return;
       }
 
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({
+      const responseBody = {
         translation,
         detectedLanguage,
         targetLanguage
-      }));
+      };
+      setTimedCacheEntry(translationResponseCache, cacheKey, {
+        body: responseBody
+      }, TRANSLATION_CACHE_TTL_MS);
+      writeJson(res, 200, responseBody);
       return;
     } catch (error) {
-      res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Translation failed' }));
+      const statusCode = error?.name === 'AbortError' ? 504 : 502;
+      writeJson(res, statusCode, { error: 'Translation failed' });
       return;
     }
   }
@@ -1744,6 +1935,21 @@ async function ensureWorkspaceDb(dbPath) {
       updated_at INTEGER NOT NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS user_workspace_images (
+      user_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      image_id TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      src TEXT NOT NULL,
+      width INTEGER,
+      height INTEGER,
+      added_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, document_id, image_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_workspace_images_document
+      ON user_workspace_images(user_id, document_id);
   `;
   await runSqlite(dbPath, sql);
 }
@@ -2048,7 +2254,11 @@ function normalizeWorkspaceDocumentImages(images) {
       const src = typeof image.src === 'string'
         ? image.src.trim()
         : (typeof image.dataUrl === 'string' ? image.dataUrl.trim() : '');
-      if (!src.startsWith('data:image/') || src.length > MAX_DOCUMENT_IMAGE_SOURCE_LENGTH) {
+      const isStoredImageSource = src.startsWith(WORKSPACE_IMAGE_PATH_PREFIX);
+      if (
+        (!src.startsWith('data:image/') && !isStoredImageSource)
+        || (!isStoredImageSource && src.length > MAX_DOCUMENT_IMAGE_SOURCE_LENGTH)
+      ) {
         return null;
       }
       const name = typeof image.name === 'string' ? image.name.trim().slice(0, 180) : '';
@@ -2398,8 +2608,9 @@ async function shareDocumentWithGoogleUser(dbPath, {
   const recipientCreatedAt = recipientIndex >= 0 && Number.isFinite(recipientDocuments[recipientIndex]?.createdAt)
     ? Math.trunc(recipientDocuments[recipientIndex].createdAt)
     : now;
+  const senderDocumentForRecipient = await hydrateDocumentImageSources(dbPath, sender.id, senderDocument);
   const sharedDocument = {
-    ...normalizedDocument,
+    ...senderDocumentForRecipient,
     id: sharedDocumentId,
     workflow: recipientWorkflow,
     sharedByUserId: sender.id,
@@ -2612,8 +2823,9 @@ async function transitionSharedWorkflow(dbPath, {
   const partnerCreatedAt = partnerIndex >= 0 && Number.isFinite(partnerDocuments[partnerIndex]?.createdAt)
     ? Math.trunc(partnerDocuments[partnerIndex].createdAt)
     : now;
+  const actorDocumentForPartner = await hydrateDocumentImageSources(dbPath, actor.id, actorDocument);
   const partnerDocument = {
-    ...actorDocument,
+    ...actorDocumentForPartner,
     id: partnerDocumentId,
     workflow: partnerWorkflow,
     sharedByUserId: actor.id,
@@ -2697,6 +2909,169 @@ async function readUserWorkspace(dbPath, userId) {
   return normalized;
 }
 
+function createWorkspaceImageUrl(documentId, imageId) {
+  return `${WORKSPACE_IMAGE_PATH_PREFIX}${encodeURIComponent(documentId)}/${encodeURIComponent(imageId)}`;
+}
+
+function parseWorkspaceImagePathname(pathname) {
+  if (typeof pathname !== 'string' || !pathname.startsWith(WORKSPACE_IMAGE_PATH_PREFIX)) {
+    return null;
+  }
+  const parts = pathname
+    .slice(WORKSPACE_IMAGE_PATH_PREFIX.length)
+    .split('/')
+    .map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch (error) {
+        return '';
+      }
+    });
+  const documentId = (parts[0] || '').trim();
+  const imageId = (parts[1] || '').trim();
+  if (!documentId || !imageId) {
+    return null;
+  }
+  return { documentId, imageId };
+}
+
+function parseDataImageSource(src) {
+  const source = typeof src === 'string' ? src.trim() : '';
+  const match = source.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s);
+  if (!match) {
+    return null;
+  }
+  try {
+    return {
+      mimeType: match[1],
+      bytes: Buffer.from(match[2], 'base64')
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+async function readWorkspaceImageSource(dbPath, userId, documentId, imageId) {
+  const sql = `
+    SELECT name, src, width, height, added_at
+    FROM user_workspace_images
+    WHERE user_id = ${sqlString(userId)}
+      AND document_id = ${sqlString(documentId)}
+      AND image_id = ${sqlString(imageId)}
+    LIMIT 1;
+  `;
+  const stdout = await runSqlite(dbPath, sql, { json: true });
+  const rows = parseSqliteJson(stdout);
+  return rows[0] || null;
+}
+
+async function upsertWorkspaceImage(dbPath, userId, documentId, image) {
+  const now = Date.now();
+  const width = Number.isFinite(image.width) ? Math.max(1, Math.trunc(image.width)) : 'NULL';
+  const height = Number.isFinite(image.height) ? Math.max(1, Math.trunc(image.height)) : 'NULL';
+  const addedAt = Number.isFinite(image.addedAt) ? Math.trunc(image.addedAt) : now;
+  const sql = `
+    INSERT INTO user_workspace_images (
+      user_id, document_id, image_id, name, src, width, height, added_at, updated_at
+    )
+    VALUES (
+      ${sqlString(userId)},
+      ${sqlString(documentId)},
+      ${sqlString(image.id)},
+      ${sqlString(image.name || '')},
+      ${sqlString(image.src)},
+      ${width},
+      ${height},
+      ${addedAt},
+      ${now}
+    )
+    ON CONFLICT(user_id, document_id, image_id) DO UPDATE SET
+      name = excluded.name,
+      src = excluded.src,
+      width = excluded.width,
+      height = excluded.height,
+      added_at = excluded.added_at,
+      updated_at = excluded.updated_at;
+  `;
+  await runSqlite(dbPath, sql);
+}
+
+async function pruneWorkspaceDocumentImages(dbPath, userId, documentId, imageIds) {
+  const ids = Array.isArray(imageIds) ? imageIds.filter(Boolean) : [];
+  const keepClause = ids.length
+    ? `AND image_id NOT IN (${ids.map((id) => sqlString(id)).join(', ')})`
+    : '';
+  const sql = `
+    DELETE FROM user_workspace_images
+    WHERE user_id = ${sqlString(userId)}
+      AND document_id = ${sqlString(documentId)}
+      ${keepClause};
+  `;
+  await runSqlite(dbPath, sql);
+}
+
+async function persistWorkspaceImages(dbPath, userId, workspace) {
+  const documents = [];
+  for (const document of workspace.documents || []) {
+    const images = [];
+    for (const image of document.images || []) {
+      if (!image?.id || !image?.src) {
+        continue;
+      }
+      if (image.src.startsWith('data:image/')) {
+        await upsertWorkspaceImage(dbPath, userId, document.id, image);
+        images.push({
+          ...image,
+          src: createWorkspaceImageUrl(document.id, image.id)
+        });
+      } else if (image.src.startsWith(WORKSPACE_IMAGE_PATH_PREFIX)) {
+        images.push(image);
+      }
+    }
+    await pruneWorkspaceDocumentImages(
+      dbPath,
+      userId,
+      document.id,
+      images.map((image) => image.id)
+    );
+    documents.push({
+      ...document,
+      images
+    });
+  }
+  return {
+    ...workspace,
+    documents
+  };
+}
+
+async function hydrateDocumentImageSources(dbPath, userId, document) {
+  if (!document || !Array.isArray(document.images) || !document.images.length) {
+    return document;
+  }
+  const images = [];
+  for (const image of document.images) {
+    const parsed = parseWorkspaceImagePathname(image?.src || '');
+    if (!parsed) {
+      images.push(image);
+      continue;
+    }
+    const row = await readWorkspaceImageSource(dbPath, userId, parsed.documentId, parsed.imageId);
+    if (!row?.src) {
+      images.push(image);
+      continue;
+    }
+    images.push({
+      ...image,
+      src: row.src
+    });
+  }
+  return {
+    ...document,
+    images
+  };
+}
+
 async function writeUserWorkspace(dbPath, userId, workspace) {
   const normalized = normalizeWorkspacePayload(workspace);
   if (!normalized) {
@@ -2706,8 +3081,9 @@ async function writeUserWorkspace(dbPath, userId, workspace) {
   const updatedAt = Number.isFinite(normalized.updatedAt)
     ? Math.trunc(normalized.updatedAt)
     : now;
+  const storedWorkspace = await persistWorkspaceImages(dbPath, userId, normalized);
   const payload = JSON.stringify({
-    ...normalized,
+    ...storedWorkspace,
     updatedAt
   });
   const sql = `
@@ -2724,6 +3100,61 @@ async function writeUserWorkspace(dbPath, userId, workspace) {
   `;
   await runSqlite(dbPath, sql);
   return { updatedAt };
+}
+
+async function writeUserDocument(dbPath, userId, document, activeDocumentId = '') {
+  const normalizedDocument = normalizeWorkspaceDocumentList([document])[0];
+  if (!normalizedDocument) {
+    throw new Error('Invalid document payload');
+  }
+  const now = Date.now();
+  const workspace = await readUserWorkspace(dbPath, userId);
+  const documents = normalizeWorkspaceDocumentList(workspace?.documents);
+  const index = documents.findIndex((entry) => entry.id === normalizedDocument.id);
+  if (index === -1) {
+    documents.unshift(normalizedDocument);
+  } else {
+    const createdAt = Number.isFinite(documents[index]?.createdAt)
+      ? Math.trunc(documents[index].createdAt)
+      : normalizedDocument.createdAt;
+    documents.splice(index, 1, {
+      ...normalizedDocument,
+      createdAt
+    });
+  }
+  const requestedActiveId = typeof activeDocumentId === 'string' ? activeDocumentId.trim() : '';
+  const currentActiveId = typeof workspace?.activeDocumentId === 'string' ? workspace.activeDocumentId : '';
+  const nextActiveDocumentId = requestedActiveId && documents.some((entry) => entry.id === requestedActiveId)
+    ? requestedActiveId
+    : (currentActiveId && documents.some((entry) => entry.id === currentActiveId)
+      ? currentActiveId
+      : normalizedDocument.id);
+  return await writeUserWorkspace(dbPath, userId, {
+    documents,
+    activeDocumentId: nextActiveDocumentId,
+    updatedAt: now
+  });
+}
+
+async function deleteUserDocument(dbPath, userId, documentId) {
+  const normalizedDocumentId = typeof documentId === 'string' ? documentId.trim() : '';
+  if (!normalizedDocumentId) {
+    throw new Error('Missing document id');
+  }
+  const now = Date.now();
+  const workspace = await readUserWorkspace(dbPath, userId);
+  const documents = normalizeWorkspaceDocumentList(workspace?.documents)
+    .filter((entry) => entry.id !== normalizedDocumentId);
+  await pruneWorkspaceDocumentImages(dbPath, userId, normalizedDocumentId, []);
+  const currentActiveId = typeof workspace?.activeDocumentId === 'string' ? workspace.activeDocumentId : '';
+  const activeDocumentId = currentActiveId && documents.some((entry) => entry.id === currentActiveId)
+    ? currentActiveId
+    : (documents[0]?.id || '');
+  return await writeUserWorkspace(dbPath, userId, {
+    documents,
+    activeDocumentId,
+    updatedAt: now
+  });
 }
 
 function normalizeVocabList(items, { defaultAddedAt } = {}) {
