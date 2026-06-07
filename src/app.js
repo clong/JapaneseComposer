@@ -7,6 +7,7 @@ const AUTH_SESSION_ENDPOINT = '/api/auth/session';
 const AUTH_GOOGLE_START_ENDPOINT = '/api/auth/google/start';
 const AUTH_LOGOUT_ENDPOINT = '/api/auth/logout';
 const WORKSPACE_ENDPOINT = '/api/workspace';
+const WORKSPACE_DOCUMENT_ENDPOINT = '/api/workspace/document';
 const SYNTHETIC_DOCUMENT_ENDPOINT = '/api/synthetic-document';
 const vocabApiEnabled = typeof window !== 'undefined'
   && window.location
@@ -24,6 +25,11 @@ const STORAGE_KEYS = {
 };
 const MAX_IMAGES_PER_DOCUMENT = 8;
 const MAX_DOCUMENT_IMAGE_SOURCE_LENGTH = 500000;
+const LOOKUP_CONCURRENCY_LIMIT = 4;
+const LOOKUP_MISS_TTL_MS = 10 * 60 * 1000;
+const LOOKUP_ERROR_TTL_MS = 60 * 1000;
+const TRANSLATION_CACHE_TTL_MS = 5 * 60 * 1000;
+const TRANSLATION_TIMEOUT_MS = 10000;
 const COMPOSE_LAYOUT_BREAKPOINT = 1100;
 const COMPOSE_DRAWER_WIDTH = 320;
 const COMPOSE_DRAWER_COLLAPSED_WIDTH = 84;
@@ -56,7 +62,9 @@ const WORKFLOW_ROLES = new Set(['student', 'teacher']);
 const WORKFLOW_STATUSES = new Set(['draft', 'submitted', 'reviewed', 'revision_requested', 'final']);
 const WORKFLOW_TRANSITION_ACTIONS = new Set(['submit', 'return_review', 'mark_final']);
 const WORKFLOW_EVENT_ACTIONS = new Set(['share_start', 'share_update', 'submit', 'return_review', 'mark_final']);
-const WORKSPACE_POLL_INTERVAL_MS = 1200;
+const WORKSPACE_POLL_INTERVAL_MS = 30000;
+const WORKSPACE_FOCUS_REFRESH_THROTTLE_MS = 10000;
+const WORKSPACE_SYNC_DELAY_MS = 1200;
 function getDefaultDocumentTitle() {
   const now = new Date();
   const month = now.getMonth() + 1;
@@ -623,7 +631,14 @@ const authState = {
 };
 
 const lookupCache = new Map();
+const lookupCooldownCache = new Map();
 const pendingLookups = new Map();
+const lookupQueue = [];
+const queuedLookups = new Set();
+const translationCache = new Map();
+let activeLookupCount = 0;
+let selectionTranslationController = null;
+let lastWorkspaceRefreshRequestAt = 0;
 function logDictionaryDebug(stage, details = {}) {
   if (typeof console === 'undefined' || typeof console.debug !== 'function') {
     return;
@@ -1510,14 +1525,17 @@ async function resolveReadingForToken(token) {
   }
   if (lookupCache.has(lookupKey)) {
     const cached = lookupCache.get(lookupKey);
-    if (cached) {
-      return cached.reading || '';
-    }
-    lookupCache.delete(lookupKey);
+    return cached?.reading || '';
   }
-  const result = await lookupWord(lookupKey);
+  if (isLookupCoolingDown(lookupKey)) {
+    return '';
+  }
+  const outcome = await lookupDictionaryEntry(lookupKey);
+  const result = outcome?.entry || null;
   if (result) {
     lookupCache.set(lookupKey, result);
+  } else {
+    cacheLookupCooldown(lookupKey, outcome?.status || 'miss');
   }
   return result?.reading || '';
 }
@@ -1905,7 +1923,8 @@ function formatCopy(template, replacements = {}) {
 }
 
 function isSupportedImageSource(value) {
-  return /^data:image\//i.test(String(value || '').trim());
+  const source = String(value || '').trim();
+  return /^data:image\//i.test(source) || source.startsWith('/api/workspace-image/');
 }
 
 function normalizeDocumentImages(images) {
@@ -1930,7 +1949,11 @@ function normalizeDocumentImages(images) {
       const src = typeof image.src === 'string'
         ? image.src.trim()
         : (typeof image.dataUrl === 'string' ? image.dataUrl.trim() : '');
-      if (!isSupportedImageSource(src) || src.length > MAX_DOCUMENT_IMAGE_SOURCE_LENGTH) {
+      const isStoredImageSource = src.startsWith('/api/workspace-image/');
+      if (
+        !isSupportedImageSource(src)
+        || (!isStoredImageSource && src.length > MAX_DOCUMENT_IMAGE_SOURCE_LENGTH)
+      ) {
         return null;
       }
       const name = typeof image.name === 'string' ? image.name.trim().slice(0, 180) : '';
@@ -2448,6 +2471,19 @@ function buildWorkspacePayload() {
   };
 }
 
+function buildWorkspaceDocumentPayload() {
+  const documents = normalizeDocumentEntries(state.documents);
+  const document = documents.find((doc) => doc.id === state.documentId) || documents[0] || null;
+  if (!document) {
+    return null;
+  }
+  return {
+    document,
+    activeDocumentId: state.documentId || document.id,
+    updatedAt: Date.now()
+  };
+}
+
 function buildWorkspaceSnapshot(workspace) {
   if (!workspace || typeof workspace !== 'object') {
     return '';
@@ -2610,6 +2646,25 @@ function stopWorkspaceRefreshLoop() {
   workspaceRefreshInFlight = false;
 }
 
+function requestWorkspaceRefreshFromActivity() {
+  if (
+    !authState.authenticated
+    || workspaceHydrating
+    || workspaceRefreshInFlight
+    || workspaceSyncInFlight
+    || workspaceSyncPending
+  ) {
+    return;
+  }
+  const now = Date.now();
+  if (now - lastWorkspaceRefreshRequestAt < WORKSPACE_FOCUS_REFRESH_THROTTLE_MS) {
+    return;
+  }
+  lastWorkspaceRefreshRequestAt = now;
+  runWorkspaceRefreshLoop();
+  void refreshWorkspaceFromServer().catch(() => {});
+}
+
 function runWorkspaceRefreshLoop() {
   if (!authState.authenticated) {
     return;
@@ -2618,7 +2673,16 @@ function runWorkspaceRefreshLoop() {
   workspaceRefreshTimer = setTimeout(() => {
     workspaceRefreshTimer = null;
     void (async () => {
-      if (workspaceHydrating || workspaceRefreshInFlight || !authState.authenticated) {
+      if (
+        workspaceHydrating
+        || workspaceRefreshInFlight
+        || workspaceSyncInFlight
+        || workspaceSyncPending
+        || !authState.authenticated
+      ) {
+        if (authState.authenticated) {
+          runWorkspaceRefreshLoop();
+        }
         return;
       }
       workspaceRefreshInFlight = true;
@@ -2816,11 +2880,19 @@ function renderAuthControls() {
   syncAppAccessLock();
 }
 
-function scheduleWorkspaceSync({ immediate = false } = {}) {
+function scheduleWorkspaceSync({ immediate = false, full = false } = {}) {
   if (!authState.authenticated || workspaceHydrating) {
     return;
   }
-  workspaceSyncPending = buildWorkspacePayload();
+  const type = full || workspaceSyncPending?.type === 'workspace' ? 'workspace' : 'document';
+  const payload = type === 'workspace' ? buildWorkspacePayload() : buildWorkspaceDocumentPayload();
+  if (!payload) {
+    return;
+  }
+  workspaceSyncPending = {
+    type,
+    payload
+  };
   if (immediate) {
     if (workspaceSyncTimer) {
       clearTimeout(workspaceSyncTimer);
@@ -2835,22 +2907,26 @@ function scheduleWorkspaceSync({ immediate = false } = {}) {
   workspaceSyncTimer = setTimeout(() => {
     workspaceSyncTimer = null;
     void flushWorkspaceSync();
-  }, 1200);
+  }, WORKSPACE_SYNC_DELAY_MS);
 }
 
 async function flushWorkspaceSync() {
   if (workspaceSyncInFlight || !workspaceSyncPending || !authState.authenticated) {
     return;
   }
-  const payload = workspaceSyncPending;
+  const pending = workspaceSyncPending;
   workspaceSyncPending = null;
   workspaceSyncInFlight = true;
   authState.syncing = true;
   authState.syncError = '';
   renderAuthControls();
   try {
-    const result = await requestWorkspaceUpdate(payload);
-    clearWorkspaceDocumentDeletionMarkers(result?.workspace || null);
+    const result = pending.type === 'workspace'
+      ? await requestWorkspaceUpdate(pending.payload)
+      : await requestWorkspaceDocumentUpdate(pending.payload);
+    if (pending.type === 'workspace') {
+      clearWorkspaceDocumentDeletionMarkers(result?.workspace || null);
+    }
     const updatedAt = Number.isFinite(result?.updatedAt) ? Math.trunc(result.updatedAt) : Date.now();
     authState.lastSyncedAt = new Date(updatedAt);
     authState.syncError = '';
@@ -2861,7 +2937,11 @@ async function flushWorkspaceSync() {
     workspaceSyncInFlight = false;
     renderAuthControls();
     if (workspaceSyncPending) {
-      scheduleWorkspaceSync({ immediate: true });
+      if (workspaceSyncTimer) {
+        clearTimeout(workspaceSyncTimer);
+        workspaceSyncTimer = null;
+      }
+      void flushWorkspaceSync();
     }
   }
 }
@@ -2901,6 +2981,36 @@ async function requestWorkspaceUpdate(workspace) {
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ workspace })
+  });
+  const data = await safeParseJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || i18n[state.language].authSyncError);
+  }
+  return data;
+}
+
+async function requestWorkspaceDocumentUpdate(payload) {
+  const response = await fetch(WORKSPACE_DOCUMENT_ENDPOINT, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  const data = await safeParseJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || i18n[state.language].authSyncError);
+  }
+  return data;
+}
+
+async function requestWorkspaceDocumentDelete(documentId) {
+  const normalized = typeof documentId === 'string' ? documentId.trim() : '';
+  if (!normalized) {
+    return null;
+  }
+  const response = await fetch(`${WORKSPACE_DOCUMENT_ENDPOINT}/${encodeURIComponent(normalized)}`, {
+    method: 'DELETE',
+    credentials: 'include'
   });
   const data = await safeParseJson(response);
   if (!response.ok) {
@@ -2981,7 +3091,7 @@ async function hydrateAuthAndWorkspace() {
     runWorkspaceRefreshLoop();
 
     if (!merged.remoteDocuments.length || (merged.mergedSnapshot && merged.mergedSnapshot !== merged.remoteSnapshot)) {
-      scheduleWorkspaceSync({ immediate: true });
+      scheduleWorkspaceSync({ immediate: true, full: true });
     }
   } catch (error) {
     authState.syncError = error?.message || i18n[state.language].authSyncError;
@@ -3497,8 +3607,20 @@ function deleteDocumentById(targetDocumentId = state.documentId) {
   if (!state.documents.length) {
     state.documents = [createDocument()];
   }
-  saveDocumentsToStorage();
-  scheduleWorkspaceSync({ immediate: true });
+  saveDocumentsToStorage({ syncServer: false });
+  if (authState.authenticated) {
+    void requestWorkspaceDocumentDelete(targetDocumentId)
+      .then((result) => {
+        const updatedAt = Number.isFinite(result?.updatedAt) ? Math.trunc(result.updatedAt) : Date.now();
+        authState.lastSyncedAt = new Date(updatedAt);
+        authState.syncError = '';
+        renderAuthControls();
+      })
+      .catch((error) => {
+        authState.syncError = error?.message || i18n[state.language].authSyncError;
+        renderAuthControls();
+      });
+  }
   if (!isActive) {
     renderDocumentList();
     return;
@@ -3518,34 +3640,41 @@ function buildDictionaryMeaning(entry) {
 async function fetchDictionaryEntries(word) {
   const normalized = normalizeLookupWord(word);
   if (!normalized) {
-    return [];
+    return { entries: [], failed: false };
   }
   const proxyUrl = `${PROXY_DICT_ENDPOINT}${encodeURIComponent(normalized)}`;
   logDictionaryDebug('fetch:start', { query: word, normalized, proxyUrl });
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 6000);
   try {
-    const data = await fetchJson(proxyUrl, controller.signal);
-    const entries = Array.isArray(data?.data) ? data.data : [];
+    const result = await fetchJson(proxyUrl, controller.signal);
+    const entries = Array.isArray(result?.data?.data) ? result.data.data : [];
+    const failed = !result?.ok || result?.data?.lookupStatus === 'error';
     logDictionaryDebug('fetch:done', {
       query: word,
       normalized,
-      count: entries.length
+      count: entries.length,
+      failed
     });
-    return entries;
+    return { entries, failed };
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
+function buildLookupOutcome(status, entry = null) {
+  return { status, entry };
+}
+
 async function lookupWord(word) {
   if (!hasKanji(word)) {
-    return null;
+    return buildLookupOutcome('miss');
   }
-  const lookupEntries = await fetchDictionaryEntries(word);
+  const lookupResult = await fetchDictionaryEntries(word);
+  const lookupEntries = lookupResult.entries;
   if (!lookupEntries.length) {
     logDictionaryDebug('lookup:kanji:none', { query: word });
-    return null;
+    return buildLookupOutcome(lookupResult.failed ? 'error' : 'miss');
   }
   const selection = selectBestEntry(lookupEntries, word);
   if (!selection) {
@@ -3553,12 +3682,12 @@ async function lookupWord(word) {
       query: word,
       candidates: lookupEntries.length
     });
-    return null;
+    return buildLookupOutcome('miss');
   }
   const { entry, form } = selection;
   if (!entry || !form) {
     logDictionaryDebug('lookup:kanji:invalid-selection', { query: word });
-    return null;
+    return buildLookupOutcome('miss');
   }
   const reading = form.reading || '';
   const resolvedWord = form.word || word;
@@ -3576,7 +3705,7 @@ async function lookupWord(word) {
     hasMeaning: Boolean(result.meaning)
   });
 
-  return result;
+  return buildLookupOutcome('hit', result);
 }
 
 function pickBestFormForKana(entry, query) {
@@ -3631,12 +3760,13 @@ function pickBestFormForKana(entry, query) {
 async function lookupKanaWord(word) {
   const normalized = normalizeLookupWord(word);
   if (!normalized || !hasKana(normalized)) {
-    return null;
+    return buildLookupOutcome('miss');
   }
-  const lookupEntries = await fetchDictionaryEntries(normalized);
+  const lookupResult = await fetchDictionaryEntries(normalized);
+  const lookupEntries = lookupResult.entries;
   if (!lookupEntries.length) {
     logDictionaryDebug('lookup:kana:none', { query: word, normalized });
-    return null;
+    return buildLookupOutcome(lookupResult.failed ? 'error' : 'miss');
   }
   const kanaQuery = toHiragana(normalized);
   let best = null;
@@ -3670,7 +3800,7 @@ async function lookupKanaWord(word) {
     exact: best?.exact !== false,
     hasMeaning: Boolean(best?.meaning)
   });
-  return best;
+  return best ? buildLookupOutcome('hit', best) : buildLookupOutcome('miss');
 }
 
 function selectBestEntry(entries, query) {
@@ -3733,22 +3863,22 @@ async function fetchJson(url, signal) {
         url,
         status: response.status
       });
-      return null;
+      return { ok: false, data: null };
     }
-    return await response.json();
+    return { ok: true, data: await response.json() };
   } catch (error) {
     logDictionaryDebug('fetch:error', {
       url,
       message: error?.message || 'Request failed'
     });
-    return null;
+    return { ok: false, data: null };
   }
 }
 
 async function lookupDictionaryEntry(word) {
   const normalized = normalizeLookupWord(word);
   if (!normalized) {
-    return null;
+    return buildLookupOutcome('miss');
   }
   if (hasKanji(normalized)) {
     return lookupWord(normalized);
@@ -3756,7 +3886,84 @@ async function lookupDictionaryEntry(word) {
   if (hasKana(normalized)) {
     return lookupKanaWord(normalized);
   }
-  return null;
+  return buildLookupOutcome('miss');
+}
+
+function isLookupCoolingDown(word) {
+  const normalized = normalizeLookupWord(word);
+  if (!normalized || !lookupCooldownCache.has(normalized)) {
+    return false;
+  }
+  const entry = lookupCooldownCache.get(normalized);
+  if (!entry || !Number.isFinite(entry.expiresAt) || entry.expiresAt <= Date.now()) {
+    lookupCooldownCache.delete(normalized);
+    return false;
+  }
+  return true;
+}
+
+function cacheLookupCooldown(normalized, status) {
+  normalized = normalizeLookupWord(normalized);
+  if (!normalized) {
+    return;
+  }
+  const ttl = status === 'error' ? LOOKUP_ERROR_TTL_MS : LOOKUP_MISS_TTL_MS;
+  lookupCooldownCache.set(normalized, {
+    status: status === 'error' ? 'error' : 'miss',
+    expiresAt: Date.now() + ttl
+  });
+}
+
+function processLookupQueue() {
+  while (activeLookupCount < LOOKUP_CONCURRENCY_LIMIT && lookupQueue.length) {
+    const item = lookupQueue.shift();
+    if (!item || !item.normalized) {
+      continue;
+    }
+    const { normalized, resolve } = item;
+    queuedLookups.delete(normalized);
+    if (lookupCache.has(normalized) || isLookupCoolingDown(normalized)) {
+      pendingLookups.delete(normalized);
+      resolve(null);
+      continue;
+    }
+
+    activeLookupCount += 1;
+    void lookupDictionaryEntry(normalized)
+      .then((outcome) => {
+        const result = outcome?.entry || null;
+        if (result) {
+          lookupCache.set(normalized, result);
+          lookupCooldownCache.delete(normalized);
+        } else {
+          cacheLookupCooldown(normalized, outcome?.status || 'miss');
+        }
+        logDictionaryDebug('queue:resolved', {
+          normalized,
+          hit: Boolean(result),
+          status: outcome?.status || 'miss',
+          word: result?.word || '',
+          exact: result?.exact !== false
+        });
+        if (result) {
+          schedulePreviewRender();
+        }
+        resolve(result);
+      })
+      .catch((error) => {
+        cacheLookupCooldown(normalized, 'error');
+        logDictionaryDebug('queue:error', {
+          normalized,
+          message: error?.message || 'Lookup failed'
+        });
+        resolve(null);
+      })
+      .finally(() => {
+        activeLookupCount = Math.max(0, activeLookupCount - 1);
+        pendingLookups.delete(normalized);
+        processLookupQueue();
+      });
+  }
 }
 
 function ensureLookup(word) {
@@ -3765,27 +3972,21 @@ function ensureLookup(word) {
     return;
   }
 
-  if (lookupCache.has(normalized) || pendingLookups.has(normalized)) {
+  if (
+    lookupCache.has(normalized)
+    || isLookupCoolingDown(normalized)
+    || pendingLookups.has(normalized)
+    || queuedLookups.has(normalized)
+  ) {
     return;
   }
 
   logDictionaryDebug('queue', { query: word, normalized });
-  const lookupPromise = lookupDictionaryEntry(normalized).then((result) => {
-    if (result) {
-      lookupCache.set(normalized, result);
-    } else {
-      lookupCache.delete(normalized);
-    }
-    pendingLookups.delete(normalized);
-    logDictionaryDebug('queue:resolved', {
-      normalized,
-      hit: Boolean(result),
-      word: result?.word || '',
-      exact: result?.exact !== false
-    });
-    schedulePreviewRender();
+  const lookupPromise = new Promise((resolve) => {
+    lookupQueue.push({ normalized, resolve });
+    queuedLookups.add(normalized);
+    processLookupQueue();
   });
-
   pendingLookups.set(normalized, lookupPromise);
 }
 
@@ -4081,7 +4282,13 @@ async function renderSyntheticResultText(text, outputContainer = syntheticResult
         const info = segment.reading
           ? { ...((lookupWord ? lookupCache.get(lookupWord) : null) || {}), reading: segment.reading }
           : lookupWord ? lookupCache.get(lookupWord) : null;
-        if (!segment.reading && lookupWord && !lookupCache.has(lookupWord) && !pendingLookups.has(lookupWord)) {
+        if (
+          !segment.reading
+          && lookupWord
+          && !lookupCache.has(lookupWord)
+          && !pendingLookups.has(lookupWord)
+          && !isLookupCoolingDown(lookupWord)
+        ) {
           ensureLookup(lookupWord);
           const pending = pendingLookups.get(lookupWord);
           if (pending) {
@@ -5174,7 +5381,7 @@ function mergeDocumentFromServer(documentPayload) {
   saveDocumentsToStorage({ syncServer: false });
   if (authState.authenticated) {
     clearWorkspaceSyncQueue();
-    scheduleWorkspaceSync({ immediate: true });
+    scheduleWorkspaceSync({ immediate: true, full: true });
   }
   renderDocumentList();
   return normalized;
@@ -6024,13 +6231,16 @@ async function resolveSelectionVocabularyEntry(text) {
   }
 
   if (cacheKey) {
-    const entry = await lookupDictionaryEntry(cacheKey);
+    const outcome = await lookupDictionaryEntry(cacheKey);
+    const entry = outcome?.entry || null;
     if (entry) {
       lookupCache.set(cacheKey, entry);
       if (normalized && cacheKey !== normalized) {
         lookupCache.set(normalized, entry);
       }
       return entry;
+    } else {
+      cacheLookupCooldown(cacheKey, outcome?.status || 'miss');
     }
   }
 
@@ -6051,10 +6261,12 @@ async function resolveSelectionVocabularyEntry(text) {
 function showTooltip(word, target) {
   const copy = i18n[state.language];
   const lookupKey = normalizeLookupWord(word);
-  if (lookupKey && lookupCache.has(lookupKey) && !lookupCache.get(lookupKey)) {
-    lookupCache.delete(lookupKey);
-  }
-  if (lookupKey && !lookupCache.has(lookupKey) && !pendingLookups.has(lookupKey)) {
+  if (
+    lookupKey
+    && !lookupCache.has(lookupKey)
+    && !pendingLookups.has(lookupKey)
+    && !isLookupCoolingDown(lookupKey)
+  ) {
     ensureLookup(lookupKey);
   }
   const info = lookupCache.get(lookupKey);
@@ -6166,6 +6378,13 @@ function showSelectionTooltip(text, point) {
 }
 
 function hideSelectionTooltip() {
+  if (selectionTranslationController) {
+    selectionTranslationController.abort();
+    selectionTranslationController = null;
+  }
+  if (selectionTranslate) {
+    selectionTranslate.disabled = false;
+  }
   selectionTooltip.setAttribute('aria-hidden', 'true');
   selectionTooltip.classList.remove('expanded');
   resetSelectionAsk();
@@ -6184,16 +6403,48 @@ function maybeUpdateSelectionTooltip(point) {
   showSelectionTooltip(text, point);
 }
 
-async function requestTranslation(text) {
+function getTranslationCacheKey(text) {
+  return String(text || '').trim();
+}
+
+async function requestTranslation(text, { signal } = {}) {
+  const cacheKey = getTranslationCacheKey(text);
+  if (cacheKey && translationCache.has(cacheKey)) {
+    const cached = translationCache.get(cacheKey);
+    if (cached?.expiresAt > Date.now()) {
+      return cached.data;
+    }
+    translationCache.delete(cacheKey);
+  }
+
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(), TRANSLATION_TIMEOUT_MS);
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timeoutId);
+      throw new DOMException('Translation aborted', 'AbortError');
+    }
+    signal.addEventListener('abort', () => timeoutController.abort(), { once: true });
+  }
   const response = await fetch('/api/translate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text })
+    body: JSON.stringify({ text }),
+    signal: timeoutController.signal
+  }).finally(() => {
+    clearTimeout(timeoutId);
   });
   if (!response.ok) {
     throw new Error('Translation failed');
   }
-  return response.json();
+  const data = await response.json();
+  if (cacheKey) {
+    translationCache.set(cacheKey, {
+      data,
+      expiresAt: Date.now() + TRANSLATION_CACHE_TTL_MS
+    });
+  }
+  return data;
 }
 
 async function requestProofread(text) {
@@ -6906,13 +7157,22 @@ function bindEvents() {
     if (!text) {
       return;
     }
-  selectionResult.replaceChildren();
-  const loading = document.createElement('div');
-  loading.textContent = copy.selectionLoading;
-  selectionResult.appendChild(loading);
-  selectionTooltip.classList.add('expanded');
-  try {
-      const result = await requestTranslation(text);
+    if (selectionTranslationController) {
+      selectionTranslationController.abort();
+    }
+    const controller = new AbortController();
+    selectionTranslationController = controller;
+    selectionTranslate.disabled = true;
+    selectionResult.replaceChildren();
+    const loading = document.createElement('div');
+    loading.textContent = copy.selectionLoading;
+    selectionResult.appendChild(loading);
+    selectionTooltip.classList.add('expanded');
+    try {
+      const result = await requestTranslation(text, { signal: controller.signal });
+      if (controller.signal.aborted) {
+        return;
+      }
       const translation = decodeHtml(result?.translation || '');
       selectionResult.replaceChildren();
       if (!translation) {
@@ -6933,9 +7193,16 @@ function bindEvents() {
           }
         }
       }
-  } catch (error) {
-      selectionResult.textContent = copy.selectionError;
-  }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        selectionResult.textContent = copy.selectionError;
+      }
+    } finally {
+      if (selectionTranslationController === controller) {
+        selectionTranslationController = null;
+      }
+      selectionTranslate.disabled = false;
+    }
   });
 
   selectionAsk.addEventListener('click', () => {
@@ -7080,16 +7347,12 @@ function bindEvents() {
   });
 
   window.addEventListener('focus', () => {
-    if (authState.authenticated) {
-      runWorkspaceRefreshLoop();
-      void refreshWorkspaceFromServer().catch(() => {});
-    }
+    requestWorkspaceRefreshFromActivity();
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && authState.authenticated) {
-      runWorkspaceRefreshLoop();
-      void refreshWorkspaceFromServer().catch(() => {});
+    if (document.visibilityState === 'visible') {
+      requestWorkspaceRefreshFromActivity();
     }
   });
 }
