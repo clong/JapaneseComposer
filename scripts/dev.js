@@ -13,6 +13,10 @@ import {
   ASK_SYSTEM_PROMPT,
   PROOFREAD_SYSTEM_PROMPT,
   SYNTHETIC_DOCUMENT_SYSTEM_PROMPT,
+  TUTOR_LESSON_PLAN_SYSTEM_PROMPT,
+  TUTOR_REALTIME_SESSION_INSTRUCTIONS,
+  TUTOR_SESSION_SUMMARY_SYSTEM_PROMPT,
+  TUTOR_TURN_FEEDBACK_SYSTEM_PROMPT,
   VOCAB_RESOLUTION_SYSTEM_PROMPT
 } from './openai-prompts.js';
 import {
@@ -23,6 +27,25 @@ import {
   parseVocabResolutionOutput,
   resolveSelectionVocabEntry
 } from './vocab-resolver.js';
+import {
+  extractJsonObject,
+  normalizeTutorAudioClips,
+  normalizeTutorLessonPlan,
+  normalizeTutorProfile,
+  normalizeTutorSessionSummary,
+  normalizeTutorSessions,
+  normalizeTutorFeedback,
+  normalizeTutorSpeechRate,
+  normalizeTutorTranscriptionLanguage,
+  normalizeTutorVoice,
+  normalizeTutorVocabularyLevel,
+  pruneTutorStorage,
+  TUTOR_STORAGE_LIMITS
+} from '../src/tutor-utils.js';
+import {
+  createTutorV2Service,
+  TUTOR_V2_DEFAULT_REASONING_MODEL
+} from './tutor-v2-server.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -34,7 +57,10 @@ const localIndexPath = process.env.JMDICT_INDEX_PATH || path.join(dataDir, 'jmdi
 const jmdictDownloadUrl = process.env.JMDICT_DOWNLOAD_URL || 'https://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz';
 const vocabDbPath = process.env.VOCAB_DB_PATH || path.join(dataDir, 'vocab.sqlite');
 const workspaceDbPath = process.env.WORKSPACE_DB_PATH || path.join(dataDir, 'workspace.sqlite');
+const tutorV2AudioDirectory = process.env.TUTOR_AUDIO_DIR || path.join(dataDir, 'tutor-audio-v2');
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1';
+const DEFAULT_OPENAI_REALTIME_MODEL = 'gpt-realtime-2';
+const DEFAULT_OPENAI_REALTIME_VOICE = 'marin';
 
 const SYNTHETIC_DIFFICULTIES = ['N5', 'N4', 'N3', 'N2', 'N1'];
 const SYNTHETIC_CATEGORIES = [
@@ -79,7 +105,12 @@ const JISHO_UPSTREAM_COOLDOWN_MS = 15000;
 const TRANSLATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const TRANSLATION_TIMEOUT_MS = 10000;
 const WORKSPACE_IMAGE_PATH_PREFIX = '/api/workspace-image/';
+const TUTOR_AUDIO_PATH_PREFIX = '/api/tutor-audio/';
 const JAPANESE_TEXT_REGEX = /[\u3005\u3006\u3007\u303b\u3040-\u309f\u30a0-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9d]/;
+const TUTOR_AUDIO_MAX_BYTES = Math.max(
+  1024 * 1024,
+  Number(process.env.TUTOR_AUDIO_MAX_BYTES) || TUTOR_STORAGE_LIMITS.maxAudioBytes
+);
 const AUTH_AUDIT_THROTTLE_MS = Math.max(1000, Number(process.env.AUTH_AUDIT_THROTTLE_MS || '5000'));
 const NOISY_AUTH_PATHS = new Set(['/api/auth/session', '/api/workspace']);
 const authAuditEventLogState = new Map();
@@ -293,6 +324,48 @@ try {
   debug('Workspace DB ready.');
 } catch (error) {
   console.error('Failed to initialize workspace database:', error);
+}
+
+let tutorV2Service = null;
+if (workspaceDbReady) {
+  try {
+    tutorV2Service = createTutorV2Service({
+      apiKey: process.env.OPENAI_API_KEY || '',
+      realtimeModel: process.env.OPENAI_REALTIME_MODEL || DEFAULT_OPENAI_REALTIME_MODEL,
+      defaultVoice: process.env.OPENAI_REALTIME_VOICE || DEFAULT_OPENAI_REALTIME_VOICE,
+      reasoningModel: process.env.OPENAI_TUTOR_REASONING_MODEL
+        || process.env.OPENAI_TUTOR_REVIEW_MODEL
+        || TUTOR_V2_DEFAULT_REASONING_MODEL,
+      workspaceDbPath,
+      audioDirectory: tutorV2AudioDirectory,
+      runSqlite,
+      sqlString,
+      parseSqliteJson,
+      writeJson,
+      getActor: async (req) => {
+        let user = null;
+        try {
+          user = await readSessionUserFromRequest(workspaceDbPath, req);
+        } catch (error) {
+          user = null;
+        }
+        if (user) {
+          return user;
+        }
+        return REQUIRE_GOOGLE_AUTH
+          ? null
+          : { id: 'local', email: '', name: 'Local learner', picture: '' };
+      },
+      azureSpeechKey: process.env.AZURE_SPEECH_KEY || '',
+      azureSpeechRegion: process.env.AZURE_SPEECH_REGION || '',
+      audioMaxBytes: TUTOR_AUDIO_MAX_BYTES
+    });
+    await tutorV2Service.ensureSchema();
+    debug('Tutor v2 service ready.');
+  } catch (error) {
+    tutorV2Service = null;
+    console.error('Failed to initialize Tutor v2 service:', error);
+  }
 }
 
 debug('Loading local dictionary...');
@@ -597,6 +670,98 @@ const server = http.createServer(async (req, res) => {
       })
     });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  if (requestUrl.pathname.startsWith('/api/tutor/v2')) {
+    if (!tutorV2Service) {
+      writeJson(res, 500, { error: 'Tutor v2 service unavailable' });
+      return;
+    }
+    if (await tutorV2Service.handleRequest(req, res, requestUrl)) {
+      return;
+    }
+  }
+  if (requestUrl.pathname.startsWith(TUTOR_AUDIO_PATH_PREFIX)) {
+    if (!workspaceDbReady) {
+      writeJson(res, 500, { error: 'Workspace database unavailable' });
+      return;
+    }
+    const user = await requireAuthenticatedUser(workspaceDbPath, req, res);
+    if (!user) {
+      return;
+    }
+    if (req.method !== 'GET') {
+      writeJson(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    const parsed = parseTutorAudioPathname(requestUrl.pathname);
+    if (!parsed) {
+      writeJson(res, 400, { error: 'Invalid audio path' });
+      return;
+    }
+    try {
+      const row = await readTutorAudioSource(workspaceDbPath, user.id, parsed.sessionId, parsed.clipId);
+      const audio = parseDataAudioSource(row?.src || '');
+      if (!audio) {
+        writeJson(res, 404, { error: 'Audio not found' });
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': audio.mimeType,
+        'Cache-Control': 'private, max-age=31536000'
+      });
+      res.end(audio.bytes);
+      return;
+    } catch (error) {
+      writeJson(res, 502, { error: 'Audio lookup failed' });
+      return;
+    }
+  }
+  if (requestUrl.pathname === '/api/tutor/sessions') {
+    if (!workspaceDbReady) {
+      writeJson(res, 500, { error: 'Workspace database unavailable' });
+      return;
+    }
+    const user = await requireAuthenticatedUser(workspaceDbPath, req, res);
+    if (!user) {
+      return;
+    }
+    if (req.method === 'GET') {
+      try {
+        const tutorState = await readUserTutorState(workspaceDbPath, user.id);
+        writeJson(res, 200, tutorState, {
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          Pragma: 'no-cache',
+          Vary: 'Cookie'
+        });
+        return;
+      } catch (error) {
+        writeJson(res, 502, { error: 'Tutor session lookup failed' });
+        return;
+      }
+    }
+    if (req.method === 'PUT') {
+      const body = await readJsonBody(req);
+      try {
+        const tutorState = await writeUserTutorState(workspaceDbPath, user.id, body || {});
+        writeJson(res, 200, { ok: true, ...tutorState });
+        return;
+      } catch (error) {
+        writeJson(res, 400, { error: error?.message || 'Tutor session update failed' });
+        return;
+      }
+    }
+    if (req.method === 'DELETE') {
+      try {
+        const result = await deleteUserTutorState(workspaceDbPath, user.id);
+        writeJson(res, 200, { ok: true, updatedAt: result.updatedAt });
+        return;
+      } catch (error) {
+        writeJson(res, 502, { error: 'Tutor session delete failed' });
+        return;
+      }
+    }
+    writeJson(res, 405, { error: 'Method not allowed' });
     return;
   }
   if (requestUrl.pathname.startsWith(WORKSPACE_IMAGE_PATH_PREFIX)) {
@@ -1106,7 +1271,10 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const detectedLanguage = JAPANESE_TEXT_REGEX.test(text) ? 'ja' : 'en';
-      const targetLanguage = detectedLanguage === 'en' ? 'ja' : 'en';
+      const requestedTargetLanguage = ['ja', 'en'].includes(body?.targetLanguage)
+        ? body.targetLanguage
+        : '';
+      const targetLanguage = requestedTargetLanguage || (detectedLanguage === 'en' ? 'ja' : 'en');
       const cacheKey = `${targetLanguage}:${text}`;
       const cached = getTimedCacheEntry(translationResponseCache, cacheKey);
       if (cached) {
@@ -1147,6 +1315,250 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       const statusCode = error?.name === 'AbortError' ? 504 : 502;
       writeJson(res, statusCode, { error: 'Translation failed' });
+      return;
+    }
+  }
+  if (requestUrl.pathname === '/api/tutor/realtime-token') {
+    if (req.method !== 'POST') {
+      writeJson(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      writeJson(res, 501, { error: 'Missing OPENAI_API_KEY' });
+      return;
+    }
+    const body = await readJsonBody(req);
+    const model = process.env.OPENAI_REALTIME_MODEL || DEFAULT_OPENAI_REALTIME_MODEL;
+    const voice = normalizeTutorVoice(body?.voice || process.env.OPENAI_REALTIME_VOICE || DEFAULT_OPENAI_REALTIME_VOICE);
+    const speechRate = normalizeTutorSpeechRate(body?.speechRate);
+    const transcriptionLanguage = normalizeTutorTranscriptionLanguage(body?.transcriptionLanguage);
+    const vocabularyLevel = normalizeTutorVocabularyLevel(body?.vocabularyLevel || body?.profile?.vocabularyLevel);
+    let user = null;
+    if (workspaceDbReady) {
+      try {
+        user = await readSessionUserFromRequest(workspaceDbPath, req);
+      } catch (error) {
+        user = null;
+      }
+    }
+    const safetySeed = user?.id || getClientIp(req) || 'local-user';
+    const safetyIdentifier = createHash('sha256').update(String(safetySeed)).digest('hex');
+    const instructions = buildTutorRealtimeInstructions({
+      topic: typeof body?.topic === 'string' ? body.topic : '',
+      lessonPlan: body?.lessonPlan || null,
+      profile: body?.profile || null,
+      speechRate,
+      vocabularyLevel
+    });
+
+    try {
+      const tokenResponse = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+          'OpenAI-Safety-Identifier': safetyIdentifier
+        },
+        body: JSON.stringify({
+          session: {
+            type: 'realtime',
+            model,
+            instructions,
+            max_output_tokens: 900,
+            audio: {
+              input: {
+                transcription: {
+                  model: 'gpt-realtime-whisper',
+                  language: transcriptionLanguage
+                },
+                turn_detection: {
+                  type: 'semantic_vad',
+                  eagerness: 'low',
+                  create_response: true,
+                  interrupt_response: false
+                }
+              },
+              output: {
+                voice,
+                speed: speechRate
+              }
+            }
+          }
+        })
+      });
+      const tokenData = await safeParseJson(tokenResponse);
+      if (!tokenResponse.ok) {
+        writeJson(res, tokenResponse.status, { error: tokenData?.error?.message || 'Realtime token failed' });
+        return;
+      }
+      const value = tokenData?.value
+        || tokenData?.client_secret?.value
+        || tokenData?.client_secret
+        || '';
+      if (!value || typeof value !== 'string') {
+        writeJson(res, 502, { error: 'Realtime token failed' });
+        return;
+      }
+      const rawExpiresAt = Number(tokenData?.expires_at || tokenData?.client_secret?.expires_at);
+      const expiresAt = Number.isFinite(rawExpiresAt)
+        ? (rawExpiresAt > 1000000000000 ? Math.trunc(rawExpiresAt) : Math.trunc(rawExpiresAt * 1000))
+        : null;
+      writeJson(res, 200, {
+        value,
+        expiresAt,
+        model,
+        voice,
+        speechRate,
+        transcriptionLanguage,
+        vocabularyLevel
+      }, {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        Pragma: 'no-cache'
+      });
+      return;
+    } catch (error) {
+      writeJson(res, 502, { error: 'Realtime token failed' });
+      return;
+    }
+  }
+  if (requestUrl.pathname === '/api/tutor/lesson-plan') {
+    if (req.method !== 'POST') {
+      writeJson(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      writeJson(res, 501, { error: 'Missing OPENAI_API_KEY' });
+      return;
+    }
+    const body = await readJsonBody(req);
+    const topic = typeof body?.topic === 'string' ? body.topic.trim().slice(0, 200) : '';
+    const vocabularyLevel = normalizeTutorVocabularyLevel(body?.vocabularyLevel || body?.profile?.vocabularyLevel);
+    const model = process.env.OPENAI_TUTOR_REVIEW_MODEL || process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
+    try {
+      const parsed = await requestOpenAiJson({
+        apiKey,
+        model,
+        instructions: TUTOR_LESSON_PLAN_SYSTEM_PROMPT,
+        input: [
+          `Requested topic: ${topic || 'open conversation'}`,
+          `Vocabulary baseline: ${describeTutorVocabularyLevel(vocabularyLevel)}. Keep lesson target vocabulary at or below this ceiling.`,
+          `Learner profile: ${JSON.stringify(normalizeTutorProfile({
+            ...(body?.profile && typeof body.profile === 'object' ? body.profile : {}),
+            vocabularyLevel
+          }))}`
+        ].join('\n\n'),
+        maxOutputTokens: 900
+      });
+      const lessonPlan = normalizeTutorLessonPlan({
+        ...parsed,
+        topic: parsed.topic || topic,
+        estimatedLevel: parsed.estimatedLevel || vocabularyLevel
+      });
+      if (!lessonPlan) {
+        writeJson(res, 502, { error: 'Lesson plan failed' });
+        return;
+      }
+      writeJson(res, 200, { lessonPlan, model });
+      return;
+    } catch (error) {
+      const statusCode = Number.isFinite(error?.status) ? Math.trunc(error.status) : 502;
+      writeJson(res, statusCode, { error: error?.message || 'Lesson plan failed' });
+      return;
+    }
+  }
+  if (requestUrl.pathname === '/api/tutor/turn-feedback') {
+    if (req.method !== 'POST') {
+      writeJson(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      writeJson(res, 501, { error: 'Missing OPENAI_API_KEY' });
+      return;
+    }
+    const body = await readJsonBody(req);
+    const transcript = typeof body?.transcript === 'string' ? body.transcript.trim().slice(0, 12000) : '';
+    const vocabularyLevel = normalizeTutorVocabularyLevel(body?.vocabularyLevel || body?.profile?.vocabularyLevel);
+    if (!transcript) {
+      writeJson(res, 400, { error: 'Missing transcript' });
+      return;
+    }
+    const model = process.env.OPENAI_TUTOR_REVIEW_MODEL || process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
+    try {
+      const parsed = await requestOpenAiJson({
+        apiKey,
+        model,
+        instructions: TUTOR_TURN_FEEDBACK_SYSTEM_PROMPT,
+        input: [
+          `Learner turn transcript:\n${transcript}`,
+          buildTutorContext({
+            topic: typeof body?.topic === 'string' ? body.topic : '',
+            lessonPlan: body?.lessonPlan || null,
+            profile: body?.profile || null,
+            vocabularyLevel
+          }),
+          `Recent turns: ${JSON.stringify(normalizeTutorSessions([{ id: 'recent', turns: body?.recentTurns || [] }])[0]?.turns || [])}`
+        ].join('\n\n'),
+        maxOutputTokens: 450
+      });
+      const feedback = normalizeTutorFeedback(parsed);
+      if (!feedback) {
+        writeJson(res, 502, { error: 'Feedback failed' });
+        return;
+      }
+      writeJson(res, 200, { feedback, model });
+      return;
+    } catch (error) {
+      const statusCode = Number.isFinite(error?.status) ? Math.trunc(error.status) : 502;
+      writeJson(res, statusCode, { error: error?.message || 'Feedback failed' });
+      return;
+    }
+  }
+  if (requestUrl.pathname === '/api/tutor/session-summary') {
+    if (req.method !== 'POST') {
+      writeJson(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      writeJson(res, 501, { error: 'Missing OPENAI_API_KEY' });
+      return;
+    }
+    const body = await readJsonBody(req);
+    const session = normalizeTutorSessions([body?.session || {}])[0];
+    const vocabularyLevel = normalizeTutorVocabularyLevel(body?.vocabularyLevel || body?.profile?.vocabularyLevel || session?.vocabularyLevel);
+    if (!session || !session.turns.length) {
+      writeJson(res, 400, { error: 'Missing session turns' });
+      return;
+    }
+    const model = process.env.OPENAI_TUTOR_REVIEW_MODEL || process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
+    try {
+      const parsed = await requestOpenAiJson({
+        apiKey,
+        model,
+        instructions: TUTOR_SESSION_SUMMARY_SYSTEM_PROMPT,
+        input: [
+          `Completed session: ${JSON.stringify(session)}`,
+          `Vocabulary baseline used: ${describeTutorVocabularyLevel(vocabularyLevel)}`,
+          `Existing learner profile: ${JSON.stringify(normalizeTutorProfile({
+            ...(body?.profile && typeof body.profile === 'object' ? body.profile : {}),
+            vocabularyLevel
+          }))}`
+        ].join('\n\n'),
+        maxOutputTokens: 900
+      });
+      const summary = normalizeTutorSessionSummary(parsed);
+      if (!summary) {
+        writeJson(res, 502, { error: 'Summary failed' });
+        return;
+      }
+      writeJson(res, 200, { summary, profile: summary.profileUpdate, model });
+      return;
+    } catch (error) {
+      const statusCode = Number.isFinite(error?.status) ? Math.trunc(error.status) : 502;
+      writeJson(res, statusCode, { error: error?.message || 'Summary failed' });
       return;
     }
   }
@@ -1413,7 +1825,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const port = 5173;
+const port = Math.max(1, Math.min(65535, Math.trunc(Number(process.env.PORT) || 5173)));
 server.listen(port, () => {
   console.log(`Dev server running at http://localhost:${port}`);
   if (localDictionary) {
@@ -1421,6 +1833,10 @@ server.listen(port, () => {
   } else {
     console.log('Local JMdict lookup not found.');
   }
+});
+
+server.on('close', () => {
+  void tutorV2Service?.close();
 });
 
 async function readJsonBody(req) {
@@ -1799,6 +2215,101 @@ function extractOpenAiText(payload) {
   return parts.join('\n').trim();
 }
 
+function describeTutorSpeechRate(value) {
+  const speechRate = normalizeTutorSpeechRate(value);
+  if (speechRate < 0.85) {
+    return `${speechRate.toFixed(2)}x, speak slowly and clearly`;
+  }
+  if (speechRate > 1.15) {
+    return `${speechRate.toFixed(2)}x, keep articulation clear while speaking faster`;
+  }
+  return `${speechRate.toFixed(2)}x, natural speed`;
+}
+
+function describeTutorVocabularyLevel(value) {
+  const vocabularyLevel = normalizeTutorVocabularyLevel(value);
+  const descriptions = {
+    N5: 'basic beginner vocabulary only; avoid advanced nouns, idioms, abstract phrases, and long compounds',
+    N4: 'upper beginner vocabulary; keep words common and concrete',
+    N3: 'lower intermediate vocabulary; introduce only one mildly challenging word at a time',
+    N2: 'upper intermediate vocabulary; avoid specialized or literary words unless requested',
+    N1: 'advanced vocabulary is allowed, but keep explanations concise'
+  };
+  return `${vocabularyLevel}, ${descriptions[vocabularyLevel]}`;
+}
+
+function buildTutorContext({
+  topic = '',
+  lessonPlan = null,
+  profile = null,
+  speechRate = 1,
+  vocabularyLevel = null
+} = {}) {
+  const normalizedProfile = normalizeTutorProfile({
+    ...(profile && typeof profile === 'object' ? profile : {}),
+    vocabularyLevel: vocabularyLevel || profile?.vocabularyLevel
+  });
+  const normalizedLessonPlan = normalizeTutorLessonPlan(lessonPlan || {});
+  const normalizedVocabularyLevel = normalizeTutorVocabularyLevel(vocabularyLevel || normalizedProfile.vocabularyLevel);
+  const lines = [
+    `Topic: ${typeof topic === 'string' && topic.trim() ? topic.trim().slice(0, 200) : 'open conversation'}`,
+    `Learner profile: ${JSON.stringify(normalizedProfile)}`,
+    `Vocabulary baseline: ${describeTutorVocabularyLevel(normalizedVocabularyLevel)}. Treat this as a hard ceiling unless the learner explicitly asks for harder Japanese.`,
+    `Speech rate preference: ${describeTutorSpeechRate(speechRate)}`
+  ];
+  if (normalizedLessonPlan) {
+    lines.push(`Lesson plan: ${JSON.stringify(normalizedLessonPlan)}`);
+  }
+  return lines.join('\n');
+}
+
+function buildTutorRealtimeInstructions({
+  topic = '',
+  lessonPlan = null,
+  profile = null,
+  speechRate = 1,
+  vocabularyLevel = null
+} = {}) {
+  return [
+    TUTOR_REALTIME_SESSION_INSTRUCTIONS,
+    '',
+    'Current session context:',
+    buildTutorContext({ topic, lessonPlan, profile, speechRate, vocabularyLevel })
+  ].join('\n');
+}
+
+async function requestOpenAiJson({
+  apiKey,
+  model,
+  instructions,
+  input,
+  maxOutputTokens = 900
+}) {
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      max_output_tokens: maxOutputTokens,
+      instructions,
+      input
+    })
+  });
+  const data = await safeParseJson(response);
+  if (!response.ok) {
+    throw createHttpError(response.status, data?.error?.message || 'OpenAI request failed');
+  }
+  const output = extractOpenAiText(data);
+  const parsed = extractJsonObject(output);
+  if (!parsed) {
+    throw createHttpError(502, 'OpenAI returned invalid JSON');
+  }
+  return parsed;
+}
+
 async function requestOpenAiVocabResolution({
   apiKey,
   model,
@@ -2002,6 +2513,31 @@ async function ensureWorkspaceDb(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_user_workspace_images_document
       ON user_workspace_images(user_id, document_id);
     ${READING_TABLE_SQL}
+    CREATE TABLE IF NOT EXISTS user_tutor_sessions (
+      user_id TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      profile TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS user_tutor_audio (
+      user_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      clip_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      speaker TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      src TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      byte_length INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, session_id, clip_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_tutor_audio_session
+      ON user_tutor_audio(user_id, session_id);
   `;
   await runSqlite(dbPath, sql);
 }
@@ -3122,6 +3658,259 @@ async function hydrateDocumentImageSources(dbPath, userId, document) {
     ...document,
     images
   };
+}
+
+function createTutorAudioUrl(sessionId, clipId) {
+  return `${TUTOR_AUDIO_PATH_PREFIX}${encodeURIComponent(sessionId)}/${encodeURIComponent(clipId)}`;
+}
+
+function parseTutorAudioPathname(pathname) {
+  if (typeof pathname !== 'string' || !pathname.startsWith(TUTOR_AUDIO_PATH_PREFIX)) {
+    return null;
+  }
+  const parts = pathname
+    .slice(TUTOR_AUDIO_PATH_PREFIX.length)
+    .split('/')
+    .map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch (error) {
+        return '';
+      }
+    });
+  const sessionId = (parts[0] || '').trim();
+  const clipId = (parts[1] || '').trim();
+  if (!sessionId || !clipId) {
+    return null;
+  }
+  return { sessionId, clipId };
+}
+
+function parseDataAudioSource(src) {
+  const source = typeof src === 'string' ? src.trim() : '';
+  const match = source.match(/^data:(audio\/[a-zA-Z0-9.+-]+(?:;\s*codecs=[a-zA-Z0-9_.-]+)?);base64,(.+)$/s);
+  if (!match) {
+    return null;
+  }
+  try {
+    return {
+      mimeType: match[1],
+      bytes: Buffer.from(match[2], 'base64')
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+async function readTutorAudioSource(dbPath, userId, sessionId, clipId) {
+  const sql = `
+    SELECT speaker, mime_type, src, duration_ms, byte_length, created_at
+    FROM user_tutor_audio
+    WHERE user_id = ${sqlString(userId)}
+      AND session_id = ${sqlString(sessionId)}
+      AND clip_id = ${sqlString(clipId)}
+    LIMIT 1;
+  `;
+  const stdout = await runSqlite(dbPath, sql, { json: true });
+  const rows = parseSqliteJson(stdout);
+  return rows[0] || null;
+}
+
+async function readTutorAudioMetadata(dbPath, userId) {
+  const sql = `
+    SELECT session_id, clip_id, turn_id, speaker, mime_type, duration_ms, byte_length, created_at
+    FROM user_tutor_audio
+    WHERE user_id = ${sqlString(userId)}
+    ORDER BY created_at DESC;
+  `;
+  const stdout = await runSqlite(dbPath, sql, { json: true });
+  return parseSqliteJson(stdout).map((row) => ({
+    id: typeof row?.clip_id === 'string' ? row.clip_id : '',
+    sessionId: typeof row?.session_id === 'string' ? row.session_id : '',
+    turnId: typeof row?.turn_id === 'string' ? row.turn_id : '',
+    speaker: typeof row?.speaker === 'string' ? row.speaker : '',
+    mimeType: typeof row?.mime_type === 'string' ? row.mime_type : 'audio/webm',
+    durationMs: Number.isFinite(Number(row?.duration_ms)) ? Math.trunc(Number(row.duration_ms)) : 0,
+    byteLength: Number.isFinite(Number(row?.byte_length)) ? Math.trunc(Number(row.byte_length)) : 0,
+    src: createTutorAudioUrl(
+      typeof row?.session_id === 'string' ? row.session_id : '',
+      typeof row?.clip_id === 'string' ? row.clip_id : ''
+    ),
+    createdAt: Number.isFinite(Number(row?.created_at)) ? Math.trunc(Number(row.created_at)) : Date.now()
+  }));
+}
+
+async function upsertTutorAudio(dbPath, userId, clip) {
+  const parsed = parseDataAudioSource(clip.src);
+  if (!parsed) {
+    return false;
+  }
+  const now = Date.now();
+  const byteLength = parsed.bytes.length || clip.byteLength || 0;
+  const sql = `
+    INSERT INTO user_tutor_audio (
+      user_id, session_id, clip_id, turn_id, speaker, mime_type, src,
+      duration_ms, byte_length, created_at, updated_at
+    )
+    VALUES (
+      ${sqlString(userId)},
+      ${sqlString(clip.sessionId)},
+      ${sqlString(clip.id)},
+      ${sqlString(clip.turnId)},
+      ${sqlString(clip.speaker)},
+      ${sqlString(parsed.mimeType || clip.mimeType || 'audio/webm')},
+      ${sqlString(clip.src)},
+      ${Math.max(0, Math.trunc(clip.durationMs || 0))},
+      ${Math.max(0, Math.trunc(byteLength))},
+      ${Math.max(0, Math.trunc(clip.createdAt || now))},
+      ${now}
+    )
+    ON CONFLICT(user_id, session_id, clip_id) DO UPDATE SET
+      turn_id = excluded.turn_id,
+      speaker = excluded.speaker,
+      mime_type = excluded.mime_type,
+      src = excluded.src,
+      duration_ms = excluded.duration_ms,
+      byte_length = excluded.byte_length,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at;
+  `;
+  await runSqlite(dbPath, sql);
+  return true;
+}
+
+async function pruneTutorAudio(dbPath, userId, clips) {
+  const normalized = normalizeTutorAudioClips(clips);
+  const keepClauses = normalized.map((clip) => {
+    return `(session_id = ${sqlString(clip.sessionId)} AND clip_id = ${sqlString(clip.id)})`;
+  });
+  const keepClause = keepClauses.length ? `AND NOT (${keepClauses.join(' OR ')})` : '';
+  const sql = `
+    DELETE FROM user_tutor_audio
+    WHERE user_id = ${sqlString(userId)}
+      ${keepClause};
+  `;
+  await runSqlite(dbPath, sql);
+}
+
+function normalizeTutorStatePayload(body) {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const sessions = normalizeTutorSessions(body.sessions);
+  const profile = normalizeTutorProfile(body.profile);
+  const audioClips = normalizeTutorAudioClips(body.audioClips);
+  const pruned = pruneTutorStorage(sessions, audioClips, {
+    maxAudioBytes: TUTOR_AUDIO_MAX_BYTES
+  });
+  return {
+    sessions: pruned.sessions,
+    profile,
+    audioClips: pruned.audioClips
+  };
+}
+
+async function readUserTutorState(dbPath, userId) {
+  const sql = `
+    SELECT payload, profile, updated_at
+    FROM user_tutor_sessions
+    WHERE user_id = ${sqlString(userId)}
+    LIMIT 1;
+  `;
+  const stdout = await runSqlite(dbPath, sql, { json: true });
+  const rows = parseSqliteJson(stdout);
+  let sessions = [];
+  let profile = normalizeTutorProfile({});
+  let updatedAt = Date.now();
+  if (rows.length) {
+    try {
+      sessions = normalizeTutorSessions(JSON.parse(rows[0]?.payload || '[]'));
+    } catch (error) {
+      sessions = [];
+    }
+    try {
+      profile = normalizeTutorProfile(JSON.parse(rows[0]?.profile || '{}'));
+    } catch (error) {
+      profile = normalizeTutorProfile({});
+    }
+    const rowUpdatedAt = Number(rows[0]?.updated_at);
+    if (Number.isFinite(rowUpdatedAt)) {
+      updatedAt = Math.trunc(rowUpdatedAt);
+    }
+  }
+  const audioClips = normalizeTutorAudioClips(await readTutorAudioMetadata(dbPath, userId));
+  const pruned = pruneTutorStorage(sessions, audioClips, {
+    maxAudioBytes: TUTOR_AUDIO_MAX_BYTES
+  });
+  return {
+    sessions: pruned.sessions,
+    profile,
+    audioClips: pruned.audioClips,
+    updatedAt
+  };
+}
+
+async function writeUserTutorState(dbPath, userId, payload) {
+  const normalized = normalizeTutorStatePayload(payload);
+  if (!normalized) {
+    throw new Error('Invalid tutor payload');
+  }
+  const now = Date.now();
+  const existingAudio = await readTutorAudioMetadata(dbPath, userId);
+  const existingByKey = new Map(existingAudio.map((clip) => [`${clip.sessionId}:${clip.id}`, clip]));
+  const mergedAudio = normalized.audioClips.map((clip) => {
+    if (clip.src.startsWith(TUTOR_AUDIO_PATH_PREFIX)) {
+      return {
+        ...(existingByKey.get(`${clip.sessionId}:${clip.id}`) || clip),
+        ...clip
+      };
+    }
+    return clip;
+  });
+  const pruned = pruneTutorStorage(normalized.sessions, mergedAudio, {
+    maxAudioBytes: TUTOR_AUDIO_MAX_BYTES
+  });
+
+  for (const clip of pruned.audioClips) {
+    if (clip.src.startsWith('data:audio/')) {
+      await upsertTutorAudio(dbPath, userId, clip);
+    }
+  }
+  await pruneTutorAudio(dbPath, userId, pruned.audioClips);
+
+  const sql = `
+    INSERT INTO user_tutor_sessions (user_id, payload, profile, created_at, updated_at)
+    VALUES (
+      ${sqlString(userId)},
+      ${sqlString(JSON.stringify(pruned.sessions))},
+      ${sqlString(JSON.stringify(normalized.profile))},
+      ${now},
+      ${now}
+    )
+    ON CONFLICT(user_id) DO UPDATE SET
+      payload = excluded.payload,
+      profile = excluded.profile,
+      updated_at = excluded.updated_at;
+  `;
+  await runSqlite(dbPath, sql);
+  return {
+    sessions: pruned.sessions,
+    profile: normalized.profile,
+    audioClips: pruned.audioClips.map((clip) => ({
+      ...clip,
+      src: createTutorAudioUrl(clip.sessionId, clip.id)
+    })),
+    updatedAt: now
+  };
+}
+
+async function deleteUserTutorState(dbPath, userId) {
+  const sql = `
+    DELETE FROM user_tutor_audio WHERE user_id = ${sqlString(userId)};
+    DELETE FROM user_tutor_sessions WHERE user_id = ${sqlString(userId)};
+  `;
+  await runSqlite(dbPath, sql);
+  return { updatedAt: Date.now() };
 }
 
 async function writeUserWorkspace(dbPath, userId, workspace) {

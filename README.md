@@ -126,6 +126,44 @@ You can override the model with `OPENAI_MODEL` (defaults to `gpt-4.1`).
 
 The "Ask" action (for selected text questions) uses the OpenAI Responses API via the local dev server proxy. Provide the same `OPENAI_API_KEY` (and optional `OPENAI_MODEL`) when running the dev server.
 
+## Adaptive Voice Speaking Tutor
+
+The Tutor tab uses OpenAI Realtime for speech and a server-owned lesson director for objectives, assessment, repair, mastery, and spaced review. Provide `OPENAI_API_KEY` when running the dev server:
+
+```bash
+OPENAI_API_KEY=your_key_here npm run dev
+```
+
+Optional tutor env vars:
+
+- `OPENAI_REALTIME_MODEL` (default: `gpt-realtime-2`)
+- `OPENAI_REALTIME_VOICE` (default: `marin`)
+- `OPENAI_TUTOR_REASONING_MODEL` (default: `gpt-5.6`)
+- `OPENAI_TUTOR_REVIEW_MODEL` (legacy v1 review fallback)
+- `TUTOR_AUDIO_MAX_BYTES` (default: 60 MB)
+- `TUTOR_AUDIO_DIR` (default: `data/tutor-audio-v2`)
+- `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION` (optional Japanese pronunciation provider)
+- `PORT` (default: `5173`)
+
+The browser sends its WebRTC SDP offer to `/api/tutor/v2/sessions/:id/connect`; the server creates the Realtime call, captures its call ID, and opens a sideband WebSocket for lesson state and tool control. No OpenAI credential or ephemeral client secret is returned to the browser.
+
+Tutor v2 includes:
+
+- JF/CEFR dimension profiles, with JLPT retained only as a content ceiling
+- daily missions, prerequisite-linked A1-B2 skills, diagnostics, and monthly benchmarks
+- guided, scenario, pronunciation, and free-conversation modes
+- deterministic lesson phases and mandatory repair for high-confidence meaningful errors
+- live Japanese/English transcription, server-side conversation logs, and structured post-turn evidence
+- 30-day raw-audio retention, a 60 MB unpinned-audio budget, and a 10-minute per-session audio budget
+- complete Tutor data deletion through `DELETE /api/tutor/v2/data`
+- measurable release-gate reporting through `GET /api/tutor/v2/quality`
+
+Audio is stored in files under `TUTOR_AUDIO_DIR`; SQLite stores metadata, assessments, mastery evidence, review schedules, benchmark results, and quality traces. Legacy v1 sessions remain available as history and are not promoted into mastery evidence.
+
+External pronunciation processing is disabled until the learner explicitly opts in. The Azure adapter records supported Japanese accuracy and fluency signals only. It deliberately reports no Japanese pitch/prosody score. Browser WebM recordings remain saved when the provider cannot score their encoding.
+
+The speaking framework follows the [JF Standard](https://www.jfstandard.jpf.go.jp/summaryen/ja/render.do). The Realtime transport follows OpenAI's [WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc) and [server-side control](https://developers.openai.com/api/docs/guides/realtime-server-controls) guidance.
+
 ## Sharing With Google Users
 
 When signed in, use the in-app "Share with Google User" panel to send the current entry to another signed-in user by email. The shared document includes:
@@ -170,12 +208,13 @@ Reference MP3s are fetched only from source-discovered NHK Easier paths and cach
 
 ## Server requirements
 
-- Translation, proofreading, and selected text Q&A require the dev server (`npm run dev`). Opening `dist/index.html` directly will not enable these API-backed features.
+- Translation, proofreading, selected text Q&A, and the voice speaking tutor require the dev server (`npm run dev`). Opening `dist/index.html` directly will not enable these API-backed features.
 - Reading article import, dictionary lookup, reverse prompt generation, grading, and account sync also require the server. Saved local article snapshots and answers can still be opened without it.
 
 ## Notes
 
 - Vocabulary entries are stored in SQLite when running the dev server (`data/vocab.sqlite`, override with `VOCAB_DB_PATH`). Opening `dist/index.html` directly falls back to `localStorage` under the key `jc_vocab_list`.
 - Signed-in workspace data is stored in SQLite (`data/workspace.sqlite`, override with `WORKSPACE_DB_PATH`).
+- Tutor v2 learning metadata is stored in the workspace SQLite database. Raw audio is stored under `TUTOR_AUDIO_DIR`; legacy v1 audio remains in its existing storage.
 - The dev server persistence uses the system `sqlite3` CLI; ensure it is available on your `PATH`.
 - The UI language toggle switches labels between English and Japanese.
