@@ -128,15 +128,19 @@ The "Ask" action (for selected text questions) uses the OpenAI Responses API via
 
 ## Adaptive Voice Speaking Tutor
 
-The Tutor tab uses OpenAI Realtime for speech and a server-owned lesson director for objectives, assessment, repair, mastery, and spaced review. Provide `OPENAI_API_KEY` when running the dev server:
+The Tutor tab uses `gpt-live-1` for speech and a server-owned lesson director for objectives, assessment, repair, mastery, and spaced review. Provide an `OPENAI_API_KEY` with GPT-Live access when running the dev server:
 
 ```bash
-OPENAI_API_KEY=your_key_here npm run dev
+set -a
+source data/local.env
+set +a
+OPENAI_TUTOR_VOICE_MODEL=gpt-live-1 npm run dev
 ```
 
 Optional tutor env vars:
 
-- `OPENAI_REALTIME_MODEL` (default: `gpt-realtime-2`)
+- `OPENAI_TUTOR_VOICE_MODEL` (default: `gpt-live-1`; takes precedence over `OPENAI_REALTIME_MODEL`)
+- `OPENAI_REALTIME_MODEL` (backward-compatible override; set `gpt-realtime-2` to use the previous transport)
 - `OPENAI_REALTIME_VOICE` (default: `marin`)
 - `OPENAI_TUTOR_REASONING_MODEL` (default: `gpt-5.6`)
 - `OPENAI_TUTOR_REVIEW_MODEL` (legacy v1 review fallback)
@@ -145,7 +149,17 @@ Optional tutor env vars:
 - `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION` (optional Japanese pronunciation provider)
 - `PORT` (default: `5173`)
 
-The browser sends its WebRTC SDP offer to `/api/tutor/v2/sessions/:id/connect`; the server creates the Realtime call, captures its call ID, and opens a sideband WebSocket for lesson state and tool control. No OpenAI credential or ephemeral client secret is returned to the browser.
+The browser sends its WebRTC SDP offer to `/api/tutor/v2/sessions/:id/connect`. The server creates a GPT-Live session through `POST /v1/live/sessions`, retains the returned session ID, and attaches to `/v1/live/sessions/:id/attach`. Client delegation invokes the existing assessment model and lesson director. No OpenAI credential is returned to the browser. Existing transcripts, profiles, and recordings remain readable.
+
+If your launch command sets `OPENAI_REALTIME_MODEL`, remove it or explicitly add `OPENAI_TUTOR_VOICE_MODEL=gpt-live-1` to select the new transport. Restart the server and start a new speaking session after changing models.
+
+GPT-Live generates captions automatically; it does not expose the old transcription-language override. Japanese remains the practice language, with English explanations when requested. The pace slider now requests very slow, slow, natural, or brisk delivery through instructions rather than applying an exact audio speed multiplier. Voice selection still takes effect at session startup.
+
+Live captions preserve original timed fragments and allow both speakers to overlap. Caption groups are approximate display segments, not confirmed completed responses. The speaking indicator follows playback audio levels. The old complete-response and interruption metrics are unavailable for Live sessions. Session duration usage is cumulative and is finalized only on `session.closed`.
+
+Live audio is captured from the server sideband as bounded PCM and saved as WAV clips when a session ends. Input audio alignment is approximate because reflected input has no timestamps; these clips are for replay and are not sent to the specialist pronunciation scorer. Recordings cannot include audio from before sideband attachment. Ending a session waits for final usage before disconnecting, with a timeout recorded as incomplete finalization.
+
+After loading the environment, `node scripts/tutor-live-smoke.js` runs an opt-in, billable Live API check. It verifies a Japanese greeting, non-silent PCM audio, captions, and final usage without opening the microphone. The ordinary `npm test` suite uses mocks and temporary databases, with no OpenAI requests.
 
 Tutor v2 includes:
 
@@ -162,7 +176,7 @@ Audio is stored in files under `TUTOR_AUDIO_DIR`; SQLite stores metadata, assess
 
 External pronunciation processing is disabled until the learner explicitly opts in. The Azure adapter records supported Japanese accuracy and fluency signals only. It deliberately reports no Japanese pitch/prosody score. Browser WebM recordings remain saved when the provider cannot score their encoding.
 
-The speaking framework follows the [JF Standard](https://www.jfstandard.jpf.go.jp/summaryen/ja/render.do). The Realtime transport follows OpenAI's [WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc) and [server-side control](https://developers.openai.com/api/docs/guides/realtime-server-controls) guidance.
+The speaking framework follows the [JF Standard](https://www.jfstandard.jpf.go.jp/summaryen/ja/render.do). The Live transport follows OpenAI's [GPT-Live migration](https://developers.openai.com/api/docs/guides/live-migration), [WebRTC](https://developers.openai.com/api/docs/guides/voice-webrtc?api=live), and [server-side control](https://developers.openai.com/api/docs/guides/voice-server-controls?api=live) guidance.
 
 ## Sharing With Google Users
 

@@ -53,6 +53,8 @@ import {
   uploadTutorV2Audio
 } from './tutor-v2-api.js';
 import { connectTutorV2WebRtc } from './tutor-v2-transport.js';
+import { createTutorLiveTranscript, isTutorLiveModel, TUTOR_LIVE_MODEL, tutorLiveAppends,
+  tutorLivePaceInstruction, waitForTutorLiveClose } from './tutor-live.js';
 import { analyzeTutorAudioBlob } from './tutor-audio-metrics.js';
 
 const PROXY_DICT_ENDPOINT = '/api/lookup?keyword=';
@@ -847,6 +849,11 @@ const authState = {
 };
 
 const tutorState = {
+  voiceModel: TUTOR_LIVE_MODEL,
+  liveTranscript: null,
+  liveStarted: false,
+  liveClosing: false,
+  liveLastAudioAt: 0,
   status: 'idle',
   error: '',
   topic: '',
@@ -4145,6 +4152,7 @@ function applyTutorV2Preferences(preferences = {}) {
 }
 
 function applyTutorV2Today(payload = {}) {
+  tutorState.voiceModel = payload.voiceModel || tutorState.voiceModel;
   tutorState.mission = normalizeTutorV2Mission(payload.mission || {});
   tutorState.speakingProfile = normalizeSpeakingProfile(payload.profile || tutorState.speakingProfile, tutorState.profile);
   tutorState.dueReviews = Array.isArray(payload.dueReviews) ? payload.dueReviews : [];
@@ -6518,7 +6526,9 @@ function renderTutorProfile(copy) {
 }
 
 function findTutorAudioClip(sessionId, clipId) {
-  return tutorState.audioClips.find((clip) => clip.sessionId === sessionId && clip.id === clipId) || null;
+  return tutorState.audioClips.find((clip) => clip.sessionId === sessionId && clip.id === clipId)
+    || tutorState.v2Sessions.find((session) => session.id === sessionId)?.audioClips?.find((clip) => clip.id === clipId)
+    || null;
 }
 
 function normalizeTutorV2SessionList(payload = {}) {
@@ -6535,6 +6545,8 @@ function normalizeTutorV2SessionList(payload = {}) {
       mission: normalizeTutorV2Mission(record.mission || {}),
       outcome: record.outcome && typeof record.outcome === 'object' ? record.outcome : null,
       model: String(record.model || ''),
+      audioClips: normalizeTutorAudioClips(record.audioClips || []),
+      turns: normalizeTutorSessions([{ id, turns: record.turns || [] }])[0]?.turns || [],
       voice: String(record.voice || ''),
       turnCount: Math.max(0, Number(record.turnCount) || 0),
       startedAt: Number(record.startedAt) || 0,
@@ -6554,7 +6566,7 @@ function getTutorSessionHistory() {
       ...record,
       topic: record.mission?.title || record.mission?.topic || legacy?.topic || '',
       lessonPlan: legacy?.lessonPlan || null,
-      turns: Array.isArray(legacy?.turns) ? legacy.turns : [],
+      turns: record.turns?.length ? record.turns : (Array.isArray(legacy?.turns) ? legacy.turns : []),
       summary: legacy?.summary || null,
       turnCount: record.turnCount || legacy?.turns?.length || 0
     };
@@ -6954,9 +6966,12 @@ function getTutorStatusText(copy) {
 
 function renderTutorSpeechRateControl(copy) {
   if (tutorSpeechRateLabel) {
-    tutorSpeechRateLabel.textContent = copy.tutorSpeechRate;
+    tutorSpeechRateLabel.textContent = isTutorLiveModel(tutorState.voiceModel) ? 'Preferred speaking pace' : copy.tutorSpeechRate;
   }
   const speechRate = normalizeTutorSpeechRate(tutorState.speechRate);
+  const label = isTutorLiveModel(tutorState.voiceModel)
+    ? (speechRate < 0.75 ? 'Very slow' : speechRate < 1 ? 'Slow' : speechRate > 1.15 ? 'Brisk' : 'Natural')
+    : formatTutorSpeechRate(speechRate);
   if (tutorSpeechRateInput) {
     tutorSpeechRateInput.min = String(TUTOR_SPEECH_RATE_LIMITS.min);
     tutorSpeechRateInput.max = String(TUTOR_SPEECH_RATE_LIMITS.max);
@@ -6964,10 +6979,10 @@ function renderTutorSpeechRateControl(copy) {
     if (document.activeElement !== tutorSpeechRateInput) {
       tutorSpeechRateInput.value = String(speechRate);
     }
-    tutorSpeechRateInput.setAttribute('aria-valuetext', formatTutorSpeechRate(speechRate));
+    tutorSpeechRateInput.setAttribute('aria-valuetext', label);
   }
   if (tutorSpeechRateValue) {
-    tutorSpeechRateValue.textContent = formatTutorSpeechRate(speechRate);
+    tutorSpeechRateValue.textContent = label;
   }
 }
 
@@ -7018,6 +7033,9 @@ function renderTutorTranscriptionLanguageControl(copy) {
   const language = normalizeTutorV2TranscriptionMode(tutorState.transcriptionLanguage);
   tutorState.transcriptionLanguage = language;
   if (tutorTranscriptionLanguageSelect) {
+    const live = isTutorLiveModel(tutorState.voiceModel);
+    tutorTranscriptionLanguageSelect.disabled = live;
+    tutorTranscriptionLanguageSelect.title = live ? 'GPT-Live generates captions automatically. Manual recognition-language overrides are unavailable.' : '';
     Array.from(tutorTranscriptionLanguageSelect.options).forEach((option) => {
       option.disabled = option.value !== 'auto' && !TUTOR_TRANSCRIPTION_LANGUAGES.includes(option.value);
       if (option.value === 'auto') {
@@ -7033,7 +7051,7 @@ function renderTutorTranscriptionLanguageControl(copy) {
       }
     });
     if (document.activeElement !== tutorTranscriptionLanguageSelect) {
-      tutorTranscriptionLanguageSelect.value = language;
+      tutorTranscriptionLanguageSelect.value = live ? 'auto' : language;
     }
   }
 }
@@ -7180,6 +7198,9 @@ function renderTutor() {
   }
   if (tutorExternalSpeechConsent) {
     tutorExternalSpeechConsent.checked = tutorState.externalSpeechConsent;
+    tutorExternalSpeechConsent.disabled = isTutorLiveModel(tutorState.voiceModel);
+    tutorExternalSpeechConsent.title = isTutorLiveModel(tutorState.voiceModel)
+      ? 'Specialist scoring is unavailable for GPT-Live clips with approximate audio alignment.' : '';
   }
   renderTutorLesson(copy);
   renderTutorTranscript(copy);
@@ -9182,6 +9203,13 @@ function setupTutorRemoteAnalyser(stream) {
       analyser.getByteFrequencyData(data);
       const average = data.reduce((sum, value) => sum + value, 0) / Math.max(1, data.length);
       tutorState.remoteAudioLevel = Math.min(1, average / 120);
+      if (isTutorLiveModel(tutorState.voiceModel) && tutorState.liveStarted && !tutorState.liveClosing) {
+        if (tutorState.remoteAudioLevel > 0.03) tutorState.liveLastAudioAt = Date.now();
+        const speaking = Date.now() - tutorState.liveLastAudioAt < 500;
+        tutorState.tutorAudioOutputActive = speaking;
+        const status = speaking ? 'speaking' : tutorState.directorStatus === 'assessing' ? 'thinking' : 'listening';
+        if (tutorState.status !== status) setTutorRuntimeStatus(status);
+      }
       if (tutorAvatar) {
         tutorAvatar.style.setProperty('--tutor-level', String(tutorState.remoteAudioLevel));
       }
@@ -9315,6 +9343,7 @@ function markTutorResponseStarted(responseId = '') {
 }
 
 function requestTutorResponse(reason = 'manual') {
+  if (isTutorLiveModel(tutorState.voiceModel)) return false;
   if (tutorState.status === 'speaking' || tutorState.dataChannel?.readyState !== 'open') {
     return false;
   }
@@ -9346,6 +9375,7 @@ function requestTutorResponse(reason = 'manual') {
 }
 
 function scheduleTutorResponseWatchdog(reason = 'user_turn_completed') {
+  if (isTutorLiveModel(tutorState.voiceModel)) return;
   clearTutorResponseWatchdog();
   tutorState.waitingForTutorResponse = true;
   tutorState.responseWatchdogTimer = window.setTimeout(() => {
@@ -9366,6 +9396,9 @@ function applyTutorSpeechRate({ deferWhileSpeaking = true } = {}) {
   const speechRate = normalizeTutorSpeechRate(tutorState.speechRate);
   tutorState.speechRate = speechRate;
   saveTutorSpeechRateToStorage();
+  if (isTutorLiveModel(tutorState.voiceModel)) {
+    return sendTutorLiveContext('session.instructions.append', tutorLivePaceInstruction(speechRate));
+  }
   if (deferWhileSpeaking && tutorState.status === 'speaking') {
     tutorState.pendingSpeechRate = speechRate;
     return false;
@@ -9406,6 +9439,7 @@ function getTutorTurnDetectionSettings() {
 }
 
 function applyTutorTranscriptionLanguage() {
+  if (isTutorLiveModel(tutorState.voiceModel)) return false;
   const language = normalizeTutorV2TranscriptionMode(tutorState.transcriptionLanguage);
   tutorState.transcriptionLanguage = language;
   saveTutorTranscriptionLanguageToStorage();
@@ -9517,6 +9551,7 @@ function getRecentTutorTurns() {
 }
 
 async function requestFeedbackForTutorTurn(turn) {
+  if (isTutorLiveModel(tutorState.voiceModel)) return;
   const normalizedTurn = normalizeTutorSessions([{
     id: 'session',
     turns: [turn]
@@ -9581,8 +9616,46 @@ async function requestFeedbackForTutorTurn(turn) {
   }
 }
 
+function sendTutorLiveContext(type, content) {
+  if (!tutorState.liveStarted || tutorState.liveClosing) return false;
+  return tutorLiveAppends(type, content, null, generateTutorId('live')).every(sendTutorRealtimeEvent);
+}
+
+function handleTutorLiveEvent(event) {
+  const row = tutorState.liveTranscript?.append(event);
+  if (row) {
+    const turn = upsertTutorTurn({ id: row.id, itemId: row.id, role: row.role,
+      transcript: row.transcript, status: 'streaming' });
+    if (turn) {
+      turn.startedAt = (tutorState.currentSession?.startedAt || Date.now()) + row.startMs;
+      turn.endedAt = null;
+    }
+  }
+  if (event.type === 'session.delegation.created') {
+    tutorState.directorStatus = 'assessing';
+    if (!tutorState.tutorAudioOutputActive) setTutorRuntimeStatus('thinking');
+  }
+  if (event.type === 'session.usage.updated' || event.type === 'session.closed') {
+    if (tutorState.currentSession) tutorState.currentSession.liveUsage = {
+      ...event.usage, finalized: event.type === 'session.closed', reason: event.reason || ''
+    };
+  }
+  if (event.type === 'session.closed') {
+    tutorState.liveStarted = false;
+    if (!tutorState.liveClosing) setTutorRuntimeStatus('stopped');
+  }
+  if (event.type === 'error') {
+    tutorState.error = event.error?.message || 'The voice session reported an error.';
+    renderTutor();
+  }
+}
+
 function handleTutorRealtimeEvent(event) {
   if (!event || typeof event !== 'object') {
+    return;
+  }
+  if (isTutorLiveModel(tutorState.voiceModel)) {
+    handleTutorLiveEvent(event);
     return;
   }
   const type = event.type || '';
@@ -9879,6 +9952,7 @@ function handleTutorRealtimeEvent(event) {
 }
 
 function cleanupTutorConnection() {
+  tutorState.liveStarted = false;
   clearTutorResponseWatchdog();
   stopTutorV2Polling();
   stopAllTutorClipRecorders();
@@ -9932,8 +10006,13 @@ async function connectTutorRealtimeSession(session) {
   if (!tutorState.v2SessionId) {
     throw new Error(i18n[state.language].tutorTokenError);
   }
+  tutorState.voiceModel = session.model || tutorState.voiceModel;
+  tutorState.liveTranscript = createTutorLiveTranscript();
+  tutorState.liveClosing = false;
+  const live = isTutorLiveModel(tutorState.voiceModel);
   const transport = await connectTutorV2WebRtc({
     sessionId: tutorState.v2SessionId,
+    model: tutorState.voiceModel,
     onEvent: handleTutorRealtimeEvent,
     onRemoteStream: (stream) => {
       tutorState.remoteStream = stream;
@@ -9945,6 +10024,7 @@ async function connectTutorRealtimeSession(session) {
     },
     onDataChannelOpen: (dataChannel) => {
       tutorState.dataChannel = dataChannel;
+      if (live) return;
       setTutorRuntimeStatus('listening');
       applyTutorSpeechRate({ deferWhileSpeaking: false });
       applyTutorTranscriptionLanguage();
@@ -9965,6 +10045,12 @@ async function connectTutorRealtimeSession(session) {
       });
       if (didRequestInitialResponse) scheduleTutorResponseWatchdog('initial_response');
       setTutorRuntimeStatus('thinking');
+      scheduleTutorV2Poll(100);
+    },
+    onSessionStarted: (dataChannel) => {
+      tutorState.dataChannel = dataChannel;
+      tutorState.liveStarted = true;
+      setTutorRuntimeStatus('listening');
       scheduleTutorV2Poll(100);
     },
     onDataChannelClose: () => {
@@ -10303,6 +10389,13 @@ function mergeTutorProfileUpdate(profileUpdate) {
 async function stopTutorSession() {
   const session = tutorState.currentSession;
   const v2SessionId = tutorState.v2SessionId;
+  if (tutorState.liveClosing) return;
+  if (isTutorLiveModel(tutorState.voiceModel) && session) {
+    tutorState.liveClosing = true;
+    const result = await waitForTutorLiveClose(tutorState.dataChannel);
+    session.liveUsage = { ...session.liveUsage, ...result };
+    if (!result.finalized) tutorState.syncError = 'The voice connection closed without confirmed final usage.';
+  }
   const recorderStops = Array.from(tutorState.activeRecorders.values())
     .map((active) => active.stopped)
     .filter(Boolean);
@@ -10327,6 +10420,10 @@ async function stopTutorSession() {
     try {
       const result = await endTutorV2Session(v2SessionId);
       const completed = result?.session || {};
+      for (const clip of normalizeTutorAudioClips(completed.audioClips || [])) {
+        tutorState.audioClips.unshift(clip);
+        attachTutorAudioClipToTurn(clip);
+      }
       tutorState.outcome = completed.outcome || null;
       if (result?.profile) {
         tutorState.speakingProfile = normalizeSpeakingProfile(result.profile, tutorState.profile);
@@ -10354,6 +10451,7 @@ async function stopTutorSession() {
     ];
   }
   tutorState.currentSession = null;
+  tutorState.liveClosing = false;
   tutorState.v2SessionId = '';
   tutorState.directorStatus = 'idle';
   setTutorRuntimeStatus('stopped');
@@ -10422,6 +10520,9 @@ function toggleTutorMute() {
     return;
   }
   tutorState.muted = !tutorState.muted;
+  if (isTutorLiveModel(tutorState.voiceModel) && tutorState.liveStarted) {
+    sendTutorRealtimeEvent({ type: tutorState.muted ? 'session.input_audio.mute' : 'session.input_audio.unmute' });
+  }
   tutorState.micStream.getAudioTracks().forEach((track) => {
     track.enabled = !tutorState.muted;
   });
@@ -10439,6 +10540,9 @@ function requestTutorGuidance(kind) {
       ? `Model this corrected Japanese phrase once: ${correction}. Then ask the learner to say the same idea again. Do not change the topic.`
       : 'Ask the learner to try the current speaking target one more time. Keep it to one short Japanese sentence.'
   };
+  if (isTutorLiveModel(tutorState.voiceModel)) {
+    return sendTutorLiveContext('session.instructions.append', instructions[kind] || instructions.hint);
+  }
   const didSend = sendTutorRealtimeEvent({
     type: 'response.create',
     response: {
@@ -10960,9 +11064,10 @@ function bindEvents() {
     tutorState.speechRate = normalizeTutorSpeechRate(tutorSpeechRateInput.value);
     saveTutorSpeechRateToStorage();
     renderTutorSpeechRateControl(i18n[state.language]);
-    applyTutorSpeechRate();
+    if (!isTutorLiveModel(tutorState.voiceModel)) applyTutorSpeechRate();
   });
   tutorSpeechRateInput?.addEventListener('change', () => {
+    if (isTutorLiveModel(tutorState.voiceModel)) applyTutorSpeechRate();
     void persistTutorV2Preferences();
   });
 

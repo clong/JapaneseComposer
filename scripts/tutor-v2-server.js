@@ -1,7 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import WebSocket from 'ws';
+import { isTutorLiveModel, TUTOR_LIVE_MODEL, tutorLiveActivityContext } from '../src/tutor-live.js';
+import { createTutorLiveCall, createTutorLiveDirector, createTutorLiveAudioBuffer, createTutorLiveGreeting, tutorLiveSidebandUrl } from './tutor-live-server.js';
 import {
   createTutorRealtimeTraceState,
   reduceTutorRealtimeTrace,
@@ -50,7 +53,7 @@ export const TUTOR_V2_MIGRATION_ID = 'tutor_v2_001';
 export const TUTOR_V2_EVIDENCE_MIGRATION_ID = 'tutor_v2_002';
 export const TUTOR_V2_QUALITY_MIGRATION_ID = 'tutor_v2_003';
 export const TUTOR_V2_DEFAULT_REASONING_MODEL = 'gpt-5.6';
-export const TUTOR_V2_DEFAULT_REALTIME_MODEL = 'gpt-realtime-2';
+export const TUTOR_V2_DEFAULT_REALTIME_MODEL = TUTOR_LIVE_MODEL;
 export const TUTOR_V2_AUDIO_RETENTION_DAYS = 30;
 
 const MAX_JSON_BODY_BYTES = 2 * 1024 * 1024;
@@ -150,7 +153,7 @@ export function createTutorV2TranscriptionConfig(transcriptionMode = 'auto') {
 }
 
 export function createTutorV2RealtimeSessionConfig({
-  model = TUTOR_V2_DEFAULT_REALTIME_MODEL,
+  model = 'gpt-realtime-2',
   profile = {},
   blueprint = {},
   activityState = {},
@@ -521,6 +524,7 @@ export function createTutorV2Service({
   writeJson,
   getActor,
   fetchImpl = fetch,
+  WebSocketImpl = WebSocket,
   azureSpeechKey = '',
   azureSpeechRegion = '',
   audioMaxBytes = 60 * 1024 * 1024,
@@ -544,6 +548,17 @@ export function createTutorV2Service({
         id TEXT PRIMARY KEY,
         applied_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS user_tutor_live_fragments (
+        user_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        delta TEXT NOT NULL,
+        start_ms REAL NOT NULL,
+        end_ms REAL NOT NULL,
+        PRIMARY KEY(user_id, session_id, event_id)
+      );
+      INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES ('tutor_v2_004_live', ${now});
       INSERT INTO users (id, email, name, picture, created_at, updated_at)
       VALUES ('local', '', 'Local learner', '', ${now}, ${now})
       ON CONFLICT(id) DO NOTHING;
@@ -985,6 +1000,7 @@ export function createTutorV2Service({
       turns: controller.recentTurns.slice(-MAX_RECENT_TURNS),
       outcome: controller.outcome || null,
       model: controller.model,
+      audioClips: controller.liveAudioClips || [],
       voice: controller.voice,
       startedAt: controller.startedAt,
       endedAt: controller.endedAt || null,
@@ -999,6 +1015,7 @@ export function createTutorV2Service({
   }
 
   async function persistController(controller) {
+    if (controller.status === 'deleted') return;
     const sql = `
       INSERT INTO user_tutor_sessions_v2 (
         user_id, session_id, status, mode, mission, blueprint, activity_state,
@@ -1074,7 +1091,7 @@ export function createTutorV2Service({
       SELECT assessment
       FROM user_tutor_turn_assessments
       WHERE user_id = ${sqlString(userId)} AND session_id = ${sqlString(sessionId)}
-      ORDER BY session.updated_at DESC
+      ORDER BY created_at DESC
       LIMIT 1;
     `;
     const [rows, turnRows, qualityRows, assessmentRows] = await Promise.all([
@@ -1126,6 +1143,7 @@ export function createTutorV2Service({
       mastery: null,
       reviewItems: null,
       metrics: {
+        ...storedMetrics,
         userTurns: Number(storedMetrics.userTurns) || 0,
         ...tutorTraceMetrics(trace)
       },
@@ -1164,6 +1182,7 @@ export function createTutorV2Service({
     if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
     const response = await fetchImpl('https://api.openai.com/v1/responses', {
       method: 'POST',
+      signal: AbortSignal.timeout(20000),
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`
@@ -1327,7 +1346,7 @@ export function createTutorV2Service({
     }
   }
 
-  async function assessTurn(controller, { turnId, transcript, acoustic = {}, modelObservation = null }) {
+  async function assessTurn(controller, { turnId, transcript, acoustic = {}, modelObservation = null, isCurrent = () => true }) {
     if (!turnId || controller.assessmentTurnIds.has(turnId)) {
       return controller.latestAssessment || null;
     }
@@ -1365,6 +1384,14 @@ export function createTutorV2Service({
       });
     } catch (error) {
       logger.warn?.('[tutor-v2] assessment fallback', error?.message || error);
+      if (isTutorLiveModel(controller.model)) {
+        controller.assessmentTurnIds.delete(turnId);
+        throw error;
+      }
+    }
+    if (!isCurrent()) {
+      controller.assessmentTurnIds.delete(turnId);
+      return null;
     }
     let assessment = raw
       ? normalizeTurnAssessment({
@@ -1438,6 +1465,7 @@ export function createTutorV2Service({
       })
     ]);
 
+    if (isTutorLiveModel(controller.model)) return assessment;
     const instructions = buildTutorV2RealtimeInstructions({
       profile: controller.profile,
       blueprint: controller.blueprint,
@@ -1491,6 +1519,12 @@ export function createTutorV2Service({
     try {
       event = JSON.parse(String(rawMessage));
     } catch (error) {
+      return;
+    }
+    if (isTutorLiveModel(controller.model)) {
+      if (!event.type?.includes('_audio.')) appendEvent(controller, event);
+      controller.liveGreeting?.handle(event);
+      controller.liveDirector?.handle(event);
       return;
     }
     appendEvent(controller, event);
@@ -1701,8 +1735,13 @@ export function createTutorV2Service({
     let didOpen = false;
     let retryScheduled = false;
     let failureHandled = false;
-    const ws = new WebSocket(`wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`, {
-      headers: { Authorization: `Bearer ${apiKey}` }
+    const ws = new WebSocketImpl(isTutorLiveModel(controller.model)
+      ? tutorLiveSidebandUrl(callId)
+      : `wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'OpenAI-Safety-Identifier': createHash('sha256').update(controller.userId).digest('hex')
+      }
     });
     controller.ws = ws;
 
@@ -1746,6 +1785,12 @@ export function createTutorV2Service({
       controller.trace = reduceTutorRealtimeTrace(controller.trace, { type: 'sideband.open' });
       controller.metrics = { ...controller.metrics, ...tutorTraceMetrics(controller.trace) };
       appendEvent(controller, { type: 'sideband.open' });
+      if (isTutorLiveModel(controller.model)) {
+        controller.liveGreeting.start();
+        controller.updatedAt = Date.now();
+        void persistController(controller);
+        return;
+      }
       const instructions = buildTutorV2RealtimeInstructions({
         profile: controller.profile,
         blueprint: controller.blueprint,
@@ -1805,12 +1850,57 @@ export function createTutorV2Service({
         appendEvent(controller, { type: 'sideband.close' });
       }
       if (controller.ws === ws) controller.ws = null;
+      if (didOpen && isTutorLiveModel(controller.model) && !controller.liveClosing && !controller.liveFinalized
+        && controller.status === 'active' && (controller.liveReconnects || 0) < 4) {
+        controller.liveReconnects = (controller.liveReconnects || 0) + 1;
+        retryScheduled = true;
+        scheduleSideband(controller, callId, 0, controller.liveReconnects * 1000);
+      }
       if (!retryScheduled) void persistController(controller);
     });
   }
 
   async function connectRealtime(controller, offerSdp) {
     const safetyIdentifier = createHash('sha256').update(controller.userId).digest('hex');
+    if (isTutorLiveModel(controller.model)) {
+      if (controller.callId) throw Object.assign(new Error('This session already has a voice connection. Start a new session to reconnect.'), { status: 409 });
+      const result = await createTutorLiveCall({ apiKey, safetyIdentifier, offerSdp, fetchImpl,
+        options: { ...controller, preferences: controller.preferences } });
+      controller.callId = result.callId;
+      controller.liveGreeting = createTutorLiveGreeting((event) => sendSideband(controller, event));
+      controller.liveAudio = createTutorLiveAudioBuffer();
+      controller.liveAudioClips = [];
+      controller.liveDirector = createTutorLiveDirector({
+        send: (event) => sendSideband(controller, event),
+        assess: (turn) => assessTurn(controller, turn),
+        context: () => tutorLiveActivityContext(controller),
+        persistFragment: (event) => runSqlite(workspaceDbPath, `
+          INSERT OR IGNORE INTO user_tutor_live_fragments
+          (user_id, session_id, event_id, role, delta, start_ms, end_ms) VALUES (
+            ${sqlString(controller.userId)}, ${sqlString(controller.id)},
+            ${sqlString(event.event_id || createId('fragment'))},
+            ${sqlString(event.type === 'session.input_transcript.delta' ? 'user' : 'assistant')},
+            ${sqlString(event.delta)}, ${event.start_ms}, ${event.end_ms});`),
+        persistRow: async (row) => {
+          const turn = { turnId: row.id, itemId: row.id, role: row.role, transcript: row.transcript,
+            status: 'streaming', startedAt: controller.startedAt + row.startMs, endedAt: controller.startedAt + row.endMs };
+          const index = controller.recentTurns.findIndex((entry) => entry.turnId === row.id);
+          if (index === -1) controller.recentTurns.push(turn);
+          else controller.recentTurns[index] = turn;
+          controller.recentTurns = controller.recentTurns.slice(-MAX_RECENT_TURNS);
+          await persistTranscriptTurn(controller, turn);
+        },
+        status: (value) => { controller.directorStatus = value; controller.updatedAt = Date.now(); },
+        usage: (value, finalized, reason) => {
+          controller.liveFinalized = finalized;
+          controller.metrics.liveUsage = { seconds: Number(value?.seconds) || 0, finalized, reason: reason || '' };
+          void persistController(controller);
+        },
+        onAudio: (event) => controller.liveAudio.append(event),
+        logError: (error) => logger.warn?.('[tutor-live]', error?.message || error)
+      });
+      return result;
+    }
     const formData = new FormData();
     formData.set('sdp', offerSdp);
     formData.set('session', JSON.stringify(createTutorV2RealtimeSessionConfig({
@@ -1976,6 +2066,27 @@ export function createTutorV2Service({
 
   async function completeSession(controller) {
     if (controller.status === 'completed') return controller;
+    if (controller.liveDirector && !controller.liveClosing) {
+      controller.liveClosing = true;
+      const finalized = await controller.liveDirector.close();
+      controller.metrics.liveUsage = { ...controller.metrics.liveUsage, finalized };
+      for (const row of controller.liveDirector.transcript.rows) {
+        const bytes = controller.liveAudio.wav(row.role, Math.max(0, row.startMs - 200), row.endMs + 300);
+        if (!bytes) continue;
+        const requestUrl = new URL('http://localhost/audio');
+        requestUrl.search = new URLSearchParams({ sessionId: controller.id, speaker: row.role,
+          durationMs: String((bytes.length - 44) / 48), referenceText: row.transcript,
+          source: 'live_sideband', approximateAlignment: '1' }).toString();
+        const request = Readable.from([bytes]);
+        request.headers = { 'content-type': 'audio/wav' };
+        try {
+          controller.liveAudioClips.push(await storeAudio({ id: controller.userId }, requestUrl, request, row.id));
+        } catch (error) {
+          logger.warn?.('[tutor-live] recording save failed', error?.message || error);
+        }
+      }
+      controller.liveAudio.clear();
+    }
     if (!controller.profile) {
       const state = await readUserLearningState(controller.userId);
       controller.profile = state.profile;
@@ -2318,7 +2429,7 @@ export function createTutorV2Service({
         ) AS turn_count
       FROM user_tutor_sessions_v2 AS session
       WHERE session.user_id = ${sqlString(userId)}
-      ORDER BY updated_at DESC
+      ORDER BY session.updated_at DESC
       LIMIT 25;
     `;
     const legacySql = `
@@ -2383,7 +2494,23 @@ export function createTutorV2Service({
         updatedAt
       });
     });
-    return sessions.sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 25);
+    const result = sessions.sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 25);
+    await Promise.all(result.filter((session) => isTutorLiveModel(session.model)).map(async (session) => {
+      session.audioClips = await readSessionAudio(userId, session.id);
+      session.turns = (await readSessionTurns(userId, session.id)).map((turn) => ({ ...turn,
+        audioClipIds: session.audioClips.filter((clip) => clip.turnId === turn.id).map((clip) => clip.id) }));
+    }));
+    return result;
+  }
+
+  async function readSessionAudio(userId, sessionId) {
+    const rows = parseSqliteJson(await runSqlite(workspaceDbPath, `
+      SELECT clip_id, turn_id, speaker, mime_type, byte_length, duration_ms, created_at
+      FROM user_tutor_audio_v2 WHERE user_id = ${sqlString(userId)} AND session_id = ${sqlString(sessionId)}
+      ORDER BY created_at ASC;`, { json: true }));
+    return rows.map((row) => ({ id: row.clip_id, sessionId, turnId: row.turn_id, speaker: row.speaker,
+      mimeType: row.mime_type, byteLength: row.byte_length, durationMs: row.duration_ms, createdAt: row.created_at,
+      src: `${TUTOR_V2_API_PREFIX}/audio/${encodeURIComponent(row.clip_id)}` }));
   }
 
   async function readSessionTurns(userId, sessionId) {
@@ -2461,6 +2588,15 @@ export function createTutorV2Service({
 
   async function deleteSession(actor, sessionId, { rebuildLearningState = true } = {}) {
     const safeSessionId = sanitizeId(sessionId);
+    const key = `${actor.id}:${safeSessionId}`;
+    const controller = controllers.get(key);
+    if (controller) controller.status = 'deleted';
+    if (controller?.liveDirector) {
+      clearSidebandRetry(controller);
+      await controller.liveDirector.close();
+      controller.liveDirector.cancel();
+      controller.liveAudio?.clear();
+    }
     const audioRows = parseSqliteJson(await runSqlite(workspaceDbPath, `
       SELECT storage_path
       FROM user_tutor_audio_v2
@@ -2475,6 +2611,8 @@ export function createTutorV2Service({
       DELETE FROM user_tutor_audio_analysis_v2
       WHERE user_id = ${sqlString(actor.id)} AND session_id = ${sqlString(safeSessionId)};
       DELETE FROM user_tutor_turn_assessments
+      WHERE user_id = ${sqlString(actor.id)} AND session_id = ${sqlString(safeSessionId)};
+      DELETE FROM user_tutor_live_fragments
       WHERE user_id = ${sqlString(actor.id)} AND session_id = ${sqlString(safeSessionId)};
       DELETE FROM user_tutor_turns_v2
       WHERE user_id = ${sqlString(actor.id)} AND session_id = ${sqlString(safeSessionId)};
@@ -2492,8 +2630,6 @@ export function createTutorV2Service({
       WHERE user_id = ${sqlString(actor.id)} AND session_id = ${sqlString(safeSessionId)};
       COMMIT;
     `);
-    const key = `${actor.id}:${safeSessionId}`;
-    const controller = controllers.get(key);
     if (controller) clearSidebandRetry(controller);
     if (controller?.ws) {
       try { controller.ws.close(); } catch (error) { /* Ignore deletion shutdown errors. */ }
@@ -2509,6 +2645,13 @@ export function createTutorV2Service({
   }
 
   async function deleteAllTutorData(actor) {
+    await Promise.all(Array.from(controllers.values()).filter((controller) => controller.userId === actor.id)
+      .map(async (controller) => {
+        controller.status = 'deleted';
+        clearSidebandRetry(controller);
+        await controller.liveDirector?.close();
+        controller.liveDirector?.cancel();
+      }));
     const audioRows = parseSqliteJson(await runSqlite(workspaceDbPath, `
       SELECT storage_path
       FROM user_tutor_audio_v2
@@ -2517,6 +2660,8 @@ export function createTutorV2Service({
     await Promise.all(audioRows.map((row) => fs.unlink(row.storage_path).catch(() => {})));
     controllers.forEach((controller, key) => {
       if (controller.userId !== actor.id) return;
+      controller.liveDirector?.cancel();
+      controller.liveAudio?.clear();
       clearSidebandRetry(controller);
       if (controller.ws) {
         try { controller.ws.close(); } catch (error) { /* Ignore privacy cleanup shutdown errors. */ }
@@ -2529,6 +2674,7 @@ export function createTutorV2Service({
       DELETE FROM user_tutor_audio_v2 WHERE user_id = ${sqlString(actor.id)};
       DELETE FROM user_tutor_turn_assessments WHERE user_id = ${sqlString(actor.id)};
       DELETE FROM user_tutor_turns_v2 WHERE user_id = ${sqlString(actor.id)};
+      DELETE FROM user_tutor_live_fragments WHERE user_id = ${sqlString(actor.id)};
       DELETE FROM user_tutor_mastery_evidence WHERE user_id = ${sqlString(actor.id)};
       DELETE FROM user_tutor_quality_metrics_v2 WHERE user_id = ${sqlString(actor.id)};
       DELETE FROM user_tutor_correction_labels_v2 WHERE user_id = ${sqlString(actor.id)};
@@ -2607,7 +2753,8 @@ export function createTutorV2Service({
       void pruneExpiredAudio();
     }
     let pronunciation = null;
-    if (speaker === 'user' && controller.preferences.externalSpeechConsent) {
+    if (speaker === 'user' && controller.preferences.externalSpeechConsent
+      && requestUrl.searchParams.get('approximateAlignment') !== '1') {
       pronunciation = await scoreWithAzure({
         bytes,
         mimeType,
@@ -2619,7 +2766,9 @@ export function createTutorV2Service({
       }));
     }
     const analysis = {
-      source: pronunciation?.available ? 'browser_audio+azure' : 'browser_audio',
+      source: requestUrl.searchParams.get('source') === 'live_sideband'
+        ? 'live_sideband_approximate_alignment'
+        : (pronunciation?.available ? 'browser_audio+azure' : 'browser_audio'),
       durationMs,
       speechRate,
       pauseRatio,
@@ -2893,7 +3042,8 @@ export function createTutorV2Service({
           profile: state.profile,
           preferences: state.preferences,
           dueReviews: getDueReviewItems(state.reviewItems),
-          diagnosticRecommended: !state.profile.completedDiagnosticAt
+          diagnosticRecommended: !state.profile.completedDiagnosticAt,
+          voiceModel: realtimeModel
         }, { 'Cache-Control': 'no-store' });
         return true;
       }
@@ -3102,6 +3252,11 @@ export function createTutorV2Service({
         const body = await readRequestJson(req);
         const state = await readUserLearningState(actor.id);
         const preferences = normalizePreferences({ ...state.preferences, ...body, updatedAt: Date.now() });
+        for (const controller of controllers.values()) {
+          if (controller.userId === actor.id && controller.status === 'active') {
+            controller.preferences = preferences;
+          }
+        }
         const profile = normalizeSpeakingProfile({
           ...state.profile,
           contentCeiling: preferences.contentCeiling,
@@ -3128,6 +3283,13 @@ export function createTutorV2Service({
   }
 
   async function close() {
+    await Promise.allSettled(Array.from(controllers.values())
+      .filter((controller) => controller.liveDirector)
+      .map(async (controller) => {
+        controller.liveClosing = true;
+        await controller.liveDirector.close();
+        controller.liveAudio?.clear();
+      }));
     controllers.forEach((controller) => {
       clearSidebandRetry(controller);
       if (controller.ws) {

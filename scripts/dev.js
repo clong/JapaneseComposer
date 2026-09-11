@@ -44,6 +44,7 @@ import {
 } from '../src/tutor-utils.js';
 import {
   createTutorV2Service,
+  TUTOR_V2_DEFAULT_REALTIME_MODEL,
   TUTOR_V2_DEFAULT_REASONING_MODEL
 } from './tutor-v2-server.js';
 
@@ -331,7 +332,7 @@ if (workspaceDbReady) {
   try {
     tutorV2Service = createTutorV2Service({
       apiKey: process.env.OPENAI_API_KEY || '',
-      realtimeModel: process.env.OPENAI_REALTIME_MODEL || DEFAULT_OPENAI_REALTIME_MODEL,
+      realtimeModel: process.env.OPENAI_TUTOR_VOICE_MODEL || process.env.OPENAI_REALTIME_MODEL || TUTOR_V2_DEFAULT_REALTIME_MODEL,
       defaultVoice: process.env.OPENAI_REALTIME_VOICE || DEFAULT_OPENAI_REALTIME_VOICE,
       reasoningModel: process.env.OPENAI_TUTOR_REASONING_MODEL
         || process.env.OPENAI_TUTOR_REVIEW_MODEL
