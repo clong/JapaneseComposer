@@ -78,4 +78,3 @@ export function tutorTraceMetrics(trace) {
     sidebandReconnects: state.sidebandReconnects
   };
 }
-

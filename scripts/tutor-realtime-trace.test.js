@@ -42,4 +42,3 @@ test('trace measures learner response latency and sideband reconnection', () => 
   assert.equal(metrics.pendingLearnerResponseLatencyMs, 750);
   assert.equal(metrics.sidebandReconnects, 1);
 });
-
