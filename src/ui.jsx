@@ -798,6 +798,15 @@ export function AppShell() {
 
                   <div className="tutor-controls">
                     <ActionButton
+                      id="tutor-handoff"
+                      label="Tutor's turn"
+                      icon={PaperPlaneIcon}
+                      variant="solid"
+                      className="primary tutor-control tutor-handoff"
+                      title="Finished speaking? Ask the tutor to respond now."
+                      disabled
+                    />
+                    <ActionButton
                       id="tutor-stop"
                       label="Stop"
                       icon={Cross2Icon}

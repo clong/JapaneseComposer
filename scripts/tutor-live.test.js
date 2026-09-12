@@ -7,7 +7,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildDiagnosticBlueprint, createInitialActivityState } from '../src/tutor-v2.js';
-import { createTutorLiveSessionConfig, createTutorLiveTranscript, tutorLiveAppends, waitForTutorLiveClose } from '../src/tutor-live.js';
+import { createTutorLiveHandoff, createTutorLiveSessionConfig, createTutorLiveTranscript, tutorLiveAppends, waitForTutorLiveClose } from '../src/tutor-live.js';
 import { createTutorLiveCall, createTutorLiveDirector, createTutorLiveAudioBuffer, createTutorLiveGreeting, tutorLiveSidebandUrl } from './tutor-live-server.js';
 import { createTutorV2Service, isTutorSameOriginRequest } from './tutor-v2-server.js';
 import { connectTutorV2WebRtc } from '../src/tutor-v2-transport.js';
@@ -133,6 +133,59 @@ function directorHarness(assess = async () => ({ correction: { required: false }
   return { director, sent, rows, fragments, usage };
 }
 
+test('Live handover redirects an open session, deduplicates clicks and waits for its own acknowledgment', () => {
+  let ready = false;
+  const sent = [];
+  const handoff = createTutorLiveHandoff({ canSend: () => ready, send: (event) => { sent.push(event); return true; } });
+  try {
+    assert.equal(handoff.request(), false);
+    assert.equal(sent.length, 0);
+    ready = true;
+    assert.equal(handoff.request(), true);
+    assert.equal(handoff.request(), false);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].type, 'session.instructions.append');
+    assert.equal(sent[0].delegation_id, null);
+    assert.match(sent[0].content, /has finished speaking/);
+    assert.match(sent[0].content, /If assessment is pending/);
+    assert.equal(handoff.pending, true);
+    handoff.handle({ type: 'session.instructions.appended', client_event_id: 'unrelated' });
+    assert.equal(handoff.pending, true);
+    handoff.handle({ type: 'session.instructions.appended', client_event_id: sent[0].event_id });
+    assert.equal(handoff.pending, false);
+    assert.equal(handoff.request(), true);
+    assert.notEqual(sent[0].event_id, sent[1].event_id);
+    handoff.handle({ type: 'session.closed' });
+    assert.equal(handoff.pending, false);
+  } finally { handoff.reset(); }
+});
+
+test('Live handover releases the button on send failure, rejection, timeout and cleanup', async () => {
+  let errors = 0;
+  let sendResult = false;
+  let lastEvent;
+  const handoff = createTutorLiveHandoff({ canSend: () => true,
+    send: (event) => { lastEvent = event; return sendResult; }, onError: () => { errors += 1; }, timeoutMs: 5 });
+  try {
+    assert.equal(handoff.request(), false);
+    assert.equal(handoff.pending, false);
+    assert.equal(errors, 1);
+    sendResult = true;
+    handoff.request();
+    handoff.handle({ type: 'error', error: { event_id: lastEvent.event_id } });
+    assert.equal(handoff.pending, false);
+    assert.equal(errors, 2);
+    handoff.request();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(handoff.pending, false);
+    assert.equal(errors, 3);
+    handoff.request();
+    handoff.reset();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(errors, 3);
+  } finally { handoff.reset(); }
+});
+
 test('Live delegates once using accumulated captions without manufacturing completed voice turns', async () => {
   const assessments = [];
   const h = directorHarness(async (turn) => { assessments.push(turn); return { correction: { required: false } }; });
@@ -164,6 +217,79 @@ test('Live discards stale assessment results when the learner changes the answer
   resolveAssessment({ correction: { required: false } });
   await h.director.drain();
   assert.equal(h.sent.some((event) => event.type === 'session.commentary.append'), false);
+  assert.ok(h.sent.some((event) => event.type === 'session.instructions.append' && /clarification/.test(event.content)));
+  assert.equal(h.sent.some((event) => /assessment is complete/.test(event.content)), false);
+});
+
+test('Live retries a discarded assessment with late captions without waiting for a second delegation', async () => {
+  const assessments = [];
+  const h = directorHarness(async (turn) => {
+    assessments.push(turn.transcript);
+    if (assessments.length === 1) {
+      h.director.handle(fragment('user', 'u2', '行きました。', 510, 990));
+      assert.equal(turn.isCurrent(), false);
+      return null; // assessTurn does not commit a result when isCurrent() is false.
+    }
+    return { correction: { required: true, corrected: '日本に行きました。' } };
+  });
+  h.director.handle(fragment('user', 'u1', '日本に', 10, 500));
+  h.director.handle(delegation('d1'));
+  await h.director.drain();
+  assert.deepEqual(assessments, ['日本に', '日本に行きました。']);
+  assert.ok(h.sent.some((event) => /assessment is complete/.test(event.content)));
+  assert.ok(h.sent.every((event) => event.delegation_id === 'd1'));
+});
+
+test('Live bounds stale retries and gives a spoken clarification instruction instead of going quiet', async () => {
+  let attempts = 0;
+  const h = directorHarness(async () => {
+    attempts += 1;
+    h.director.handle(fragment('user', `late${attempts}`, 'えっと', attempts * 1100, attempts * 1100 + 100));
+    return null;
+  });
+  h.director.handle(fragment('user', 'u1', '京都', 0, 600));
+  h.director.handle(delegation('d1'));
+  await h.director.drain();
+  assert.equal(attempts, 2);
+  assert.ok(h.sent.some((event) => event.type === 'session.instructions.append' && /clarification/.test(event.content)));
+  assert.ok(h.sent.every((event) => event.delegation_id === 'd1'));
+});
+
+test('Live does not request repetition when a retry already satisfied a queued delegation', async () => {
+  let attempts = 0;
+  const h = directorHarness(async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      h.director.handle(fragment('user', 'u2', '行きました。', 510, 990));
+      h.director.handle(delegation('d2'));
+      return null;
+    }
+    return { correction: { required: false } };
+  });
+  h.director.handle(fragment('user', 'u1', '日本に', 10, 500));
+  h.director.handle(delegation('d1'));
+  await h.director.drain();
+  await h.director.drain(); // The second delegation is enqueued during the first assessment.
+  assert.equal(attempts, 2);
+  assert.equal(h.sent.filter((event) => event.type === 'session.instructions.append').length, 1);
+  assert.ok(h.sent.some((event) => event.delegation_id === 'd2' && /already assessed/.test(event.content)));
+});
+
+test('Live still requests clarification when no transcript is available for assessment', async () => {
+  const h = directorHarness(() => assert.fail('Missing captions must not be assessed'));
+  h.director.handle(delegation('d1'));
+  await h.director.drain();
+  assert.ok(h.sent.some((event) => event.type === 'session.instructions.append' && /repeat/.test(event.content)));
+});
+
+test('Live requests a follow-up when assessment returns no result or fails', async () => {
+  for (const assess of [async () => null, async () => { throw new Error('Assessment timed out'); }]) {
+    const h = directorHarness(assess);
+    h.director.handle(fragment('user', 'u1', '京都', 0, 600));
+    h.director.handle(delegation('d1'));
+    await h.director.drain();
+    assert.ok(h.sent.some((event) => event.type === 'session.instructions.append' && /assessment is unavailable/.test(event.content)));
+  }
 });
 
 test('Live duration snapshots are not summed and close waits for finalization', async () => {
