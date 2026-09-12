@@ -4,7 +4,7 @@ import { newReadingId } from './reading-sync.js';
 
 const texts = {
   en: {
-    reference: 'Reference recording', listen: 'Listen', sentenceListen: 'Listen to this sentence', speed: 'Playback speed', whole: 'Read whole article', sentence: 'Read this sentence',
+    reference: 'Official Article Audio Transcript', listen: 'Listen', sentenceListen: 'Listen to the reference audio for this sentence', speed: 'Playback speed', whole: 'Read whole article', sentence: 'Read this sentence',
     disclosure: 'Your microphone audio is sent to OpenAI for transcription and feedback. Only transcripts and feedback are saved. Recordings are temporary and disappear when you leave this session.',
     stop: 'Stop and review', cancel: 'Cancel', recording: 'Recording', connecting: 'Connecting live transcript…', failedLive: 'Live transcription is unavailable. Your recording is still being captured for review.',
     transcript: 'Live transcript', provisional: 'Listening · transcript may change', final: 'Transcript', preparing: 'Preparing sentence playback…',
@@ -12,6 +12,11 @@ const texts = {
     start: 'Starting microphone…', level: 'Microphone activity', attempt: 'Your current recording', unavailable: 'Audio is no longer available for this saved review.',
     accuracy: 'Reading accuracy', pronunciation: 'Pronunciation', pacing: 'Pacing', clear: 'Clear', practice: 'Keep practicing', uncertain: 'Couldn’t assess',
     history: 'Saved reviews', empty: 'Read a sentence or the article to get feedback.', noReference: 'Reviewed without reference comparison.',
+    sentenceFeedback: 'Reading feedback', fromArticle: 'From article reading', earlierFeedback: 'Earlier feedback ({count})', articleReviews: 'Article reviews',
+    retryPlayback: 'Retry sentence playback', playbackReady: 'Sentence playback ready for {count} of {total} sentences.',
+    playbackMissing: 'Sentence playback is unavailable because reliable start/end times could not be matched to the recording. You can listen to the full recording or retry below.',
+    playbackPartial: 'Some sentences could not be matched reliably. You can listen to the full recording or retry below.',
+    playbackBusy: 'Finish or cancel the current recording review to listen.',
     delete: 'Delete review', replay: 'Replay your sentence', retrySentence: 'Try this sentence again', read: 'Read', skipped: 'Skipped', unfinished: 'Unfinished',
     duration: '{seconds} seconds', noTiming: 'Sentence timing is uncertain; use the full reference recording.', interruption: 'The microphone stopped. Reviewing the audio captured so far.',
     limit: 'Recording limit reached. Preparing your review.', temporary: 'Playback is available until you leave this session.', referenceError: 'Reference audio is unavailable. You can still record and get feedback.',
@@ -26,6 +31,11 @@ const texts = {
     start: 'マイクを準備中…', level: 'マイクの音量', attempt: '今回の録音', unavailable: 'このレビューの録音は保存されていません。',
     accuracy: '読みの正確さ', pronunciation: '発音', pacing: '読むペース', clear: 'よく読めています', practice: '練習しましょう', uncertain: '判定できませんでした',
     history: '保存したレビュー', empty: '文や記事を音読してフィードバックを受けましょう。', noReference: 'お手本との比較なしで確認しました。',
+    sentenceFeedback: '音読のフィードバック', fromArticle: '記事全体の音読から', earlierFeedback: '以前のフィードバック（{count}件）', articleReviews: '記事全体のレビュー',
+    retryPlayback: '文ごとの再生を再準備', playbackReady: '{total}文中{count}文の再生位置を準備しました。',
+    playbackMissing: '音声と文の開始・終了位置を正確に合わせられませんでした。お手本全体を聞くか、下のボタンから再試行できます。',
+    playbackPartial: '一部の文の再生位置が不明です。お手本全体を聞くか、下のボタンから再試行できます。',
+    playbackBusy: '録音の確認を終了するかキャンセルしてから再生してください。',
     delete: 'レビューを削除', replay: '自分の音読を再生', retrySentence: 'この文をもう一度', read: '音読済み', skipped: '読み飛ばし', unfinished: '未完了',
     duration: '{seconds}秒', noTiming: '文の再生位置が不明です。お手本全体を再生してください。', interruption: 'マイクが停止しました。録音済みの音声を確認します。',
     limit: '録音時間の上限になりました。確認を始めます。', temporary: 'この練習を離れるまで録音を再生できます。', referenceError: 'お手本の音声を利用できません。録音とフィードバックは引き続き利用できます。',
@@ -35,6 +45,17 @@ const texts = {
 const node = (tag, cls = '', text) => { const n = document.createElement(tag); n.className = cls; if (text !== undefined) n.textContent = text; return n; };
 const control = (label, action, primary = false) => { const n = node('button', `reading-button ${primary ? 'primary' : 'ghost'}`, label); n.type = 'button'; n.addEventListener('click', action); return n; };
 const format = (s, values) => s.replace(/\{(\w+)\}/g, (_, k) => values[k]);
+function feedbackPoints(text) {
+  const paragraphs = String(text || '').split(/\n+/).map((line) => line.replace(/^\s*[-*•]\s+/, '').trim()).filter(Boolean);
+  if (!globalThis.Intl?.Segmenter) return paragraphs;
+  const segmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
+  return paragraphs.flatMap((line) => [...segmenter.segment(line)].map(({ segment }) => segment.trim()).filter(Boolean));
+}
+function feedbackList(points) {
+  const list = node('ul', 'reading-feedback-points');
+  for (const point of points.filter(Boolean)) list.append(node('li', '', point));
+  return list;
+}
 
 export function createReadAloud({ request, getSession, save, recordFactory = (options) => new ReadingRecorder(options), submit = submitAudioReview }) {
   const root = node('section', 'reading-aloud');
@@ -43,7 +64,7 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
   let key = '', sessionId = '', article, language = 'en', furigana, appendJapanese;
   let generation = 0, recorder, requestController, referenceController, reference, referenceBusy = false, referenceError = '', playbackError = '';
   let status = 'idle', error = '', notice = '', live = {}, currentSentence = '', currentAttempt, recordingBytes, recordingUrl, referenceEnd, learnerEnd;
-  let limit = 300, speed = 1;
+  let limit = 300, speed = 1, referencePlay = 0;
   const c = () => texts[language] || texts.en;
   const current = () => { const s = getSession(); return s?.id === sessionId ? s : null; };
   const busy = () => ['starting', 'recording', 'reviewing'].includes(status);
@@ -54,12 +75,18 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
     if (busy()) return;
     const timing = id ? reference?.timings.find((t) => t.id === id) : null;
     if (id && !timing) return;
+    const token = ++referencePlay;
     learnerPlayer.pause(); referencePlayer.pause(); referenceEnd = timing?.end ?? null;
-    try { referencePlayer.currentTime = timing?.start || 0; referencePlayer.playbackRate = speed; await referencePlayer.play(); }
-    catch { playbackError = c().referenceError; render(); }
+    const seek = () => { if (referencePlay === token && !busy()) referencePlayer.currentTime = timing?.start || 0; };
+    // With preload=none, Safari may discard a seek before metadata arrives. Retry it before
+    // playback begins while keeping play() inside the original user gesture.
+    referencePlayer.addEventListener('loadedmetadata', seek, { once: true });
+    try { seek(); referencePlayer.playbackRate = speed; await referencePlayer.play(); }
+    catch (e) { if (referencePlay === token && e.name !== 'AbortError') { playbackError = c().referenceError; render(); } }
+    finally { referencePlayer.removeEventListener('loadedmetadata', seek); }
   }
   function playLearner(timing) {
-    referencePlayer.pause(); learnerPlayer.pause(); learnerPlayer.currentTime = timing?.start || 0;
+    referencePlay++; referencePlayer.pause(); learnerPlayer.pause(); learnerPlayer.currentTime = timing?.start || 0;
     learnerEnd = timing?.end ?? null; void learnerPlayer.play().catch(() => {});
   }
   function clearRecording() {
@@ -68,24 +95,24 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
     recordingUrl = null; recordingBytes = null;
   }
   function leave() {
-    generation++; void recorder?.close(); recorder = null;
+    generation++; referencePlay++; void recorder?.close(); recorder = null;
     requestController?.abort(); referenceController?.abort();
     referencePlayer.pause(); referencePlayer.removeAttribute('src'); referencePlayer.load();
     referencePlayer.controls = true; referenceEnd = null; clearRecording();
     key = ''; sessionId = ''; article = null; currentAttempt = null; status = 'idle'; reference = null; referenceBusy = false;
     referenceError = ''; playbackError = ''; error = ''; notice = ''; live = {}; currentSentence = ''; root.replaceChildren();
   }
-  async function prepareReference() {
+  async function prepareReference(retry = false) {
     if (!article || referenceBusy) return;
     const token = key; referenceBusy = true; referenceError = ''; render();
     referenceController?.abort(); referenceController = new AbortController();
     try {
-      const data = await request('read-aloud/reference', { method: 'POST', body: { article }, signal: referenceController.signal });
+      const data = await request('read-aloud/reference', { method: 'POST', body: { article, retry }, signal: referenceController.signal });
       if (key !== token) return;
       reference = data;
       referenceError = data.warning || '';
       if (data.audioPath && current()) { const s = current(); s.article.audioPath = data.audioPath; save(s); }
-      if (!referencePlayer.getAttribute('src')) referencePlayer.src = `/api/reading/articles/${encodeURIComponent(article.id)}/audio`;
+      if (data.audioPath && !referencePlayer.getAttribute('src')) referencePlayer.src = `/api/reading/articles/${encodeURIComponent(article.id)}/audio`;
     } catch (e) {
       if (key !== token) return;
       referenceError = e.message;
@@ -95,7 +122,7 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
   async function start(ids, scope = 'sentence') {
     if (busy() || !current()) return;
     generation++; const token = generation;
-    clearRecording(); referencePlayer.pause(); referencePlayer.controls = false;
+    clearRecording(); referencePlay++; referencePlayer.pause(); referencePlayer.controls = false;
     currentAttempt = { id: newReadingId(), scope, sentenceIds: ids, article: structuredClone(article) };
     currentSentence = ids[0]; limit = scope === 'sentence' ? 90 : 300; live = {}; error = ''; notice = ''; status = 'starting'; render();
     recorder = recordFactory({ request, limit,
@@ -146,6 +173,51 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
     if (warning) warning.textContent = limit - (live.duration || 0) <= 10 ? format(c().warning, { seconds: Math.max(0, Math.ceil(limit - live.duration)) }) : '';
     root.querySelectorAll('[data-aloud-sentence]').forEach((row) => { row.classList.toggle('is-reading', status === 'recording' && row.dataset.aloudSentence === currentSentence); });
   }
+  function sentenceListen(id) {
+    const listen = control(c().sentenceListen, () => { void playReference(id); });
+    listen.disabled = busy() || Boolean(playbackError) || !referencePlayer.getAttribute('src') || !reference?.timings.some((t) => t.id === id);
+    if (listen.disabled) {
+      listen.title = busy() ? c().playbackBusy : referenceBusy ? c().preparing : playbackError || referenceError || c().noTiming;
+      listen.setAttribute('aria-describedby', 'reading-reference-status');
+    }
+    return listen;
+  }
+  function renderRatings(result) {
+    const ratings = node('div', 'reading-aloud-ratings');
+    for (const category of ['accuracy', 'pronunciation', 'pacing']) {
+      const rating = node('div'); rating.dataset.rating = result.ratings[category];
+      rating.append(node('span', 'reading-muted', c()[category]), node('strong', '', c()[result.ratings[category]])); ratings.append(rating);
+    }
+    return ratings;
+  }
+  function removeReview(result) {
+    const remove = control(c().delete, () => {
+      const s = current(); s.reviews = s.reviews.filter((r) => r.id !== result.id); save(s);
+      if (currentAttempt?.id === result.id) clearRecording(); render();
+    });
+    remove.disabled = busy(); return remove;
+  }
+  function renderSentenceFeedback(result, sentence) {
+    const entry = result.sentences.find((s) => s.id === sentence.id);
+    const single = result.sentenceIds.length === 1;
+    const card = node('div', 'reading-aloud-feedback'); card.dataset.reviewId = result.id;
+    card.append(node('strong', '', single ? c().sentenceFeedback : c().fromArticle), node('p', 'reading-muted', `${new Date(result.createdAt).toLocaleString(language)} · ${c()[entry.status]}`));
+    if (single) card.append(renderRatings(result));
+    const points = feedbackPoints(single ? result.summary : entry.observation);
+    for (const tip of result.tips.filter((tip) => single || tip.sentenceId === sentence.id)) points.push(`${c()[tip.category]}: ${tip.text}`);
+    if (points.length) card.append(feedbackList(points));
+    const playable = currentAttempt?.id === result.id && recordingUrl;
+    if (single && !result.referenceUsed) card.append(node('p', 'reading-muted', c().noReference));
+    if (!playable) card.append(node('p', 'reading-muted', c().unavailable));
+    if (single) {
+      const transcript = node('details'); transcript.append(node('summary', '', c().final), node('p', 'reading-live-transcript', result.transcript)); card.append(transcript);
+    }
+    const actions = node('div', 'reading-actions');
+    const retry = control(c().retrySentence, () => { void start([entry.id]); }); retry.disabled = busy(); actions.append(retry);
+    if (playable && entry.start != null) { const replay = control(c().replay, () => playLearner(entry)); replay.disabled = busy(); actions.append(replay); }
+    if (single) actions.append(removeReview(result));
+    card.append(actions); return card;
+  }
   function render() {
     if (!article || !current()) return;
     root.replaceChildren();
@@ -157,10 +229,14 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
     for (const value of [.75, 1, 1.25]) { const option = node('option', '', `${value}×`); option.value = value; option.selected = value === speed; select.append(option); }
     select.addEventListener('change', () => { speed = Number(select.value); referencePlayer.playbackRate = speed; });
     speedLabel.append(select); controls.append(listen, speedLabel); referenceBox.append(controls, referencePlayer);
-    if (referenceBusy) referenceBox.append(node('p', 'reading-muted', c().preparing));
-    if (referenceError || playbackError) {
-      referenceBox.append(node('p', 'reading-muted', playbackError || referenceError));
-      const retry = control(c().retry, () => { playbackError = ''; referencePlayer.load(); void prepareReference(); }); retry.disabled = busy(); referenceBox.append(retry);
+    const matchedCount = reference?.timings.length || 0;
+    const playbackStatus = node('p', 'reading-muted'); playbackStatus.id = 'reading-reference-status'; playbackStatus.setAttribute('role', 'status');
+    playbackStatus.textContent = referenceBusy ? c().preparing : playbackError || referenceError || (matchedCount
+      ? `${format(c().playbackReady, { count: matchedCount, total: article.sentences.length })}${matchedCount < article.sentences.length ? ` ${c().playbackPartial}` : ''}`
+      : c().playbackMissing);
+    referenceBox.append(playbackStatus);
+    if (!referenceBusy && (referenceError || playbackError || matchedCount < article.sentences.length)) {
+      const retry = control(c().retryPlayback, () => { playbackError = ''; referencePlayer.load(); void prepareReference(true); }); retry.disabled = busy(); referenceBox.append(retry);
     }
     root.append(referenceBox, node('p', 'reading-notice', c().disclosure));
     const actions = node('div', 'reading-actions');
@@ -185,6 +261,7 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
     }
     if (recordingUrl) { root.append(node('h4', '', c().attempt), learnerPlayer, node('p', 'reading-muted', c().temporary)); }
     const articleNode = node('div', `reading-article ${furigana ? '' : 'reading-no-furigana'}`);
+    const reviews = current().reviews || [];
     let paragraph = -1, group;
     article.sentences.forEach((sentence, index) => {
       if (paragraph !== sentence.paragraph) { paragraph = sentence.paragraph; group = node('div', 'reading-paragraph'); articleNode.append(group); }
@@ -194,35 +271,33 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
       const tools = node('div', 'reading-actions');
       const record = control(c().sentence, () => { void start([sentence.id]); }); record.disabled = busy();
       record.setAttribute('aria-label', `${c().sentence} · ${index + 1}`);
-      const listen = control(c().sentenceListen, () => { void playReference(sentence.id); }); listen.disabled = busy() || !reference?.timings.some((t) => t.id === sentence.id);
-      if (!reference?.timings.some((t) => t.id === sentence.id)) listen.title = c().noTiming;
-      tools.append(record, listen); row.append(tools); group.append(row);
+      tools.append(record, sentenceListen(sentence.id)); row.append(tools);
+      const feedback = reviews.filter((result) => result.sentenceIds.includes(sentence.id));
+      if (feedback.length) {
+        row.append(renderSentenceFeedback(feedback[0], sentence));
+        if (feedback.length > 1) {
+          const earlier = node('details', 'reading-earlier-feedback');
+          earlier.append(node('summary', '', format(c().earlierFeedback, { count: feedback.length - 1 })));
+          for (const result of feedback.slice(1)) earlier.append(renderSentenceFeedback(result, sentence));
+          row.append(earlier);
+        }
+      }
+      group.append(row);
     });
-    root.append(articleNode, node('h4', '', c().history));
-    const reviews = current().reviews || [];
+    root.append(articleNode);
     if (!reviews.length) root.append(node('p', 'reading-muted', c().empty));
-    for (const result of reviews) {
+    const articleReviews = reviews.filter((result) => result.sentenceIds.length > 1);
+    if (articleReviews.length) root.append(node('h4', '', c().articleReviews));
+    for (const result of articleReviews) {
       const card = node('div', 'reading-aloud-review'); card.append(node('p', 'reading-muted', `${new Date(result.createdAt).toLocaleString(language)} · ${format(c().duration, { seconds: Math.round(result.duration) })}`));
-      const ratings = node('div', 'reading-aloud-ratings');
-      for (const category of ['accuracy', 'pronunciation', 'pacing']) { const rating = node('div'); rating.dataset.rating = result.ratings[category]; rating.append(node('span', 'reading-muted', c()[category]), node('strong', '', c()[result.ratings[category]])); ratings.append(rating); }
-      card.append(ratings, node('p', '', result.summary));
+      card.append(renderRatings(result), feedbackList(feedbackPoints(result.summary)));
       if (!result.referenceUsed) card.append(node('p', 'reading-muted', c().noReference));
-      for (const tip of result.tips) card.append(node('p', 'reading-aloud-tip', `${c()[tip.category]}${tip.sentenceId ? ` · ${article.sentences.findIndex((s) => s.id === tip.sentenceId) + 1}` : ''}: ${tip.text}`));
+      const generalTips = result.tips.filter((tip) => !tip.sentenceId);
+      if (generalTips.length) card.append(feedbackList(generalTips.map((tip) => `${c()[tip.category]}: ${tip.text}`)));
       const details = node('details'); details.append(node('summary', '', c().final), node('p', 'reading-live-transcript', result.transcript)); card.append(details);
       const playable = currentAttempt?.id === result.id && recordingUrl;
       if (!playable) card.append(node('p', 'reading-muted', c().unavailable));
-      for (const entry of result.sentences) {
-        const observation = node('div', 'reading-aloud-observation');
-        observation.append(node('strong', '', `${article.sentences.findIndex((s) => s.id === entry.id) + 1} · ${c()[entry.status]}`));
-        if (entry.observation) observation.append(node('p', '', entry.observation));
-        const controls = node('div', 'reading-actions');
-        const retry = control(c().retrySentence, () => { void start([entry.id]); }); retry.disabled = busy(); controls.append(retry);
-        const listen = control(c().sentenceListen, () => { void playReference(entry.id); });
-        listen.disabled = busy() || !reference?.timings.some((t) => t.id === entry.id); controls.append(listen);
-        if (playable && entry.start != null) { const replay = control(c().replay, () => playLearner(entry)); replay.disabled = busy(); controls.append(replay); }
-        observation.append(controls); card.append(observation);
-      }
-      const remove = control(c().delete, () => { const s = current(); s.reviews = s.reviews.filter((r) => r.id !== result.id); save(s); if (currentAttempt?.id === result.id) clearRecording(); render(); }); remove.disabled = busy(); card.append(remove);
+      card.append(removeReview(result));
       root.append(card);
     }
     updateLive();

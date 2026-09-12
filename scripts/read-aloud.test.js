@@ -6,7 +6,8 @@ import { articleHtml } from './reading-fixtures.js';
 import { createReadingSession, validateSession, validateArticle } from '../src/reading-model.js';
 import { alignSpeech, normalizeSpeech, LiveTranscript, liveSentenceId, validateAloudReview } from '../src/read-aloud-model.js';
 import { encodeWav, inspectWav } from '../src/read-aloud-wav.js';
-import { createReadAloudService, ALOUD_PROMPT } from './read-aloud-service.js';
+import { createReadAloudService, createSpeechNormalizer, ALOUD_PROMPT } from './read-aloud-service.js';
+import kuromoji from 'kuromoji';
 import { audioRange, readAudioBody } from './read-aloud-api.js';
 import { createReadingApi } from './reading-api.js';
 import { ReadingRecorder } from '../src/read-aloud-recorder.js';
@@ -43,6 +44,22 @@ test('alignment tolerates introductions, skips and repeats without assigning unc
   assert.equal(normalizeSpeech('トショカン、１２。'), 'としょかん12');
   assert.equal(liveSentenceId(sentences, 'まったくわかりません', 'a'), 'a');
   assert.equal(liveSentenceId(sentences, 'としょかんにはほんがあります。あしたはやすみです。', 'a'), 'b');
+});
+
+test('Japanese timestamp fragments retain compound readings, zero-duration kanji, and percentage alignment', async () => {
+  const tokenizer = await new Promise((resolve, reject) => kuromoji.builder({ dicPath: 'node_modules/kuromoji/dict' }).build((error, value) => error ? reject(error) : resolve(value)));
+  const sentences = ['将来、結婚します。', '男性の割合は80％、女性は75.1％です。'].map((text, i) => ({ id: `fragment-${i}`, text, segments: [{ text, reading: '' }] }));
+  const normalizer = createSpeechNormalizer({ sentences }, tokenizer);
+  const words = [...sentences.map((s) => s.text.replaceAll('％', '')).join('')].map((word, i) => ({ word, start: i / 10, end: (i + 1) / 10 }));
+  const zeroDuration = words.find((word) => word.word === '婚'); zeroDuration.end = zeroDuration.start;
+  const matched = alignSpeech(sentences, words, normalizer);
+  assert.deepEqual(matched.map((entry) => entry.id), sentences.map((s) => s.id));
+  assert.equal(matched[0].start, words[0].start);
+  assert.ok(matched[0].end <= matched[1].start);
+  assert.equal(normalizer.normalize('80％'), normalizer.normalize('80%'));
+  assert.deepEqual(alignSpeech(sentences, [{ word: 'まったくちがうことば', start: 0, end: 4 }], normalizer), []);
+  const kana = [{ word: 'しょうらい、けっこんします。', start: 0, end: 3 }];
+  assert.equal(alignSpeech(sentences.slice(0, 1), kana, normalizer)[0]?.id, sentences[0].id);
 });
 
 test('live events reconcile final transcripts, duplicate events and out-of-order completion', () => {
@@ -102,8 +119,23 @@ test('reference timing preparation matches snapshots, reuses stored metadata and
   } });
   const data = await service.reference({ article }); assert.equal(data.timings[0].id, ids[0]);
   await service.reference({ article }); assert.equal(transcriptions, 1);
+  await service.reference({ article, retry: true }); assert.equal(transcriptions, 2);
   const changed = structuredClone(article); changed.sentences[0].text = '変わりました。'; changed.sentences[0].segments = [{ text: '変わりました。', reading: '' }];
   await assert.rejects(service.reference({ article: changed }), (e) => e.status === 409);
+});
+
+test('empty reference alignments can be retried instead of remaining in the timing cache', async () => {
+  let transcriptions = 0, writes = 0;
+  const service = makeService(async (url) => {
+    if (url.startsWith('https://nhkeasier.com')) return mp3();
+    transcriptions++; return json({ text: 'unrelated speech', words: [{ word: 'unrelated speech', start: 0, end: 1 }] });
+  }, { isDbReady: () => true, runSqlite: async (_, sql) => {
+    if (sql.startsWith('SELECT')) return JSON.stringify([{ payload: JSON.stringify({ timings: [], version: 'old' }) }]);
+    writes++; return '';
+  } });
+  assert.deepEqual((await service.reference({ article })).timings, []);
+  assert.deepEqual((await service.reference({ article })).timings, []);
+  assert.equal(transcriptions, 2); assert.equal(writes, 0);
 });
 
 test('legacy article reference playback is available even when timing preparation lacks an API key', async () => {

@@ -20,14 +20,23 @@ function withTimeout(signal, milliseconds) {
 }
 const articleText = (a) => a.sentences.map((s) => s.text).join('\n');
 let tokenizerPromise;
+export function createSpeechNormalizer(article, tokenizer) {
+  const annotations = new Map(article.sentences.flatMap((s) => s.segments).filter((s) => s.reading).map((s) => [s.text, s.reading]));
+  const reading = (token) => normalizeSpeech(token.surface_form)
+    ? normalizeSpeech(annotations.get(token.surface_form) || (token.reading !== '*' && token.reading) || token.surface_form) : '';
+  return {
+    normalize: (text) => tokenizer.tokenize(text).map(reading).join(''),
+    tokenize: (text) => tokenizer.tokenize(text).map((token) => ({
+      start: token.word_position - 1, end: token.word_position - 1 + token.surface_form.length, reading: reading(token)
+    }))
+  };
+}
 async function speechNormalizer(article) {
   if (!tokenizerPromise) tokenizerPromise = new Promise((resolve, reject) => {
     const require = createRequire(import.meta.url);
     kuromoji.builder({ dicPath: path.join(path.dirname(require.resolve('kuromoji/package.json')), 'dict') }).build((error, tokenizer) => error ? reject(error) : resolve(tokenizer));
   });
-  const tokenizer = await tokenizerPromise;
-  const annotations = new Map(article.sentences.flatMap((s) => s.segments).filter((s) => s.reading).map((s) => [s.text, s.reading]));
-  return (text) => normalizeSpeech(tokenizer.tokenize(text).map((t) => annotations.get(t.surface_form) || (t.reading !== '*' && t.reading) || t.surface_form).join(''));
+  return createSpeechNormalizer(article, await tokenizerPromise);
 }
 const obj = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const str = { type: 'string' };
@@ -86,13 +95,16 @@ export function createReadAloudService({ source, dbPath, runSqlite, isDbReady = 
     if (typeof result.text !== 'string' || !Array.isArray(result.words)) throw new ReadingError('Audio transcription was incomplete. Please retry.', 502);
     return result;
   }
-  async function reference(snapshot, signal) {
+  async function reference(snapshot, signal, retry = false) {
     const clip = await audio(snapshot.id, signal);
     if (articleText(clip.article) !== articleText(snapshot)) throw new ReadingError('The source article changed; reference comparison is unavailable for this saved text.', 409);
-    const key = hash(`${articleText(snapshot)}:${snapshot.sentences.map((s) => s.id).join(',')}:${clip.version}:alignment-v1`);
-    if (isDbReady()) {
+    const key = hash(`${articleText(snapshot)}:${snapshot.sentences.map((s) => s.id).join(',')}:${clip.version}:alignment-v2`);
+    if (!retry && isDbReady()) {
       const rows = JSON.parse(await runSqlite(dbPath, `SELECT payload FROM reading_audio_references WHERE cache_key=${sqlString(key)};`, { json: true }) || '[]');
-      if (rows[0]) return { ...JSON.parse(rows[0].payload), audioPath: clip.article.audioPath };
+      if (rows[0]) {
+        const cached = JSON.parse(rows[0].payload);
+        if (cached.timings?.length) return { ...cached, audioPath: clip.article.audioPath };
+      }
     }
     if (referenceJobs.has(key)) return referenceJobs.get(key);
     const job = (async () => {
@@ -106,14 +118,14 @@ export function createReadAloudService({ source, dbPath, runSqlite, isDbReady = 
       const normalize = await normalizeFactory(snapshot);
       const timings = alignSpeech(snapshot.sentences, transcript.words, normalize);
       const result = { timings, version: clip.version, audioPath: clip.article.audioPath };
-      if (isDbReady()) await runSqlite(dbPath, `INSERT OR REPLACE INTO reading_audio_references VALUES (${sqlString(key)},${sqlString(JSON.stringify(result))},${Date.now()}); DELETE FROM reading_audio_references WHERE cache_key NOT IN (SELECT cache_key FROM reading_audio_references ORDER BY updated_at DESC LIMIT 150);`);
+      if (timings.length && isDbReady()) await runSqlite(dbPath, `INSERT OR REPLACE INTO reading_audio_references VALUES (${sqlString(key)},${sqlString(JSON.stringify(result))},${Date.now()}); DELETE FROM reading_audio_references WHERE cache_key NOT IN (SELECT cache_key FROM reading_audio_references ORDER BY updated_at DESC LIMIT 150);`);
       return result;
     })();
     referenceJobs.set(key, job); try { return await job; } finally { referenceJobs.delete(key); }
   }
   return {
     audio,
-    reference: (body, signal) => limited(() => reference(validateArticle(body.article), signal)),
+    reference: (body, signal) => limited(() => reference(validateArticle(body.article), signal, body.retry === true)),
     transcriptionSession: (signal) => limited(async () => {
       const data = await api('realtime/client_secrets', { expires_after: { anchor: 'created_at', seconds: 600 }, session: { type: 'transcription',
         audio: { input: { transcription: { model: process.env.OPENAI_TRANSCRIPTION_MODEL || 'gpt-live-transcribe', languages: ['ja'], delay: 'low' },
