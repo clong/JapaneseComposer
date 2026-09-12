@@ -41,6 +41,10 @@ async function run() {
   assert(session.reviews.length === 2 && session.reviews[0].sentenceIds.length === 2, 'Whole-article retry preserves and reviews both sentences');
   click('Read this sentence'); await tick(); click('Cancel'); await tick();
   assert(recorderClosed > 0 && !panel.querySelector('audio[src^="blob:"]'), 'Cancel releases recorder and temporary playback');
+  click('Read this sentence'); await tick();
+  assert(!panel.querySelector('.reading-reference audio').controls, 'Reference controls are hidden while the microphone is active');
+  controller.leave(); mount(); await tick();
+  assert(panel.querySelector('.reading-reference audio').controls, 'Leaving a recording restores reference controls when the article reopens');
   click('Read whole article'); await tick(); options.onLimit(); await tick();
   assert(session.reviews.length === 3, 'Recording limit automatically stops and reviews');
   pendingResolve = true; click('Read whole article'); await tick(); click('Stop and review'); await tick();

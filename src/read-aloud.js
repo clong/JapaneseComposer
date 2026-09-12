@@ -63,14 +63,15 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
     learnerEnd = timing?.end ?? null; void learnerPlayer.play().catch(() => {});
   }
   function clearRecording() {
-    learnerPlayer.pause(); learnerPlayer.removeAttribute('src');
+    learnerPlayer.pause(); learnerPlayer.removeAttribute('src'); learnerPlayer.load(); learnerEnd = null;
     if (recordingUrl) URL.revokeObjectURL(recordingUrl);
     recordingUrl = null; recordingBytes = null;
   }
   function leave() {
     generation++; void recorder?.close(); recorder = null;
     requestController?.abort(); referenceController?.abort();
-    referencePlayer.pause(); referencePlayer.removeAttribute('src'); clearRecording();
+    referencePlayer.pause(); referencePlayer.removeAttribute('src'); referencePlayer.load();
+    referencePlayer.controls = true; referenceEnd = null; clearRecording();
     key = ''; sessionId = ''; article = null; currentAttempt = null; status = 'idle'; reference = null; referenceBusy = false;
     referenceError = ''; playbackError = ''; error = ''; notice = ''; live = {}; currentSentence = ''; root.replaceChildren();
   }
