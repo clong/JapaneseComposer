@@ -203,7 +203,10 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
     const card = node('div', 'reading-aloud-feedback'); card.dataset.reviewId = result.id;
     card.append(node('strong', '', single ? c().sentenceFeedback : c().fromArticle), node('p', 'reading-muted', `${new Date(result.createdAt).toLocaleString(language)} · ${c()[entry.status]}`));
     if (single) card.append(renderRatings(result));
-    const points = feedbackPoints(single ? result.summary : entry.observation);
+    const points = [...new Set([
+      ...feedbackPoints(single ? result.summary : ''),
+      ...feedbackPoints(entry.observation)
+    ])];
     for (const tip of result.tips.filter((tip) => single || tip.sentenceId === sentence.id)) points.push(`${c()[tip.category]}: ${tip.text}`);
     if (points.length) card.append(feedbackList(points));
     const playable = currentAttempt?.id === result.id && recordingUrl;

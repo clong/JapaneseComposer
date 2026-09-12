@@ -42,6 +42,7 @@ async function run() {
   assert(panel.querySelectorAll('.reading-aloud-ratings strong').length === 3, 'Three friendly ratings are visible');
   const firstRow = panel.querySelector('[data-aloud-sentence="one"]');
   assert(firstRow.querySelector('.reading-aloud-feedback')?.textContent.includes('Nice work!'), 'Sentence feedback appears under its source sentence');
+  assert(firstRow.querySelector('.reading-aloud-feedback')?.textContent.includes('The words were clear.'), 'Single-sentence feedback preserves the sentence observation alongside the summary');
   assert(firstRow.querySelectorAll('.reading-feedback-points li').length >= 3, 'Reading feedback uses bullet points');
   assert(!panel.querySelector('[data-aloud-sentence="two"] .reading-aloud-feedback'), 'Unpracticed sentences have no unrelated feedback');
   assert(Boolean(panel.querySelector('audio[src^="blob:"]')), 'Current attempt can be replayed');
