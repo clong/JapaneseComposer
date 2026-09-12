@@ -2785,7 +2785,7 @@ body.image-lightbox-open {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 2;
-  font-size: 14px;
+  font-size: 1.25rem;
 }
 
 .tutor-turn-text ruby {
@@ -2831,7 +2831,7 @@ body.image-lightbox-open {
 .tutor-turn-translation {
   border-top: 1px solid rgba(30, 22, 20, 0.09);
   color: #40504c;
-  font-size: 13px;
+  font-size: 1rem;
   line-height: 1.5;
   padding-top: 7px;
 }
@@ -4710,6 +4710,10 @@ html[data-theme='dark'] .image-lightbox-image {
 .tutor-controls {
   display: grid;
   grid-template-columns: 1fr 1fr;
+}
+
+.tutor-handoff {
+  grid-column: 1 / -1;
 }
 
 .tutor-immediate-controls {

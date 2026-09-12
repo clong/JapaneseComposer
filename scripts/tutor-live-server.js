@@ -60,6 +60,7 @@ export function createTutorLiveDirector({ send, assess, context, persistRow, per
   let cancelled = false;
   let finalEvent = null;
   let eventSequence = 0;
+  let completedAssessments = 0;
   let finishClose = null;
 
   function append(type, content, delegationId = null) {
@@ -91,35 +92,50 @@ export function createTutorLiveDirector({ send, assess, context, persistRow, per
     const id = event.delegation.id;
     if (!id || delegations.has(id)) return;
     delegations.add(id);
+    const completedAtRequest = completedAssessments;
     status('assessing');
     queue = queue.then(async () => {
-      // Delegation is the semantic trigger; delayed captions are only evidence for that trigger.
-      await new Promise((resolve) => setTimeout(resolve, transcriptDelayMs));
-      if (closing) return;
-      const candidates = transcript.rows.filter((entry) => entry.role === 'user' && !assessedRows.has(entry.id)
-        && (!Number.isFinite(event.offset_ms) || entry.startMs <= event.offset_ms));
-      if (!candidates.length) {
-        append('session.instructions.append', 'Ask the learner to repeat their answer briefly in Japanese; the answer was unclear. Do not guess or award mastery.', id);
+      status('assessing');
+      // Captions can arrive during assessment. Retry an uncommitted result once using
+      // the updated answer instead of depending on another model-initiated delegation.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, transcriptDelayMs));
+        if (closing) return;
+        const candidates = transcript.rows.filter((entry) => entry.role === 'user' && !assessedRows.has(entry.id)
+          && (attempt > 0 || !Number.isFinite(event.offset_ms) || entry.startMs <= event.offset_ms));
+        if (!candidates.length) {
+          if (completedAssessments > completedAtRequest) {
+            append('session.thinking.append', 'An earlier request already assessed this answer. Use the assessment and activity context already supplied; no additional repetition is needed.', id);
+            return;
+          }
+          append('session.instructions.append', 'Ask the learner to repeat their answer briefly in Japanese; the answer was unclear. Do not guess or award mastery.', id);
+          return;
+        }
+        const revision = transcript.revision;
+        const current = () => !closing && transcript.revision === revision;
+        const turn = candidates[candidates.length - 1];
+        const result = await assess({ turnId: turn.id, transcript: candidates.map((entry) => entry.transcript).join('\n'),
+          acoustic: { source: 'gpt_live_transcript', transcriptConfidence: 0.65 }, isCurrent: current });
+        if (closing) return;
+        if (!current()) {
+          // A returned result may already have been persisted. Do not assess it twice.
+          if (!result && attempt === 0) continue;
+          append('session.instructions.append', 'The learner added or changed their answer during assessment. Do not present the earlier result as feedback on the changed answer. When they finish, ask one brief clarification in Japanese so the latest answer can be assessed. Do not wait silently for another request.', id);
+          return;
+        }
+        if (!result) throw new Error('No assessment was returned for the current answer');
+        completedAssessments += 1;
+        candidates.forEach((entry) => assessedRows.add(entry.id));
+        append('session.thinking.append', context(), id);
+        const correction = result.correction;
+        if (correction?.required) {
+          append('session.thinking.append', `Assessed correction: ${correction.corrected}. ${correction.explanation || ''}`, id);
+        }
+        append('session.instructions.append', correction?.required
+          ? 'The assessment is complete. Respond now: model the assessed correction once in Japanese, then request one Japanese retry. Keep it brief and stay on this target.'
+          : 'The assessment is complete. Respond now: continue the current Japanese activity using the latest backend context. Ask one short Japanese question and listen.', id);
         return;
       }
-      const revision = transcript.revision;
-      const current = () => !closing && transcript.revision === revision;
-      const turn = candidates[candidates.length - 1];
-      const result = await assess({ turnId: turn.id, transcript: candidates.map((entry) => entry.transcript).join('\n'),
-        acoustic: { source: 'gpt_live_transcript', transcriptConfidence: 0.65 }, isCurrent: current });
-      if (!result || !current()) {
-        if (!closing) append('session.thinking.append', 'The learner added or changed their answer. The earlier assessment was not applied. Delegate again for the updated answer.', id);
-        return;
-      }
-      candidates.forEach((entry) => assessedRows.add(entry.id));
-      append('session.thinking.append', context(), id);
-      const correction = result.correction;
-      if (correction?.required) {
-        append('session.thinking.append', `Assessed correction: ${correction.corrected}. ${correction.explanation || ''}`, id);
-      }
-      append('session.instructions.append', correction?.required
-        ? 'Model the assessed correction once in Japanese, then request one Japanese retry. Keep it brief and stay on this target.'
-        : 'Continue the current Japanese activity using the latest backend context. Ask one short Japanese question and listen.', id);
     }).catch((error) => {
       logError(error);
       if (!closing) append('session.instructions.append', 'Continue with one easy Japanese follow-up. The assessment is unavailable; do not claim that a target was mastered.', id);
