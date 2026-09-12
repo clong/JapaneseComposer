@@ -5,6 +5,10 @@ import { promises as fs } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
+import { createReadingApi } from './reading-api.js';
+import { READING_TABLE_SQL } from './reading-store.js';
+import { englishLookupQuery } from '../src/dictionary-query.js';
+import { createEnglishDictionarySearch } from './english-dictionary.js';
 import {
   ASK_SYSTEM_PROMPT,
   PROOFREAD_SYSTEM_PROMPT,
@@ -298,6 +302,7 @@ try {
   console.error('Failed to auto-fix local JMdict files:', error?.message || error);
 }
 const localDictionary = await loadLocalDictionary();
+const lookupEnglishDictionary = localDictionary ? createEnglishDictionarySearch(localDictionary.entries) : null;
 const localLookupCache = new Map();
 debug(localDictionary ? 'Local dictionary loaded.' : 'Local dictionary not found.');
 
@@ -376,6 +381,11 @@ const mimeTypes = {
   '.json': 'application/json; charset=utf-8',
   '.ico': 'image/x-icon'
 };
+const readingApi = createReadingApi({
+  dbPath: workspaceDbPath, runSqlite,
+  getUser: (req, res) => requireAuthenticatedUser(workspaceDbPath, req, res),
+  isDbReady: () => workspaceDbReady
+});
 const server = http.createServer(async (req, res) => {
   if (!requireBasicAuth(req, res)) {
     return;
@@ -401,6 +411,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
   }
+  if (await readingApi(req, res, requestUrl)) return;
   if (requestUrl.pathname === '/api/auth/session') {
     if (req.method !== 'GET') {
       res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -912,8 +923,8 @@ const server = http.createServer(async (req, res) => {
   }
   if (requestUrl.pathname === '/api/lookup') {
     const keyword = requestUrl.searchParams.get('keyword');
-    if (!keyword) {
-      writeJson(res, 400, { error: 'Missing keyword' });
+    if (!keyword?.trim() || keyword.length > 80) {
+      writeJson(res, 400, { error: 'A keyword of up to 80 characters is required' });
       return;
     }
     const normalizedKeyword = normalizeKeyword(keyword);
@@ -1990,6 +2001,7 @@ async function ensureWorkspaceDb(dbPath) {
     );
     CREATE INDEX IF NOT EXISTS idx_user_workspace_images_document
       ON user_workspace_images(user_id, document_id);
+    ${READING_TABLE_SQL}
   `;
   await runSqlite(dbPath, sql);
 }
@@ -3320,8 +3332,20 @@ async function loadLocalDictionary() {
       fs.readFile(localEntriesPath, 'utf8'),
       fs.readFile(localIndexPath, 'utf8')
     ]);
-    const entries = JSON.parse(entriesRaw);
-    const index = JSON.parse(indexRaw);
+    let entries = JSON.parse(entriesRaw);
+    let index = JSON.parse(indexRaw);
+    if (typeof Object.values(entries)[0]?.everyday !== 'boolean' && await pathExists(localRawDictionaryPath)) {
+      try {
+        console.log('Refreshing local dictionary metadata for English lookup…');
+        await runNodeScript(path.join(__dirname, 'jmdict-build.js'), {
+          JMDICT_PATH: localRawDictionaryPath, JMDICT_ENTRIES_PATH: localEntriesPath, JMDICT_INDEX_PATH: localIndexPath
+        });
+        entries = JSON.parse(await fs.readFile(localEntriesPath, 'utf8'));
+        index = JSON.parse(await fs.readFile(localIndexPath, 'utf8'));
+      } catch {
+        console.warn('Could not refresh dictionary word-frequency metadata; using the existing entries.');
+      }
+    }
     const keys = Object.keys(index);
     return { entries, index, keys };
   } catch (error) {
@@ -3334,7 +3358,7 @@ const japaneseCharRange =
 const japaneseEdgeRegex = new RegExp(`^[^${japaneseCharRange}]+|[^${japaneseCharRange}]+$`, 'g');
 
 function normalizeKeyword(keyword) {
-  return normalizeLookupText(keyword);
+  return englishLookupQuery(keyword) || normalizeLookupText(keyword);
 }
 
 function lookupLocalDictionary(keyword) {
@@ -3349,8 +3373,9 @@ function lookupLocalDictionary(keyword) {
     return localLookupCache.get(normalized);
   }
 
+  const english = englishLookupQuery(normalized);
   let entryIds = localDictionary.index[normalized];
-  if (!entryIds && normalized.length > 1) {
+  if (!english && !entryIds && normalized.length > 1) {
     const results = new Set();
     for (const key of localDictionary.keys) {
       if (key.startsWith(normalized)) {
@@ -3364,7 +3389,9 @@ function lookupLocalDictionary(keyword) {
     entryIds = Array.from(results);
   }
 
-  const entries = (entryIds || []).map((id) => localDictionary.entries[id]).filter(Boolean);
+  const entries = english
+    ? lookupEnglishDictionary(english)
+    : (entryIds || []).map((id) => localDictionary.entries[id]).filter(Boolean);
   const data = entries.map((entry) => ({
     japanese: buildJapaneseForms(entry),
     senses: [{ english_definitions: entry.glosses || [] }]

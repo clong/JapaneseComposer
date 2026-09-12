@@ -1,3 +1,10 @@
+import { createReadingPage } from './reading.js';
+import { readingLookupTarget } from './reading-model.js';
+import { englishLookupQuery, englishDictionaryChoices } from './dictionary-query.js';
+import { createTextSizeControls } from './text-size.js';
+
+let readingPageController = null;
+let textSizeControls = null;
 const PROXY_DICT_ENDPOINT = '/api/lookup?keyword=';
 const VOCAB_API_ENDPOINT = '/api/vocab';
 const VOCAB_RESOLVE_ENDPOINT = '/api/vocab-resolve';
@@ -105,6 +112,7 @@ const i18n = {
     vocabularySubtitle: 'Saved words from all your posts.',
     pageCompose: 'Compose',
     pageVocabulary: 'Vocabulary',
+    pageReading: 'Reading',
     vocabPostTitle: 'Source post',
     allVocabEmpty: 'No vocabulary found in saved posts.',
     syntheticTitle: 'Synthetic document',
@@ -321,6 +329,7 @@ const i18n = {
     vocabularySubtitle: '全投稿の保存済み語彙を表示します。',
     pageCompose: '作文',
     pageVocabulary: '語彙',
+    pageReading: '読解',
     vocabPostTitle: '投稿元',
     allVocabEmpty: '保存済み投稿に語彙がありません。',
     syntheticTitle: '合成作文',
@@ -2832,6 +2841,7 @@ function syncAppAccessLock() {
 }
 
 function renderAuthControls() {
+  updateReadingPage();
   const copy = i18n[state.language];
   const gateVisible = authState.required && !authState.authenticated;
   if (authGoogle) {
@@ -3894,6 +3904,12 @@ async function lookupDictionaryEntry(word) {
   }
   if (hasKana(normalized)) {
     return lookupKanaWord(normalized);
+  }
+  const english = englishLookupQuery(normalized);
+  if (english) {
+    const result = await fetchDictionaryEntries(english);
+    const choices = englishDictionaryChoices(result.entries, english);
+    return choices.length ? buildLookupOutcome('hit', { ...choices[0], choices }) : buildLookupOutcome(result.failed ? 'error' : 'miss');
   }
   return buildLookupOutcome('miss');
 }
@@ -5035,15 +5051,23 @@ function buildSyntheticDocumentPayload(entries) {
 }
 
 function renderPageView() {
-  const activePage = state.activePage === 'vocabulary' ? 'vocabulary' : 'compose';
+  const activePage = ['vocabulary', 'reading'].includes(state.activePage) ? state.activePage : 'compose';
   const isCompose = activePage === 'compose';
 
   if (composePage) {
     composePage.classList.toggle('is-active', isCompose);
   }
   if (vocabularyPage) {
-    vocabularyPage.classList.toggle('is-active', !isCompose);
+    vocabularyPage.classList.toggle('is-active', activePage === 'vocabulary');
   }
+  document.querySelector('#reading-page')?.classList.toggle('is-active', activePage === 'reading');
+  const readingNav = document.querySelector('#page-nav-reading');
+  if (readingNav) {
+    setElementText(readingNav, i18n[state.language].pageReading);
+    readingNav.setAttribute('aria-pressed', String(activePage === 'reading'));
+    readingNav.setAttribute('aria-current', activePage === 'reading' ? 'page' : 'false');
+  }
+  updateReadingPage();
 
   if (pageNavCompose) {
     setElementText(pageNavCompose, copySafe(i18n[state.language].pageCompose, 'Compose'));
@@ -5052,8 +5076,8 @@ function renderPageView() {
   }
   if (pageNavVocabulary) {
     setElementText(pageNavVocabulary, copySafe(i18n[state.language].pageVocabulary, 'Vocabulary'));
-    pageNavVocabulary.setAttribute('aria-pressed', String(!isCompose));
-    pageNavVocabulary.setAttribute('aria-current', !isCompose ? 'page' : 'false');
+    pageNavVocabulary.setAttribute('aria-pressed', String(activePage === 'vocabulary'));
+    pageNavVocabulary.setAttribute('aria-current', activePage === 'vocabulary' ? 'page' : 'false');
   }
 
   if (allVocabTitle) {
@@ -5138,7 +5162,7 @@ function copySafe(value, fallback) {
 }
 
 function setActivePage(nextPage = 'compose') {
-  const next = nextPage === 'vocabulary' ? 'vocabulary' : 'compose';
+  const next = ['vocabulary', 'reading'].includes(nextPage) ? nextPage : 'compose';
   if (state.activePage === next) {
     return;
   }
@@ -6150,6 +6174,8 @@ function renderUI() {
   document.documentElement.lang = state.language;
   applyTheme();
 
+  textSizeControls?.setLanguage(state.language);
+
   app.classList.toggle('furigana-off', !state.showFurigana);
   app.classList.toggle('reading-mode', isReadingMode);
   app.classList.toggle('corrections-mode', isCorrectionsMode);
@@ -6744,6 +6770,7 @@ function startGoogleAuthFlow() {
 }
 
 function bindEvents() {
+  document.querySelector('#page-nav-reading')?.addEventListener('click', () => setActivePage('reading'));
   pageNavCompose?.addEventListener('click', () => {
     setActivePage('compose');
   });
@@ -7461,6 +7488,37 @@ function bindEvents() {
 }
 
 async function init() {
+  textSizeControls = createTextSizeControls({
+    root: document.documentElement,
+    group: document.querySelector('#text-size-controls'),
+    decrease: document.querySelector('#text-size-decrease'),
+    increase: document.querySelector('#text-size-increase'),
+    reset: document.querySelector('#text-size-reset'),
+    status: document.querySelector('#text-size-status'),
+    read: safeStorageGet, write: safeStorageSet,
+    onChange: () => { hideTooltip(); hideSelectionTooltip(); window.dispatchEvent(new Event('resize')); }
+  });
+  window.addEventListener('storage', (event) => textSizeControls.sync(event));
+  readingPageController = createReadingPage({
+    root: document.querySelector('#reading-root'),
+    annotateTitle: async (title) => {
+      await initKuromoji();
+      return applyReadingOverrides(tokenizeLineWithKuromoji(title))?.map((token) => ({
+        text: token.text, reading: /[\u3400-\u9fff]/.test(token.text) ? toHiragana(token.reading || '') : ''
+      }));
+    },
+    lookup: async (selected) => {
+      const english = englishLookupQuery(selected);
+      if (!english) await initKuromoji();
+      const normalized = english || normalizeLookupWord(selected);
+      const target = english || readingLookupTarget(normalized, kuromojiTokenizer?.tokenize(normalized) || []);
+      const cached = lookupCache.get(target);
+      if (cached) return { status: 'hit', entry: cached };
+      const outcome = await lookupDictionaryEntry(target);
+      if (outcome.entry) lookupCache.set(target, outcome.entry);
+      return outcome;
+    }
+  });
   authState.notice = consumeAuthResultFromUrl();
   applyTheme();
   hydrateLayoutPreferences();
@@ -7475,3 +7533,11 @@ async function init() {
 }
 
 void init();
+
+function updateReadingPage() {
+  readingPageController?.update({
+    active: state.activePage === 'reading', language: state.language,
+    owner: authState.loading || (authState.required && !authState.authenticated)
+      ? null : (authState.authenticated ? authState.user?.id : 'guest')
+  });
+}

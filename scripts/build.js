@@ -60,6 +60,7 @@ if (await pathExists(faviconPath)) {
 await esbuild({
   entryPoints: [path.join(srcDir, 'app.js')],
   outfile: path.join(assetsDir, 'app.js'),
+  bundle: true,
   format: 'esm',
   minify: true,
   legalComments: 'none',

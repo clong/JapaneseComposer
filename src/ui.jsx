@@ -138,6 +138,12 @@ export function AppShell() {
 
                 <div className="header-utility-stack">
                   <div className="controls">
+                    <div className="text-size-controls" id="text-size-controls" role="group" aria-label="Text size">
+                      <button type="button" id="text-size-decrease" aria-label="Decrease text size" title="Decrease text size">A−</button>
+                      <button type="button" id="text-size-reset" aria-label="Reset text size to 100%" title="Reset text size to 100%">100%</button>
+                      <button type="button" id="text-size-increase" aria-label="Increase text size" title="Increase text size">A+</button>
+                      <span id="text-size-status" className="sr-only" role="status" />
+                    </div>
                     <ActionButton
                       id="language-toggle"
                       label="日本語 UI"
@@ -208,6 +214,14 @@ export function AppShell() {
                     id="page-nav-vocabulary"
                     label="Vocabulary"
                     icon={BookmarkFilledIcon}
+                    variant="surface"
+                    className="chip page-chip"
+                    aria-pressed="false"
+                  />
+                  <ActionButton
+                    id="page-nav-reading"
+                    label="Reading"
+                    icon={ReaderIcon}
                     variant="surface"
                     className="chip page-chip"
                     aria-pressed="false"
@@ -556,6 +570,10 @@ export function AppShell() {
                 </div>
               </Card>
             </aside>
+          </main>
+
+          <main className="app-main page-view reading-page" id="reading-page">
+            <div id="reading-root" />
           </main>
 
           <main className="app-main page-view vocabulary-page" id="vocabulary-page">

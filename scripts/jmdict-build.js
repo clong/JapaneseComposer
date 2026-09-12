@@ -52,6 +52,9 @@ for (const entry of entriesArray) {
 
   const words = ensureArray(entry.k_ele).map((item) => item.keb).filter(Boolean);
   const readings = ensureArray(entry.r_ele).map((item) => item.reb).filter(Boolean);
+  const priorities = [...ensureArray(entry.k_ele).flatMap((item) => ensureArray(item.ke_pri)), ...ensureArray(entry.r_ele).flatMap((item) => ensureArray(item.re_pri))];
+  const common = priorities.some((value) => /^(news1|ichi1|spec1|gai1|nf\d\d)$/.test(value));
+  const frequencyRank = Math.min(99, ...priorities.filter((value) => /^nf\d\d$/.test(value)).map((value) => Number(value.slice(2))));
 
   const glosses = [];
   const senses = ensureArray(entry.sense);
@@ -76,7 +79,10 @@ for (const entry of entriesArray) {
     id,
     words,
     readings,
-    glosses
+    glosses,
+    common,
+    everyday: priorities.includes('ichi1'),
+    frequencyRank
   };
 
   if (words.length) {
