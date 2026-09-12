@@ -226,6 +226,14 @@ export function AppShell() {
                     className="chip page-chip"
                     aria-pressed="false"
                   />
+                  <ActionButton
+                    id="page-nav-tutor"
+                    label="Tutor"
+                    icon={ChatBubbleIcon}
+                    variant="surface"
+                    className="chip page-chip"
+                    aria-pressed="false"
+                  />
                 </div>
               </div>
             </Card>
@@ -696,6 +704,286 @@ export function AppShell() {
                   <div id="flashcard-summary" className="flashcard-summary" hidden />
                 </Card>
               </div>
+            </Card>
+          </main>
+
+          <main className="app-main page-view tutor-page" id="tutor-page">
+            <Card className="panel tutor-panel">
+              <div className="panel-header tutor-page-header">
+                <div>
+                  <PanelKicker icon={ChatBubbleIcon}>Speaking tutor</PanelKicker>
+                  <Heading as="h2" size="6">
+                    <span id="tutor-page-title">Voice Tutor</span>
+                  </Heading>
+                  <Text as="p" size="2" color="gray">
+                    <span id="tutor-page-subtitle">Practice live Japanese conversation with adaptive feedback.</span>
+                  </Text>
+                </div>
+                <div className="tutor-page-actions">
+                  <div className="tutor-view-tabs" role="tablist" aria-label="Tutor view">
+                    <button id="tutor-view-practice" className="tutor-view-tab is-active" type="button" role="tab" aria-selected="true">Practice</button>
+                    <button id="tutor-view-progress" className="tutor-view-tab" type="button" role="tab" aria-selected="false">Progress</button>
+                    <button id="tutor-view-sessions" className="tutor-view-tab" type="button" role="tab" aria-selected="false">Sessions</button>
+                  </div>
+                  <div className="tutor-status" id="tutor-status" role="status" aria-live="polite">Idle</div>
+                </div>
+              </div>
+
+              <section className="tutor-practice-view" id="tutor-practice-view">
+                <section className="tutor-mission-band" id="tutor-v2-today" aria-labelledby="tutor-mission-title">
+                  <div className="tutor-mission-copy">
+                    <div className="tutor-mission-kicker">Today's mission</div>
+                    <Heading as="h3" size="5" id="tutor-mission-title">Everyday Japanese</Heading>
+                    <Text as="p" size="2" id="tutor-mission-objective">Loading your next speaking target...</Text>
+                    <div className="tutor-mission-meta" id="tutor-mission-meta" />
+                  </div>
+                  <div className="tutor-mission-actions">
+                    <div className="tutor-mode-selector" id="tutor-mode-selector" role="group" aria-label="Practice mode">
+                      <button type="button" data-tutor-mode="guided" className="is-active">Guided</button>
+                      <button type="button" data-tutor-mode="scenario">Scenario</button>
+                      <button type="button" data-tutor-mode="pronunciation">Pronunciation</button>
+                      <button type="button" data-tutor-mode="free">Free</button>
+                    </div>
+                    <div className="tutor-primary-actions">
+                      <ActionButton id="tutor-start" label="Start mission" icon={ReaderIcon} variant="solid" size="3" className="primary tutor-start-primary" />
+                      <ActionButton id="tutor-diagnostic" label="Take baseline" icon={DashboardIcon} variant="surface" className="ghost" />
+                    </div>
+                  </div>
+                </section>
+
+                <div className="tutor-topic-bar">
+                  <label className="sr-only" htmlFor="tutor-topic-input" id="tutor-topic-label">Practice topic</label>
+                  <TextField.Root id="tutor-topic-input" size="3" className="tutor-topic-input" placeholder="Optional topic: restaurant ordering, weekend plans, て-form">
+                    <TextField.Slot><ReaderIcon aria-hidden="true" className="field-icon" /></TextField.Slot>
+                  </TextField.Root>
+                  <ActionButton id="tutor-lesson-generate" label="Update mission" icon={RocketIcon} variant="surface" className="ghost" />
+                </div>
+
+              <div className="tutor-layout tutor-session-layout">
+                <section className="tutor-stage" aria-labelledby="tutor-page-title">
+                  <div className="tutor-current-objective">
+                    <span id="tutor-current-phase">Ready</span>
+                    <strong id="tutor-current-goal">Start today's mission</strong>
+                    <div className="tutor-activity-track" aria-hidden="true"><span id="tutor-activity-progress" /></div>
+                  </div>
+                  <div className="tutor-avatar-shell" id="tutor-avatar" data-state="idle">
+                    <div className="tutor-avatar-halo" aria-hidden="true" />
+                    <div className="tutor-avatar-portrait" aria-hidden="true">
+                      <div className="tutor-avatar-hair" />
+                      <div className="tutor-avatar-face">
+                        <div className="tutor-avatar-brow tutor-avatar-brow-left" />
+                        <div className="tutor-avatar-brow tutor-avatar-brow-right" />
+                        <div className="tutor-avatar-eye tutor-avatar-eye-left" />
+                        <div className="tutor-avatar-eye tutor-avatar-eye-right" />
+                        <div className="tutor-avatar-nose" />
+                        <div className="tutor-avatar-mouth" />
+                      </div>
+                      <div className="tutor-avatar-neck" />
+                      <div className="tutor-avatar-shoulders" />
+                    </div>
+                    <div className="tutor-audio-rings" aria-hidden="true">
+                      <span />
+                      <span />
+                      <span />
+                    </div>
+                  </div>
+                  <div className="tutor-stage-activity" id="tutor-stage-activity" role="status" aria-live="polite" hidden>
+                    <span className="tutor-thinking-dots" aria-hidden="true">
+                      <span />
+                      <span />
+                      <span />
+                    </span>
+                    <span id="tutor-stage-activity-label">Tutor is preparing...</span>
+                  </div>
+
+                  <div className="tutor-controls">
+                    <ActionButton
+                      id="tutor-stop"
+                      label="Stop"
+                      icon={Cross2Icon}
+                      variant="surface"
+                      className="ghost tutor-control"
+                      disabled
+                    />
+                    <ActionButton
+                      id="tutor-mute"
+                      label="Mute"
+                      icon={MagicWandIcon}
+                      variant="surface"
+                      className="ghost tutor-control"
+                      aria-pressed="false"
+                      disabled
+                    />
+                  </div>
+                  <div className="tutor-immediate-controls" aria-label="Practice controls">
+                    <ActionButton id="tutor-repeat" label="Repeat" icon={ReaderIcon} variant="surface" className="ghost" disabled />
+                    <ActionButton id="tutor-slower" label="Slower" icon={ChevronDownIcon} variant="surface" className="ghost" disabled />
+                    <ActionButton id="tutor-hint" label="Hint" icon={MagicWandIcon} variant="surface" className="ghost" disabled />
+                    <ActionButton id="tutor-explain" label="Explain" icon={GlobeIcon} variant="surface" className="ghost" disabled />
+                  </div>
+                  <details className="tutor-settings" id="tutor-settings">
+                    <summary><MagicWandIcon aria-hidden="true" /> Settings</summary>
+                    <div className="tutor-settings-grid">
+                  <div className="tutor-voice-control">
+                    <label id="tutor-voice-label" htmlFor="tutor-voice">Voice</label>
+                    <div className="native-select-shell tutor-voice-select-shell">
+                      <select
+                        id="tutor-voice"
+                        className="native-select"
+                        defaultValue="marin"
+                        aria-labelledby="tutor-voice-label"
+                      >
+                        <option value="marin">Marin</option>
+                        <option value="cedar">Cedar</option>
+                        <option value="alloy">Alloy</option>
+                        <option value="ash">Ash</option>
+                        <option value="ballad">Ballad</option>
+                        <option value="coral">Coral</option>
+                        <option value="echo">Echo</option>
+                        <option value="sage">Sage</option>
+                        <option value="shimmer">Shimmer</option>
+                        <option value="verse">Verse</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="tutor-rate-control">
+                    <label id="tutor-rate-label" htmlFor="tutor-speech-rate">Rate of speech</label>
+                    <input
+                      id="tutor-speech-rate"
+                      type="range"
+                      min="0.25"
+                      max="1.5"
+                      step="0.05"
+                      defaultValue="1"
+                      aria-labelledby="tutor-rate-label tutor-rate-value"
+                    />
+                    <output id="tutor-rate-value" htmlFor="tutor-speech-rate">1.00x</output>
+                  </div>
+                  <div className="tutor-language-control">
+                    <label id="tutor-transcription-language-label" htmlFor="tutor-transcription-language">Transcription language</label>
+                    <div className="native-select-shell tutor-language-select-shell">
+                      <select
+                        id="tutor-transcription-language"
+                        className="native-select"
+                        defaultValue="ja"
+                        aria-labelledby="tutor-transcription-language-label"
+                      >
+                        <option value="auto">Auto Japanese + English</option>
+                        <option value="ja">Japanese</option>
+                        <option value="en">English</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="tutor-level-control">
+                    <label id="tutor-vocab-level-label" htmlFor="tutor-vocab-level">Vocabulary baseline</label>
+                    <div className="native-select-shell tutor-level-select-shell">
+                      <select
+                        id="tutor-vocab-level"
+                        className="native-select"
+                        defaultValue="N5"
+                        aria-labelledby="tutor-vocab-level-label"
+                      >
+                        <option value="N5">N5</option>
+                        <option value="N4">N4</option>
+                        <option value="N3">N3</option>
+                        <option value="N2">N2</option>
+                        <option value="N1">N1</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="tutor-duration-control">
+                    <label htmlFor="tutor-duration">Session length</label>
+                    <div className="native-select-shell">
+                      <select id="tutor-duration" className="native-select" defaultValue="12">
+                        <option value="5">5 minutes</option>
+                        <option value="10">10 minutes</option>
+                        <option value="12">12 minutes</option>
+                        <option value="15">15 minutes</option>
+                        <option value="20">20 minutes</option>
+                      </select>
+                    </div>
+                  </div>
+                  <label className="tutor-consent-control" htmlFor="tutor-external-speech-consent">
+                    <input id="tutor-external-speech-consent" type="checkbox" />
+                    <span>Use external pronunciation scoring</span>
+                  </label>
+                    </div>
+                  </details>
+                  <audio id="tutor-remote-audio" autoPlay hidden />
+                  <div className="tutor-audio-status" id="tutor-audio-status" />
+                </section>
+
+                <section className="tutor-workspace">
+                  <section className="tutor-transcript-card tutor-transcript-section">
+                    <div className="tutor-section-header">
+                      <div>
+                        <div className="tutor-section-title" id="tutor-transcript-title">Live transcript</div>
+                        <div className="tutor-section-subtitle">Current exchange</div>
+                      </div>
+                      <span className="tutor-turn-count" id="tutor-turn-count">0 turns</span>
+                    </div>
+                    <div className="tutor-transcript" id="tutor-transcript" aria-live="polite" />
+                  </section>
+
+                  <section className="tutor-feedback-card tutor-correction-section" id="tutor-active-correction" hidden>
+                    <div className="tutor-section-header">
+                      <div>
+                        <div className="tutor-section-title" id="tutor-feedback-title">One thing to repair</div>
+                        <div className="tutor-section-subtitle">Say the corrected idea again before moving on.</div>
+                      </div>
+                      <ActionButton id="tutor-try-again" label="Try again" icon={CheckIcon} variant="solid" className="primary" />
+                    </div>
+                    <div className="tutor-feedback-list" id="tutor-feedback-list" aria-live="polite" />
+                  </section>
+
+                  <details className="tutor-lesson-card tutor-outline" id="tutor-outline">
+                    <summary><span id="tutor-lesson-title">Mission outline</span></summary>
+                    <div className="tutor-section-subtitle" id="tutor-lesson-subtitle">Current activity sequence</div>
+                    <div className="tutor-lesson-plan" id="tutor-lesson-plan" />
+                  </details>
+                </section>
+
+                <aside className="tutor-sidebar">
+                  <section className="tutor-profile-card">
+                    <div className="tutor-section-title" id="tutor-profile-title">Speaking profile</div>
+                    <div className="tutor-profile" id="tutor-profile" />
+                  </section>
+                  <section className="tutor-due-card">
+                    <div className="tutor-section-title">Due reviews</div>
+                    <div className="tutor-due-reviews" id="tutor-due-reviews" />
+                  </section>
+                  <section className="tutor-session-review" id="tutor-session-review" hidden />
+                </aside>
+              </div>
+              </section>
+
+              <section id="tutor-progress-view" className="tutor-progress-view" hidden>
+                <div className="tutor-progress-header">
+                  <div>
+                    <div className="tutor-mission-kicker">Speaking progress</div>
+                    <Heading as="h3" size="5">What you can do now</Heading>
+                  </div>
+                  <ActionButton id="tutor-benchmark" label="Record benchmark" icon={DashboardIcon} variant="solid" className="primary" />
+                </div>
+                <div className="tutor-progress-levels" id="tutor-progress-levels" />
+                <div className="tutor-progress-grid">
+                  <section><div className="tutor-section-title">JF/CEFR dimensions</div><div id="tutor-progress-dimensions" className="tutor-progress-dimensions" /></section>
+                  <section><div className="tutor-section-title">Priority skills</div><div id="tutor-progress-skills" className="tutor-progress-skills" /></section>
+                  <section><div className="tutor-section-title">Recent outcomes</div><div id="tutor-progress-sessions" className="tutor-progress-sessions" /></section>
+                </div>
+              </section>
+
+              <section id="tutor-sessions-view" className="tutor-sessions-view" hidden>
+                <div className="tutor-sessions-header">
+                  <div>
+                    <div className="tutor-mission-kicker">Speaking history</div>
+                    <Heading as="h3" size="5" id="tutor-log-title">Speaking sessions</Heading>
+                    <Text as="p" size="2" id="tutor-log-subtitle">Review and manage saved conversations.</Text>
+                  </div>
+                  <ActionButton id="tutor-clear-logs" label="Delete all tutor data" icon={TrashIcon} variant="surface" className="ghost" />
+                </div>
+                <div className="tutor-log-list" id="tutor-log-list" />
+              </section>
             </Card>
           </main>
 

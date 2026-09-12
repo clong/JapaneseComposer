@@ -26,4 +26,34 @@ test('build completes and outputs artifacts', async () => {
   assert.ok(!html.includes('@@BUILD_TIMESTAMP@@'));
   assert.ok(html.includes('id="image-gallery-grid"'));
   assert.ok(html.includes('id="image-lightbox"'));
+  for (const page of ['compose', 'vocabulary', 'reading', 'tutor']) {
+    assert.equal(html.split(`id="page-nav-${page}"`).length - 1, 1);
+    assert.equal(html.split(`id="${page}-page"`).length - 1, 1);
+  }
+  assert.ok(html.includes('id="text-size-controls"'));
+  assert.ok(html.includes('id="page-nav-tutor"'));
+  assert.ok(html.includes('id="tutor-page"'));
+  assert.ok(html.includes('id="tutor-avatar"'));
+  assert.ok(html.includes('id="tutor-stage-activity"'));
+  assert.ok(html.includes('id="tutor-voice"'));
+  assert.ok(html.includes('id="tutor-speech-rate"'));
+  assert.ok(html.includes('id="tutor-transcription-language"'));
+  assert.ok(html.includes('id="tutor-vocab-level"'));
+  assert.ok(html.includes('id="tutor-log-list"'));
+  assert.ok(html.includes('id="tutor-view-sessions"'));
+  assert.ok(html.includes('id="tutor-sessions-view"'));
+  assert.ok(html.includes('id="tutor-v2-today"'));
+  assert.ok(html.includes('id="tutor-mission-title"'));
+  assert.ok(html.includes('id="tutor-current-goal"'));
+  assert.ok(html.includes('id="tutor-repeat"'));
+  assert.ok(html.includes('id="tutor-try-again"'));
+  assert.ok(html.includes('id="tutor-progress-view"'));
+  assert.ok(html.includes('id="tutor-progress-dimensions"'));
+  assert.ok(html.includes('id="tutor-external-speech-consent"'));
+
+  const appJs = await fs.readFile(buildPath('dist/assets/app.js'), 'utf8');
+  assert.ok(!appJs.includes('./tutor-utils.js'));
+  assert.ok(!appJs.includes('./tutor-v2-api.js'));
+  assert.ok(!appJs.includes('./tutor-v2-transport.js'));
+  assert.ok(!appJs.includes('./tutor-live.js'));
 });
