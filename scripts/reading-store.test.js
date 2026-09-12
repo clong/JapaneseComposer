@@ -1,0 +1,38 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createReadingStore, READING_TABLE_SQL } from './reading-store.js';
+import { createReadingSession } from '../src/reading-model.js';
+import { parseReadingArticles } from './reading-source.js';
+import { articleHtml } from './reading-fixtures.js';
+
+const exec = promisify(execFile);
+test('SQLite sessions isolate accounts, detect concurrent revisions and retain deletion tombstones', async (t) => {
+  const folder = await mkdtemp(path.join(os.tmpdir(),'jc-reading-store-'));
+  t.after(() => rm(folder,{recursive:true,force:true}));
+  const dbPath = path.join(folder,'workspace.sqlite');
+  const runSqlite = async (db, sql, {json=false}={}) => (await exec('sqlite3',[...(json?['-json']:[]),db,sql])).stdout;
+  await runSqlite(dbPath,`CREATE TABLE users (id TEXT PRIMARY KEY); INSERT INTO users VALUES ('alice'),('bob'); ${READING_TABLE_SQL}`);
+  const store = createReadingStore({dbPath,runSqlite});
+  const [article] = parseReadingArticles(articleHtml);
+  const session = createReadingSession(article,'same-id');
+  const first = await store.write('alice',session.id,session,0);
+  assert.equal(first.revision,1);
+  assert.equal(await store.get('bob',session.id),null);
+  assert.deepEqual(await store.list('bob'),[]);
+  await store.write('bob',session.id,{...session,recovered:true},0);
+  await assert.rejects(store.write('alice',session.id,session,0),(error)=>error.status===409 && error.current.revision===1);
+  const second = await store.write('alice',session.id,{...session,mode:'en-ja'},1);
+  assert.equal(second.revision,2);
+  await assert.rejects(store.write('alice',session.id,session,1), (error)=>error.status===409);
+  await store.write('alice',session.id,null,2,true);
+  const tombstone = await store.get('alice',session.id);
+  assert.equal(tombstone.deleted,true); assert.equal(tombstone.session,null); assert.equal(tombstone.revision,3);
+  await assert.rejects(store.write('alice',session.id,session,3),(error)=>error.status===409);
+  await assert.rejects(store.write('alice',session.id,session,0),(error)=>error.status===409);
+  assert.equal((await store.get('bob',session.id)).session.recovered,true);
+});
