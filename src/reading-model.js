@@ -38,6 +38,19 @@ function sourceUrl(value, provider = false) {
   }
 }
 
+export function readingImageUrl(value) {
+  if (value == null || value === '') return null;
+  try {
+    if (typeof value !== 'string' || value.length > 500) throw new Error();
+    const url = new URL(value, 'https://nhkeasier.com');
+    if (url.origin !== 'https://nhkeasier.com' || url.username || url.password || url.port || url.search || url.hash
+      || !/^\/media\/(?:jpg|png|webp)\/[a-zA-Z0-9_-]{1,160}\.(?:jpe?g|png|webp)$/.test(url.pathname)) throw new Error();
+    return url.href;
+  } catch {
+    throw new ReadingError('Invalid article image URL.');
+  }
+}
+
 export function validateArticle(value) {
   if (!value || !Array.isArray(value.sentences) || !value.sentences.length || value.sentences.length > 200) {
     throw new ReadingError('The article must contain between 1 and 200 sentences.');
@@ -70,7 +83,7 @@ export function validateArticle(value) {
     throw new ReadingError('Article annotations do not match the title.');
   }
   return {
-    id: readingId(value.id), title, titleSegments, audioPath: audioPath(value.audioPath),
+    id: readingId(value.id), title, titleSegments, audioPath: audioPath(value.audioPath), imageUrl: readingImageUrl(value.imageUrl),
     publishedAt: text(value.publishedAt || '', 100),
     sourceUrl: sourceUrl(value.sourceUrl), providerUrl: sourceUrl(value.providerUrl, true),
     fetchedAt: Number.isFinite(value.fetchedAt) ? value.fetchedAt : Date.now(), sentences

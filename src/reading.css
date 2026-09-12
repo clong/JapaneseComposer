@@ -31,6 +31,7 @@
 .reading-section-header { margin-bottom: 16px; }
 .reading-article-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 24px; }
 .reading-article-card { display: flex; flex-direction: column; align-items: start; padding: 22px; border: var(--border); background: var(--paper-strong); border-radius: 20px; }
+.reading-article-thumbnail { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 12px; margin-bottom: 18px; background: var(--accent-soft); }
 .reading-article-card h4 { font-family: var(--app-font-family); font-size: 1.25rem; line-height: 1.8; margin: 12px 0 8px; overflow-wrap: anywhere; }
 .reading-article-card .reading-button { margin-top: auto; }
 .reading-content .reading-article-title { font-family: var(--app-font-family); font-size: 1.75rem; line-height: 1.7; margin: 24px 0 12px; overflow-wrap: anywhere; }
@@ -74,6 +75,14 @@
 .reading-audio:not([src]) { display: none; }
 .reading-aloud-sentence { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; padding: 16px 8px; border-radius: 14px; }
 .reading-aloud-sentence > .reading-actions { grid-column: 2; }
+.reading-aloud-feedback, .reading-earlier-feedback { grid-column: 2; min-width: 0; }
+.reading-aloud-feedback { padding: 18px; margin-top: 8px; border: var(--border); border-radius: 16px; background: var(--paper-strong); }
+.reading-aloud-feedback > p { margin: 8px 0 12px; }
+.reading-aloud-feedback details { margin: 14px 0; }
+.reading-aloud-feedback summary, .reading-earlier-feedback > summary { cursor: pointer; font-size: .8125rem; color: var(--ink-muted); }
+.reading-earlier-feedback { margin-top: 8px; }
+.reading-feedback-points { margin: 14px 0; padding-left: 1.4em; list-style: disc; font-size: .875rem; line-height: 1.8; overflow-wrap: anywhere; }
+.reading-feedback-points li + li { margin-top: 8px; }
 .reading-aloud-sentence.is-reading { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
 .reading-capture > span { margin-left: 16px; font-variant-numeric: tabular-nums; }
 .reading-capture meter { display: block; width: 100%; height: 16px; margin-top: 12px; }
@@ -94,6 +103,8 @@ html[data-theme='dark'] .reading-aloud-ratings [data-rating='practice'] strong {
 @media (max-width: 720px) {
   .reading-aloud-ratings { grid-template-columns: minmax(0, 1fr); }
   .reading-reference, .reading-capture, .reading-aloud-review { padding: 14px; }
+  .reading-aloud-feedback, .reading-earlier-feedback { grid-column: 1 / -1; }
+  .reading-aloud-feedback { padding: 14px; }
 }
 .reading-grade-summary { margin-top: 18px; padding: 12px 16px; border-radius: 12px; font-size: 1.125rem; font-weight: 700; line-height: 1.5; }
 .reading-grade-summary[data-status='correct'] { background: rgba(55, 131, 94, .14); color: #286145; }

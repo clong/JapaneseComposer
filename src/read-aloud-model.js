@@ -51,12 +51,32 @@ export function normalizeSpeech(text) {
 }
 
 // Semi-global edit alignment allows introductions and skipped sentences without inventing timings.
-export function alignSpeech(sentences, words, normalize = normalizeSpeech) {
+export function alignSpeech(sentences, words, normalizer = normalizeSpeech) {
+  const normalize = typeof normalizer === 'function' ? normalizer : normalizer.normalize;
   const chars = [], spans = [];
+  let fullText = '';
+  const sourceSpans = [];
   for (const word of words || []) {
-    if (!Number.isFinite(word.start) || !Number.isFinite(word.end) || word.start < 0 || word.end <= word.start) continue;
-    for (const char of normalize(word.word ?? word.text ?? '')) { chars.push(char); spans.push({ start: word.start, end: word.end }); }
-    if (chars.length > 20000) return [];
+    // Timestamped Japanese fragments can split a word or have zero duration. Keep their text
+    // so whole-word readings remain intact; replay boundaries still come from recorded times.
+    if (!Number.isFinite(word.start) || !Number.isFinite(word.end) || word.start < 0 || word.end < word.start) continue;
+    const text = word.word ?? word.text ?? '';
+    if (typeof text !== 'string') continue;
+    const span = { start: word.start, end: word.end };
+    if (normalizer.tokenize) {
+      fullText += text;
+      for (let i = 0; i < text.length; i++) sourceSpans.push(span);
+    } else for (const char of normalize(text)) { chars.push(char); spans.push(span); }
+    if (Math.max(chars.length, fullText.length) > 20000) return [];
+  }
+  if (normalizer.tokenize) {
+    // Tokenize the complete transcript, then map each reading back to its original audio spans.
+    for (const token of normalizer.tokenize(fullText)) {
+      const start = sourceSpans[token.start]?.start, end = sourceSpans[token.end - 1]?.end;
+      if (start === undefined || end === undefined) continue;
+      for (const char of token.reading) { chars.push(char); spans.push({ start, end }); }
+      if (chars.length > 20000) return [];
+    }
   }
   let cursor = 0, operations = 0;
   const matches = [];
@@ -83,7 +103,9 @@ export function alignSpeech(sentences, words, normalize = normalizeSpeech) {
     for (let j = 2; j <= hay.length; j++) if (previous[j] < previous[end]) end = j;
     const start = starts[end], coverage = 1 - previous[end] / needle.length;
     if (coverage < .85 || end - start < needle.length * .75) continue;
-    matches.push({ id: sentence.id, start: spans[cursor + start].start, end: spans[cursor + end - 1].end });
+    const startTime = spans[cursor + start].start, endTime = spans[cursor + end - 1].end;
+    if (endTime <= startTime) continue;
+    matches.push({ id: sentence.id, start: startTime, end: endTime });
     cursor += end;
   }
   return matches;

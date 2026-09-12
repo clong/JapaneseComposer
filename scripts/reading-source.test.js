@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseReadingArticles, createReadingSource } from './reading-source.js';
 import { articleHtml } from './reading-fixtures.js';
-import { validateArticle, readingId, splitJapaneseSentences } from '../src/reading-model.js';
+import { validateArticle, readingId, readingImageUrl, splitJapaneseSentences } from '../src/reading-model.js';
 
 test('article extraction preserves sentences, paragraphs and ruby without scripts or reading duplication', () => {
   const [article] = parseReadingArticles(articleHtml, 100);
@@ -24,6 +24,30 @@ test('sentence splitting preserves quotes, punctuation and trailing text', () =>
   assert.deepEqual(splitJapaneseSentences('「はい。」と答えた。次です！？終わり').map((s) => s.text), ['「はい。」と答えた。', '次です！？', '終わり']);
   assert.deepEqual(splitJapaneseSentences(''), []);
   assert.deepEqual(splitJapaneseSentences('「今日は休みです。」明日は開きます。').map((s) => s.text), ['「今日は休みです。」', '明日は開きます。']);
+});
+
+test('article thumbnails use the first publisher image and survive discovery and snapshot validation', async () => {
+  const illustrated = articleHtml.replace('<p>', '<img src="/static/dict.png"><img src="/media/jpg/library.jpg" onerror="bad()"><img src="/media/jpg/second.jpg"><p>');
+  const [article] = parseReadingArticles(illustrated, 100);
+  assert.equal(article.imageUrl, 'https://nhkeasier.com/media/jpg/library.jpg');
+  assert.deepEqual(article.sentences, parseReadingArticles(articleHtml, 100)[0].sentences);
+  assert.equal(validateArticle(JSON.parse(JSON.stringify(article))).imageUrl, article.imageUrl);
+  const source = createReadingSource({ fetchImpl: async () => new Response(illustrated) });
+  assert.equal((await source.list()).articles[0].imageUrl, article.imageUrl);
+  assert.equal((await source.article(article.id)).imageUrl, article.imageUrl);
+  const { imageUrl, ...legacy } = article;
+  assert.equal(validateArticle(legacy).imageUrl, null);
+});
+
+test('unsafe or missing thumbnails do not prevent articles from loading', () => {
+  for (const value of ['javascript:alert(1)', 'data:image/svg+xml,bad', 'https://nhkeasier.com.evil.test/media/jpg/a.jpg',
+    'https://user:secret@nhkeasier.com/media/jpg/a.jpg', 'http://nhkeasier.com/media/jpg/a.jpg',
+    '/media/jpg/a.svg', '/media/jpg/a.jpg?redirect=elsewhere', '/static/dict.png', '/media/jpg/../../admin.jpg']) {
+    assert.throws(() => readingImageUrl(value));
+    assert.equal(parseReadingArticles(articleHtml.replace('<p>', `<img src="${value}"><p>`))[0].imageUrl, null);
+  }
+  assert.equal(readingImageUrl('/media/jpg/library.jpg'), 'https://nhkeasier.com/media/jpg/library.jpg');
+  assert.equal(parseReadingArticles(articleHtml)[0].imageUrl, null);
 });
 
 test('article source caches discovery, shares in-flight fetches and falls back with a stale timestamp', async () => {

@@ -1,6 +1,6 @@
 import { parse } from 'parse5';
 import { createHash } from 'node:crypto';
-import { ReadingError, splitJapaneseSentences, validateArticle } from '../src/reading-model.js';
+import { ReadingError, readingImageUrl, splitJapaneseSentences, validateArticle } from '../src/reading-model.js';
 
 const ORIGIN = 'https://nhkeasier.com';
 const CACHE_MS = 10 * 60 * 1000;
@@ -53,8 +53,11 @@ export function parseReadingArticles(html, fetchedAt = Date.now()) {
     const rawTitle = titleParts.map((part) => part.text).join('');
     const title = rawTitle.trim();
     const titleStart = rawTitle.length - rawTitle.trimStart().length;
+    const imageUrl = descendants(node, 'img').map((image) => {
+      try { return readingImageUrl(attr(image, 'src')); } catch { return null; }
+    }).find(Boolean) || null;
     return [validateArticle({
-      id: `nhkeasier-${permalink.match(/\d+/)[0]}`, title,
+      id: `nhkeasier-${permalink.match(/\d+/)[0]}`, title, imageUrl,
       titleSegments: sliceSegments(titleParts, titleStart, titleStart + title.length),
       audioPath: attr(descendants(node, 'audio')[0] || {}, 'src') || attr(descendants(node, 'source')[0] || {}, 'src') || null,
       publishedAt: attr(descendants(node, 'time')[0] || {}, 'datetime'),

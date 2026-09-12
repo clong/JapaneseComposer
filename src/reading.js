@@ -216,6 +216,15 @@ export function createReadingPage({ root, lookup, annotateTitle, request = reque
     const grid = el('div', 'reading-article-grid');
     for (const article of library?.articles || []) {
       const card = el('div', 'reading-article-card');
+      if (article.imageUrl) {
+        const image = el('img', 'reading-article-thumbnail');
+        image.alt = ''; // The adjacent article title identifies the topic.
+        image.width = 640; image.height = 360;
+        image.loading = 'lazy'; image.decoding = 'async'; image.referrerPolicy = 'no-referrer';
+        image.addEventListener('error', () => image.remove(), { once: true });
+        image.src = article.imageUrl;
+        card.append(image);
+      }
       card.append(el('span', 'reading-muted', date(article.publishedAt)), renderJapaneseTitle('h4', article), el('p', 'reading-muted', format(c().sentences, { count: article.sentenceCount })));
       const existing = sync.sessions.find((session) => session.article.id === article.id);
       card.append(button(existing ? c().resume : c().start, () => { void startArticle(article.id); }, true));
