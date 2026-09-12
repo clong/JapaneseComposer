@@ -64,6 +64,16 @@ const ACTIVITY_POLL_CACHE_MS = 300;
 const SIDEBAND_INITIAL_DELAY_MS = 250;
 const SIDEBAND_RETRY_DELAYS_MS = [400, 800, 1600, 3200];
 
+export function isTutorSameOriginRequest(req) {
+  if (req.headers?.['sec-fetch-site'] === 'cross-site') return false;
+  if (!req.headers?.origin) return true;
+  try {
+    return new URL(req.headers.origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
+}
+
 function cleanString(value, maxLength = 1000) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
@@ -3025,6 +3035,10 @@ export function createTutorV2Service({
   async function handleRequest(req, res, requestUrl) {
     const pathname = requestUrl.pathname;
     if (!pathname.startsWith(TUTOR_V2_API_PREFIX)) return false;
+    if (!isTutorSameOriginRequest(req)) {
+      writeJson(res, 403, { error: 'Use the speaking tutor from the app.' });
+      return true;
+    }
     try {
       const actor = await requireActor(req, res);
       if (!actor) return true;

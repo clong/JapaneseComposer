@@ -9,7 +9,7 @@ import path from 'node:path';
 import { buildDiagnosticBlueprint, createInitialActivityState } from '../src/tutor-v2.js';
 import { createTutorLiveSessionConfig, createTutorLiveTranscript, tutorLiveAppends, waitForTutorLiveClose } from '../src/tutor-live.js';
 import { createTutorLiveCall, createTutorLiveDirector, createTutorLiveAudioBuffer, createTutorLiveGreeting, tutorLiveSidebandUrl } from './tutor-live-server.js';
-import { createTutorV2Service } from './tutor-v2-server.js';
+import { createTutorV2Service, isTutorSameOriginRequest } from './tutor-v2-server.js';
 import { connectTutorV2WebRtc } from '../src/tutor-v2-transport.js';
 
 const fragment = (role, id, delta, start, end) => ({
@@ -18,6 +18,32 @@ const fragment = (role, id, delta, start, end) => ({
 });
 const delegation = (id, offset = 1000) => ({ type: 'session.delegation.created', offset_ms: offset,
   delegation: { id, type: 'delegation', target: 'client' } });
+
+test('Tutor rejects cross-origin requests before authentication, storage, or model calls', async () => {
+  assert.equal(isTutorSameOriginRequest({ headers: { host: 'localhost:5173', origin: 'http://localhost:5173' } }), true);
+  assert.equal(isTutorSameOriginRequest({ headers: { host: 'localhost:5173' } }), true);
+  const rejected = [
+    { host: 'localhost:5173', origin: 'https://unrelated.example' },
+    { host: 'localhost:5173', origin: 'http://localhost:5174' },
+    { host: 'localhost:5173', origin: 'null' },
+    { host: 'localhost:5173', 'sec-fetch-site': 'cross-site' }
+  ];
+  const service = createTutorV2Service({
+    workspaceDbPath: 'unused', audioDirectory: 'unused',
+    runSqlite: () => assert.fail('Cross-origin requests must not reach storage'),
+    sqlString: () => assert.fail('Cross-origin requests must not build SQL'),
+    fetchImpl: () => assert.fail('Cross-origin requests must not call a model'),
+    getActor: () => assert.fail('Cross-origin requests must not reach authentication'),
+    writeJson: (res, status, body) => Object.assign(res, { status, body })
+  });
+  for (const headers of rejected) {
+    assert.equal(isTutorSameOriginRequest({ headers }), false);
+    const res = {};
+    assert.equal(await service.handleRequest({ headers, method: 'POST' }, res,
+      new URL('http://localhost:5173/api/tutor/v2/diagnostic')), true);
+    assert.equal(res.status, 403);
+  }
+});
 
 test('Live starts with client delegation and no Realtime-only configuration', async () => {
   const blueprint = buildDiagnosticBlueprint({});

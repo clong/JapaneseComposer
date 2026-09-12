@@ -44,6 +44,7 @@ import {
 } from '../src/tutor-utils.js';
 import {
   createTutorV2Service,
+  isTutorSameOriginRequest,
   TUTOR_V2_DEFAULT_REALTIME_MODEL,
   TUTOR_V2_DEFAULT_REASONING_MODEL
 } from './tutor-v2-server.js';
@@ -671,6 +672,11 @@ const server = http.createServer(async (req, res) => {
       })
     });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  if ((requestUrl.pathname.startsWith('/api/tutor/') || requestUrl.pathname.startsWith(TUTOR_AUDIO_PATH_PREFIX))
+    && !isTutorSameOriginRequest(req)) {
+    writeJson(res, 403, { error: 'Use the speaking tutor from the app.' });
     return;
   }
   if (requestUrl.pathname.startsWith('/api/tutor/v2')) {

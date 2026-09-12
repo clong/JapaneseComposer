@@ -26,6 +26,11 @@ test('build completes and outputs artifacts', async () => {
   assert.ok(!html.includes('@@BUILD_TIMESTAMP@@'));
   assert.ok(html.includes('id="image-gallery-grid"'));
   assert.ok(html.includes('id="image-lightbox"'));
+  for (const page of ['compose', 'vocabulary', 'reading', 'tutor']) {
+    assert.equal(html.split(`id="page-nav-${page}"`).length - 1, 1);
+    assert.equal(html.split(`id="${page}-page"`).length - 1, 1);
+  }
+  assert.ok(html.includes('id="text-size-controls"'));
   assert.ok(html.includes('id="page-nav-tutor"'));
   assert.ok(html.includes('id="tutor-page"'));
   assert.ok(html.includes('id="tutor-avatar"'));
@@ -50,4 +55,5 @@ test('build completes and outputs artifacts', async () => {
   assert.ok(!appJs.includes('./tutor-utils.js'));
   assert.ok(!appJs.includes('./tutor-v2-api.js'));
   assert.ok(!appJs.includes('./tutor-v2-transport.js'));
+  assert.ok(!appJs.includes('./tutor-live.js'));
 });
