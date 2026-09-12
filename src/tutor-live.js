@@ -35,10 +35,11 @@ export function createTutorLiveSessionConfig(options = {}) {
       'Begin in very simple Japanese. Never ask the learner to practice English.',
       'Answer a substantive English question with one brief English explanation, then return to a Japanese practice prompt. Names, fillers, accents and borrowed words do not change the language.',
       'Use one or two short sentences and at most one question, then listen. Give the learner time to think. Avoid monologues.',
+      'When the learner finishes an answer, respond or delegate promptly. If you cannot understand the answer, ask one brief clarification in Japanese instead of silently waiting. A Tutor\'s turn button press explicitly ends the learner\'s turn.',
       'Backchannel policy: Use sparse, brief acknowledgments without competing with learner speech.',
       'Interruption policy: Stop speaking when the learner interrupts and listen. Ignore speaker echo, coughs and background sounds.',
       'Delegation policy:\nBackend tools: Assess Japanese answers, choose the next activity, track mastery, and select one meaningful correction.',
-      'Delegate to the backend when the learner finishes a substantive practice answer or retry, or changes an answer being assessed. Wait for the result before judging success or advancing.',
+      'Delegate to the backend when the learner finishes a substantive practice answer or retry, or changes an answer being assessed. Briefly acknowledge that you are checking the answer; wait for the result before judging success or advancing.',
       'Do not delegate greetings, requests to repeat, simple explanations, or unclear sounds. Ask a brief clarification when needed.',
       'Treat backend activity context as the current lesson. Never invent a mastery score or diagnose pronunciation from transcript text.',
       tutorLivePaceInstruction(preferences.speechRate),
@@ -70,6 +71,44 @@ export function tutorLiveAppends(type, content, delegationId = null, prefix = 't
   return chunks.map((text, index) => ({
     type, content: text, delegation_id: delegationId, event_id: `${prefix}_${index}`
   }));
+}
+
+// Live has no Realtime response.create or audio-buffer commit for taking a voice turn.
+// Redirect it with an instruction and track command acceptance separately from speech.
+export function createTutorLiveHandoff({ send, canSend, onChange = () => {}, onError = () => {}, timeoutMs = 8000 }) {
+  let pendingId = '';
+  let timer;
+  let sequence = 0;
+  function reset() {
+    clearTimeout(timer);
+    pendingId = '';
+    onChange();
+  }
+  return {
+    get pending() { return Boolean(pendingId); },
+    request() {
+      if (pendingId || !canSend()) return false;
+      const events = tutorLiveAppends('session.instructions.append',
+        'The learner pressed Tutor\'s turn and has finished speaking. Take your turn now. Respond briefly to their latest message. If assessment is pending, acknowledge it without judging success or advancing. If an answer needs assessment, delegate it. If unclear, ask one short clarification in Japanese. Do not wait silently for more speech. Then listen again.',
+        null, `tutor_handoff_${++sequence}`);
+      pendingId = events.at(-1).event_id;
+      timer = setTimeout(() => { reset(); onError(); }, timeoutMs);
+      onChange();
+      try {
+        if (events.every(send)) return true;
+      } catch { /* A closing connection can reject the send. */ }
+      reset();
+      onError();
+      return false;
+    },
+    handle(event) {
+      if (!pendingId) return;
+      if (event.type === 'session.instructions.appended' && event.client_event_id === pendingId) reset();
+      else if (event.type === 'error' && event.error?.event_id === pendingId) { reset(); onError(); }
+      else if (event.type === 'session.closed') reset();
+    },
+    reset
+  };
 }
 
 export function createTutorLiveTranscript() {

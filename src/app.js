@@ -53,7 +53,7 @@ import {
   uploadTutorV2Audio
 } from './tutor-v2-api.js';
 import { connectTutorV2WebRtc } from './tutor-v2-transport.js';
-import { createTutorLiveTranscript, isTutorLiveModel, TUTOR_LIVE_MODEL, tutorLiveAppends,
+import { createTutorLiveHandoff, createTutorLiveTranscript, isTutorLiveModel, TUTOR_LIVE_MODEL, tutorLiveAppends,
   tutorLivePaceInstruction, waitForTutorLiveClose } from './tutor-live.js';
 import { analyzeTutorAudioBlob } from './tutor-audio-metrics.js';
 
@@ -410,6 +410,10 @@ const i18n = {
     tutorStop: 'Stop',
     tutorMute: 'Mute',
     tutorUnmute: 'Unmute',
+    tutorHandoff: 'Tutor\'s turn',
+    tutorHandoffPending: 'Handing over...',
+    tutorHandoffHint: 'Finished speaking? Ask the tutor to respond now.',
+    tutorHandoffError: 'Could not confirm the handover. Try Tutor\'s turn again, or restart the session if the connection has closed.',
     tutorVoice: 'Voice',
     tutorSpeechRate: 'Rate of speech',
     tutorTranscriptionLanguage: 'Transcription language',
@@ -691,6 +695,10 @@ const i18n = {
     tutorStop: '停止',
     tutorMute: 'ミュート',
     tutorUnmute: 'ミュート解除',
+    tutorHandoff: 'チューターの番',
+    tutorHandoffPending: '交代中…',
+    tutorHandoffHint: '話し終わったら、チューターに返事をしてもらいます。',
+    tutorHandoffError: '交代を確認できませんでした。もう一度「チューターの番」を押すか、接続が切れている場合はセッションを再開してください。',
     tutorVoice: '声',
     tutorSpeechRate: '話す速さ',
     tutorTranscriptionLanguage: '文字起こし言語',
@@ -1084,6 +1092,7 @@ const tutorStageActivityLabel = document.querySelector('#tutor-stage-activity-la
 const tutorStart = document.querySelector('#tutor-start');
 const tutorStop = document.querySelector('#tutor-stop');
 const tutorMute = document.querySelector('#tutor-mute');
+const tutorHandoff = document.querySelector('#tutor-handoff');
 const tutorVoiceSelect = document.querySelector('#tutor-voice');
 const tutorVoiceLabel = document.querySelector('#tutor-voice-label');
 const tutorSpeechRateInput = document.querySelector('#tutor-speech-rate');
@@ -7123,6 +7132,11 @@ function renderTutor() {
   }
   const sessionActive = Boolean(tutorState.currentSession)
     && ['connecting', 'listening', 'thinking', 'speaking'].includes(tutorState.status);
+  if (tutorHandoff) {
+    setElementText(tutorHandoff, tutorLiveHandoff.pending ? copy.tutorHandoffPending : copy.tutorHandoff);
+    tutorHandoff.title = copy.tutorHandoffHint;
+    tutorHandoff.disabled = !canHandoffTutorTurn() || tutorLiveHandoff.pending;
+  }
   [tutorRepeat, tutorHint, tutorExplain].forEach((button) => {
     if (button) button.disabled = !sessionActive || tutorState.status !== 'listening';
   });
@@ -9622,6 +9636,7 @@ function sendTutorLiveContext(type, content) {
 }
 
 function handleTutorLiveEvent(event) {
+  tutorLiveHandoff.handle(event);
   const row = tutorState.liveTranscript?.append(event);
   if (row) {
     const turn = upsertTutorTurn({ id: row.id, itemId: row.id, role: row.role,
@@ -9953,6 +9968,7 @@ function handleTutorRealtimeEvent(event) {
 
 function cleanupTutorConnection() {
   tutorState.liveStarted = false;
+  tutorLiveHandoff.reset();
   clearTutorResponseWatchdog();
   stopTutorV2Polling();
   stopAllTutorClipRecorders();
@@ -10054,12 +10070,16 @@ async function connectTutorRealtimeSession(session) {
       scheduleTutorV2Poll(100);
     },
     onDataChannelClose: () => {
+      tutorState.liveStarted = false;
+      tutorLiveHandoff.reset();
       if (['listening', 'thinking', 'speaking'].includes(tutorState.status)) {
         setTutorRuntimeStatus('stopped');
       }
     },
     onConnectionState: (connectionState) => {
       if (connectionState === 'failed') {
+        tutorState.liveStarted = false;
+        tutorLiveHandoff.reset();
         setTutorRuntimeStatus('error', i18n[state.language].tutorTokenError);
       }
     }
@@ -10392,6 +10412,7 @@ async function stopTutorSession() {
   if (tutorState.liveClosing) return;
   if (isTutorLiveModel(tutorState.voiceModel) && session) {
     tutorState.liveClosing = true;
+    tutorLiveHandoff.reset();
     const result = await waitForTutorLiveClose(tutorState.dataChannel);
     session.liveUsage = { ...session.liveUsage, ...result };
     if (!result.finalized) tutorState.syncError = 'The voice connection closed without confirmed final usage.';
@@ -10527,6 +10548,34 @@ function toggleTutorMute() {
     track.enabled = !tutorState.muted;
   });
   renderTutor();
+}
+
+function canHandoffTutorTurn() {
+  if (!tutorState.currentSession || tutorState.dataChannel?.readyState !== 'open'
+    || !['listening', 'thinking'].includes(tutorState.status) || tutorState.liveClosing
+    || tutorState.tutorAudioOutputActive) return false;
+  if (isTutorLiveModel(tutorState.voiceModel)) return tutorState.liveStarted;
+  return !tutorState.waitingForTutorResponse && !tutorState.activeAssistantResponseId && tutorState.directorStatus !== 'assessing'
+    && tutorState.directorStatus !== 'responding';
+}
+
+const tutorLiveHandoff = createTutorLiveHandoff({
+  send: sendTutorRealtimeEvent,
+  canSend: canHandoffTutorTurn,
+  onChange: () => renderTutor(),
+  onError: () => {
+    tutorState.error = i18n[state.language].tutorHandoffError;
+    renderTutor();
+  }
+});
+
+function handoffTutorTurn() {
+  if (!canHandoffTutorTurn()) return false;
+  tutorState.error = '';
+  if (isTutorLiveModel(tutorState.voiceModel)) return tutorLiveHandoff.request();
+  const sent = requestTutorResponse('manual_handoff');
+  if (sent) scheduleTutorResponseWatchdog('manual_handoff');
+  return sent;
 }
 
 function requestTutorGuidance(kind) {
@@ -11037,6 +11086,7 @@ function bindEvents() {
   });
 
   tutorRepeat?.addEventListener('click', () => requestTutorGuidance('repeat'));
+  tutorHandoff?.addEventListener('click', handoffTutorTurn);
   tutorHint?.addEventListener('click', () => requestTutorGuidance('hint'));
   tutorExplain?.addEventListener('click', () => requestTutorGuidance('explain'));
   tutorTryAgain?.addEventListener('click', () => requestTutorGuidance('repair'));
