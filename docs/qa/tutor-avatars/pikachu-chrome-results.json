@@ -1,0 +1,72 @@
+{
+  "browser": "chromium",
+  "checks": [
+    {
+      "name": "the single Pikachu character loads without the retired character picker",
+      "passed": true
+    },
+    {
+      "name": "captions alone do not move the mouth",
+      "passed": true
+    },
+    {
+      "name": "retired appearance preferences normalize to Pikachu without restarting playback",
+      "passed": true
+    },
+    {
+      "name": "reduced motion retains audio",
+      "passed": true
+    },
+    {
+      "name": "interruption clears articulation",
+      "passed": true
+    },
+    {
+      "name": "hidden panel pauses and resumes rendering",
+      "passed": true
+    },
+    {
+      "name": "failed character download retains portrait and audio, and retry preserves playback",
+      "passed": true
+    },
+    {
+      "name": "WebGL loss recovers through portrait and retry",
+      "passed": true
+    },
+    {
+      "name": "mobile layout has no horizontal overflow",
+      "passed": true
+    },
+    {
+      "name": "disposal releases character nodes and audio context",
+      "passed": true
+    },
+    {
+      "name": "WebGL loss during the initial download aborts loading and recovers from the portrait",
+      "passed": true
+    },
+    {
+      "name": "disposal during the initial download immediately releases canvases, observers, and the request",
+      "passed": true
+    },
+    {
+      "name": "worklet failure preserves audio and retry attaches analysis without restart",
+      "passed": true
+    },
+    {
+      "name": "background/resume keeps the conversation stream connected",
+      "passed": true
+    },
+    {
+      "name": "no WebGL still allows preview audio with a visible portrait",
+      "passed": true
+    },
+    {
+      "name": "blocked autoplay recovers from the explicit enable-audio action",
+      "passed": true
+    }
+  ],
+  "characters": [],
+  "errors": [],
+  "version": "152.0.7977.83"
+}

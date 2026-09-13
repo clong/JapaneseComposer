@@ -1,0 +1,10 @@
+{
+  "checks": [
+    "the application shows Pikachu and removes the retired character picker",
+    "the prerecorded Japanese preview keeps playing when reduced motion is selected",
+    "legacy appearance normalizes to Pikachu and motion preference survives an application reload",
+    "390 px layout has no horizontal overflow and stacks the character before the conversation"
+  ],
+  "errors": [],
+  "browser": "152.0.7977.83"
+}

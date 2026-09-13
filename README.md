@@ -234,3 +234,9 @@ Reference MP3s are fetched only from source-discovered NHK Easier paths and cach
 - Tutor v2 learning metadata is stored in the workspace SQLite database. Raw audio is stored under `TUTOR_AUDIO_DIR`; legacy v1 audio remains in its existing storage.
 - The dev server persistence uses the system `sqlite3` CLI; ensure it is available on your `PATH`.
 - The UI language toggle switches labels between English and Japanese.
+
+## Animated tutor characters
+
+The Tutor page has one local Pikachu companion, with animated ears and paws, a Japanese audio preview, speech-driven mouth shapes, and natural/reduced/still motion settings. Appearance is saved separately from voice and lesson preferences. Character and worklet failures retain a portrait and conversation audio.
+
+See [tutor avatar implementation and authoring](docs/tutor-avatars.md) for the audio path, pinned dependencies, CC0 character sources, Japanese calibration, and repeatable browser checks. Lip sync is approximate and is not a pronunciation reference.

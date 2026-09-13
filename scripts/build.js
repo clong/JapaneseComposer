@@ -59,13 +59,19 @@ if (await pathExists(faviconPath)) {
 
 await esbuild({
   entryPoints: [path.join(srcDir, 'app.js')],
-  outfile: path.join(assetsDir, 'app.js'),
+  outdir: assetsDir,
+  splitting: true,
+  chunkNames: '[name]-[hash]',
   bundle: true,
   format: 'esm',
   minify: true,
   legalComments: 'none',
   logLevel: 'silent'
 });
+await fs.cp(path.join(srcDir, 'assets', 'tutor'), path.join(assetsDir, 'tutor'), { recursive: true });
+await fs.cp(path.join(srcDir, 'vendor', 'headaudio'), path.join(assetsDir, 'vendor', 'headaudio'), { recursive: true });
+await fs.copyFile(path.join(root, 'THIRD_PARTY_NOTICES.md'), path.join(distDir, 'THIRD_PARTY_NOTICES.md'));
+
 await esbuild({
   entryPoints: [path.join(srcDir, 'styles.css')],
   outfile: path.join(assetsDir, 'app.css'),

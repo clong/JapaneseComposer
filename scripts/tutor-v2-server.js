@@ -1,3 +1,4 @@
+import { normalizeTutorAvatarId, normalizeTutorAvatarMotion } from '../src/tutor-avatar-model.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -128,7 +129,7 @@ function extractOpenAiText(payload) {
   return parts.join('\n').trim();
 }
 
-function normalizePreferences(value = {}) {
+export function normalizePreferences(value = {}) {
   const source = value && typeof value === 'object' ? value : {};
   const mode = ['guided', 'scenario', 'pronunciation', 'free'].includes(source.mode)
     ? source.mode
@@ -138,6 +139,8 @@ function normalizePreferences(value = {}) {
     : 'auto';
   return {
     mode,
+    avatarId: normalizeTutorAvatarId(source.avatarId),
+    avatarMotion: normalizeTutorAvatarMotion(source.avatarMotion),
     durationMinutes: Math.max(5, Math.min(30, Math.trunc(Number(source.durationMinutes) || 12))),
     speechRate: normalizeTutorSpeechRate(source.speechRate),
     voice: normalizeTutorVoice(source.voice),

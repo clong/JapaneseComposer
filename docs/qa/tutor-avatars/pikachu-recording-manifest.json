@@ -1,0 +1,12 @@
+[
+  {
+    "file": "chromium-pikachu-desktop.webm",
+    "bytes": 3003693,
+    "sha256": "82ff8b53257eb25210fc18c2089a8325daea6d39d9c9fcee1c0cdddd476b3d56"
+  },
+  {
+    "file": "chromium-pikachu-mobile.webm",
+    "bytes": 3027955,
+    "sha256": "b7d03a9226301c81bf9d3475d349da67491b37d763d67dc92f1093cee597e73e"
+  }
+]

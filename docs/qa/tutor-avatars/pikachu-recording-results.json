@@ -1,0 +1,61 @@
+{
+  "browser": "chromium",
+  "checks": [
+    {
+      "name": "the single Pikachu character loads without the retired character picker",
+      "passed": true
+    },
+    {
+      "name": "captions alone do not move the mouth",
+      "passed": true
+    },
+    {
+      "name": "retired appearance preferences normalize to Pikachu without restarting playback",
+      "passed": true
+    },
+    {
+      "name": "reduced motion retains audio",
+      "passed": true
+    },
+    {
+      "name": "interruption clears articulation",
+      "passed": true
+    },
+    {
+      "name": "hidden panel pauses and resumes rendering",
+      "passed": true
+    },
+    {
+      "name": "failed character download retains portrait and audio, and retry preserves playback",
+      "passed": true
+    },
+    {
+      "name": "WebGL loss recovers through portrait and retry",
+      "passed": true
+    },
+    {
+      "name": "mobile layout has no horizontal overflow",
+      "passed": true
+    },
+    {
+      "name": "disposal releases character nodes and audio context",
+      "passed": true
+    }
+  ],
+  "characters": [
+    {
+      "id": "pikachu",
+      "size": "desktop",
+      "recording": "chromium-pikachu-desktop.webm",
+      "frames": 552
+    },
+    {
+      "id": "pikachu",
+      "size": "mobile",
+      "recording": "chromium-pikachu-mobile.webm",
+      "frames": 553
+    }
+  ],
+  "errors": [],
+  "version": "152.0.7977.83"
+}

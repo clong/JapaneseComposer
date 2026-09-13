@@ -1,3 +1,6 @@
+import { createTutorAvatar } from './tutor-avatar.js';
+import { normalizeTutorAvatarId, normalizeTutorAvatarMotion } from './tutor-avatar-model.js';
+let tutorAvatarController = null;
 import { createReadingPage } from './reading.js';
 import { readingLookupTarget } from './reading-model.js';
 import { englishLookupQuery, englishDictionaryChoices } from './dictionary-query.js';
@@ -91,6 +94,8 @@ const STORAGE_KEYS = {
   tutorVoice: 'jc_tutor_voice',
   tutorVocabularyLevel: 'jc_tutor_vocabulary_level',
   tutorV2Mode: 'jc_tutor_v2_mode',
+  tutorAvatarId: 'jc_tutor_avatar',
+  tutorAvatarMotion: 'jc_tutor_avatar_motion',
   tutorV2Duration: 'jc_tutor_v2_duration',
   tutorV2Consent: 'jc_tutor_v2_external_speech_consent',
   tutorV2LegacyImported: 'jc_tutor_v2_legacy_imported',
@@ -896,6 +901,8 @@ const tutorState = {
   pendingSpeechRate: null,
   voice: 'marin',
   voicePreferenceExplicit: false,
+  avatarId: 'pikachu',
+  avatarMotion: 'auto',
   transcriptionLanguage: 'auto',
   vocabularyLevel: 'N5',
   mission: null,
@@ -4066,12 +4073,16 @@ function normalizeTutorV2Duration(value) {
 }
 
 function loadTutorV2PreferencesFromStorage() {
+  tutorState.avatarId = normalizeTutorAvatarId(safeStorageGet(STORAGE_KEYS.tutorAvatarId));
+  tutorState.avatarMotion = normalizeTutorAvatarMotion(safeStorageGet(STORAGE_KEYS.tutorAvatarMotion));
   tutorState.mode = normalizeTutorV2Mode(safeStorageGet(STORAGE_KEYS.tutorV2Mode));
   tutorState.durationMinutes = normalizeTutorV2Duration(safeStorageGet(STORAGE_KEYS.tutorV2Duration));
   tutorState.externalSpeechConsent = safeStorageGet(STORAGE_KEYS.tutorV2Consent) === '1';
 }
 
 function saveTutorV2PreferencesToStorage() {
+  safeStorageSet(STORAGE_KEYS.tutorAvatarId, normalizeTutorAvatarId(tutorState.avatarId));
+  safeStorageSet(STORAGE_KEYS.tutorAvatarMotion, normalizeTutorAvatarMotion(tutorState.avatarMotion));
   safeStorageSet(STORAGE_KEYS.tutorV2Mode, normalizeTutorV2Mode(tutorState.mode));
   safeStorageSet(STORAGE_KEYS.tutorV2Duration, String(normalizeTutorV2Duration(tutorState.durationMinutes)));
   safeStorageSet(STORAGE_KEYS.tutorV2Consent, tutorState.externalSpeechConsent ? '1' : '0');
@@ -4139,6 +4150,8 @@ async function hydrateTutorState() {
 
 function applyTutorV2Preferences(preferences = {}) {
   if (!preferences || typeof preferences !== 'object') return;
+  tutorState.avatarId = normalizeTutorAvatarId(preferences.avatarId ?? tutorState.avatarId);
+  tutorState.avatarMotion = normalizeTutorAvatarMotion(preferences.avatarMotion ?? tutorState.avatarMotion);
   tutorState.mode = normalizeTutorV2Mode(preferences.mode ?? tutorState.mode);
   tutorState.durationMinutes = normalizeTutorV2Duration(preferences.durationMinutes ?? tutorState.durationMinutes);
   tutorState.speechRate = normalizeTutorSpeechRate(preferences.speechRate ?? tutorState.speechRate);
@@ -7097,16 +7110,29 @@ function renderTutor() {
     tutorStatus.classList.toggle('is-error', Boolean(tutorState.error) || tutorState.status === 'error');
     tutorStatus.classList.toggle('is-thinking', tutorState.status === 'thinking');
   }
-  if (tutorAvatar) {
-    const isRepair = tutorState.activityState?.repairRequired || tutorState.activityState?.phase === 'repair';
-    const avatarState = tutorState.status === 'speaking'
-      ? 'speaking'
-      : (tutorState.status === 'thinking'
-        ? 'thinking'
-        : (isRepair ? 'repair' : (tutorState.status === 'listening' ? 'listening' : 'idle')));
-    tutorAvatar.dataset.state = avatarState;
-    tutorAvatar.style.setProperty('--tutor-level', String(tutorState.remoteAudioLevel || 0));
+  if (tutorAvatar && state.activePage === 'tutor' && !tutorAvatarController) {
+    tutorAvatarController = createTutorAvatar({ root: tutorAvatar, audioElement: tutorRemoteAudio,
+      onPreferenceChange: (preferences) => {
+        Object.assign(tutorState, preferences);
+        saveTutorV2PreferencesToStorage();
+        void persistTutorV2Preferences();
+      },
+      onLevel: (level) => {
+        tutorState.remoteAudioLevel = level;
+        if (isTutorLiveModel(tutorState.voiceModel) && tutorState.liveStarted && !tutorState.liveClosing) {
+          if (level > .025) tutorState.liveLastAudioAt = Date.now();
+          const speaking = Date.now() - tutorState.liveLastAudioAt < 350;
+          tutorState.tutorAudioOutputActive = speaking;
+          const status = speaking ? 'speaking' : tutorState.directorStatus === 'assessing' ? 'thinking' : 'listening';
+          if (tutorState.status !== status) setTutorRuntimeStatus(status);
+        }
+      }
+    });
   }
+  tutorAvatarController?.update({ avatarId: tutorState.avatarId, avatarMotion: tutorState.avatarMotion,
+    language: state.language, active: state.activePage === 'tutor' && tutorState.activeView === 'practice',
+    live: Boolean(tutorState.currentSession && !['idle', 'stopped', 'error'].includes(tutorState.status)),
+    status: tutorState.status, activityState: tutorState.activityState, latestAssessment: tutorState.latestAssessment });
   if (tutorStageActivity) {
     tutorStageActivity.hidden = tutorState.status !== 'thinking';
   }
@@ -9181,6 +9207,7 @@ function stopAllTutorClipRecorders() {
 }
 
 function stopTutorAudioAnalyser() {
+  tutorAvatarController?.stopAudio();
   if (tutorState.renderAudioFrame) {
     cancelAnimationFrame(tutorState.renderAudioFrame);
     tutorState.renderAudioFrame = null;
@@ -9198,6 +9225,7 @@ function stopTutorAudioAnalyser() {
 
 function setupTutorRemoteAnalyser(stream) {
   stopTutorAudioAnalyser();
+  if (tutorAvatarController) { void tutorAvatarController.attachAudio(stream); return; }
   const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextConstructor || !(stream instanceof MediaStream)) {
     return;
@@ -9669,6 +9697,7 @@ function handleTutorRealtimeEvent(event) {
   if (!event || typeof event !== 'object') {
     return;
   }
+  if (['session.output_transcript.delta', 'response.output_audio_transcript.delta', 'response.audio_transcript.delta'].includes(event.type)) tutorAvatarController?.caption(event);
   if (isTutorLiveModel(tutorState.voiceModel)) {
     handleTutorLiveEvent(event);
     return;
@@ -10034,7 +10063,7 @@ async function connectTutorRealtimeSession(session) {
       tutorState.remoteStream = stream;
       if (tutorRemoteAudio) {
         tutorRemoteAudio.srcObject = stream;
-        void tutorRemoteAudio.play().catch(() => {});
+        if (!tutorAvatarController) void tutorRemoteAudio.play().catch(() => {});
       }
       setupTutorRemoteAnalyser(stream);
     },
@@ -10135,7 +10164,7 @@ async function connectTutorRealtimeSessionLegacy(session) {
     tutorState.remoteStream = stream;
     if (tutorRemoteAudio) {
       tutorRemoteAudio.srcObject = stream;
-      void tutorRemoteAudio.play().catch(() => {});
+      if (!tutorAvatarController) void tutorRemoteAudio.play().catch(() => {});
     }
     setupTutorRemoteAnalyser(stream);
   };
@@ -10199,6 +10228,8 @@ async function connectTutorRealtimeSessionLegacy(session) {
 
 function getTutorV2PreferencePayload() {
   return {
+    avatarId: normalizeTutorAvatarId(tutorState.avatarId),
+    avatarMotion: normalizeTutorAvatarMotion(tutorState.avatarMotion),
     mode: normalizeTutorV2Mode(tutorState.mode),
     durationMinutes: normalizeTutorV2Duration(tutorState.durationMinutes),
     speechRate: normalizeTutorSpeechRate(tutorState.speechRate),
@@ -10210,14 +10241,21 @@ function getTutorV2PreferencePayload() {
   };
 }
 
+let tutorPreferencesRevision = 0;
+let tutorPreferencesQueue = Promise.resolve();
 async function persistTutorV2Preferences() {
+  const revision = ++tutorPreferencesRevision;
+  const payload = getTutorV2PreferencePayload();
   saveTutorV2PreferencesToStorage();
   saveTutorSpeechRateToStorage();
   saveTutorVoiceToStorage();
   saveTutorTranscriptionLanguageToStorage();
   saveTutorVocabularyLevelToStorage();
   try {
-    const result = await updateTutorV2Preferences(getTutorV2PreferencePayload());
+    const request = tutorPreferencesQueue.catch(() => {}).then(() => updateTutorV2Preferences(payload));
+    tutorPreferencesQueue = request;
+    const result = await request;
+    if (revision !== tutorPreferencesRevision) return;
     applyTutorV2Preferences(result?.preferences || {});
     if (result?.profile) {
       tutorState.speakingProfile = normalizeSpeakingProfile(result.profile, tutorState.profile);
@@ -11028,16 +11066,19 @@ function bindEvents() {
   });
 
   tutorStart?.addEventListener('click', () => {
+    void tutorAvatarController?.prepareAudio();
     void startTutorSession();
   });
 
   tutorDiagnostic?.addEventListener('click', () => {
+    void tutorAvatarController?.prepareAudio();
     void startTutorSession({ diagnostic: true });
   });
 
   tutorBenchmark?.addEventListener('click', () => {
     tutorState.activeView = 'practice';
     renderTutor();
+    void tutorAvatarController?.prepareAudio();
     void startTutorSession({ benchmark: true });
   });
 
@@ -11541,6 +11582,7 @@ function bindEvents() {
 
   window.addEventListener('beforeunload', () => {
     cleanupTutorConnection();
+    void tutorAvatarController?.dispose();
   });
 }
 

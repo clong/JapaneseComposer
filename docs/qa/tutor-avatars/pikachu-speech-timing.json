@@ -1,0 +1,102 @@
+{
+  "browser": "chromium",
+  "version": "152.0.7977.83",
+  "trials": [
+    {
+      "voice": "marin",
+      "rate": 1,
+      "onsetMax": 30.300000071525574,
+      "closureMax": 12.699999928474426,
+      "speechBursts": 13,
+      "fps": 60
+    },
+    {
+      "voice": "cedar",
+      "rate": 1,
+      "onsetMax": 29.399999976158142,
+      "closureMax": 0,
+      "speechBursts": 14,
+      "fps": 60
+    },
+    {
+      "voice": "alloy",
+      "rate": 1,
+      "onsetMax": 29.600000023841858,
+      "closureMax": 11.399999976158142,
+      "speechBursts": 17,
+      "fps": 60
+    },
+    {
+      "voice": "ash",
+      "rate": 1,
+      "onsetMax": 30.5,
+      "closureMax": 10.5,
+      "speechBursts": 16,
+      "fps": 60
+    },
+    {
+      "voice": "ballad",
+      "rate": 1,
+      "onsetMax": 31.800000071525574,
+      "closureMax": 11.5,
+      "speechBursts": 17,
+      "fps": 60
+    },
+    {
+      "voice": "coral",
+      "rate": 1,
+      "onsetMax": 20.100000023841858,
+      "closureMax": 20.700000047683716,
+      "speechBursts": 22,
+      "fps": 60
+    },
+    {
+      "voice": "echo",
+      "rate": 1,
+      "onsetMax": 31,
+      "closureMax": 10.399999976158142,
+      "speechBursts": 13,
+      "fps": 60
+    },
+    {
+      "voice": "sage",
+      "rate": 1,
+      "onsetMax": 29.5,
+      "closureMax": 11,
+      "speechBursts": 19,
+      "fps": 60
+    },
+    {
+      "voice": "shimmer",
+      "rate": 1,
+      "onsetMax": 20.600000023841858,
+      "closureMax": 11.600000023841858,
+      "speechBursts": 19,
+      "fps": 60
+    },
+    {
+      "voice": "verse",
+      "rate": 1,
+      "onsetMax": 29.700000047683716,
+      "closureMax": 10.399999976158142,
+      "speechBursts": 20,
+      "fps": 60
+    },
+    {
+      "voice": "marin",
+      "rate": 0.8,
+      "onsetMax": 79.59999990463257,
+      "closureMax": 10.300000071525574,
+      "speechBursts": 16,
+      "fps": 60
+    },
+    {
+      "voice": "marin",
+      "rate": 1.2,
+      "onsetMax": 11.799999952316284,
+      "closureMax": 10,
+      "speechBursts": 13,
+      "fps": 60
+    }
+  ]
+}

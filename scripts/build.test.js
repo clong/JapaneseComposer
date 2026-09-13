@@ -21,6 +21,15 @@ test('build completes and outputs artifacts', async () => {
   await fs.access(buildPath('dist/index.html'));
   await fs.access(buildPath('dist/assets/app.js'));
   await fs.access(buildPath('dist/assets/app.css'));
+  await fs.access(buildPath('dist/THIRD_PARTY_NOTICES.md'));
+  for (const id of ['pikachu']) {
+    await fs.access(buildPath(`dist/assets/tutor/${id}.glb`));
+    await fs.access(buildPath(`dist/assets/tutor/${id}.webp`));
+    await fs.access(buildPath(`dist/assets/tutor/${id}-thumb.webp`));
+  }
+  await fs.access(buildPath('dist/assets/tutor/preview-ja.wav'));
+  await fs.access(buildPath('dist/assets/vendor/headaudio/headworklet.mjs'));
+  await fs.access(buildPath('dist/assets/vendor/headaudio/model-ja-en.bin'));
 
   const html = await fs.readFile(buildPath('dist/index.html'), 'utf8');
   assert.ok(!html.includes('@@BUILD_TIMESTAMP@@'));
@@ -34,6 +43,8 @@ test('build completes and outputs artifacts', async () => {
   assert.ok(html.includes('id="page-nav-tutor"'));
   assert.ok(html.includes('id="tutor-page"'));
   assert.ok(html.includes('id="tutor-avatar"'));
+  assert.ok(html.includes('Pikachu'));
+  assert.ok(!html.includes('data-avatar-id='), 'The retired four-character picker is absent.');
   assert.ok(html.includes('id="tutor-stage-activity"'));
   assert.ok(html.includes('id="tutor-voice"'));
   assert.ok(html.includes('id="tutor-speech-rate"'));

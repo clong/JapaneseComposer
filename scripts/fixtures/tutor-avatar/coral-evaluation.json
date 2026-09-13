@@ -1,0 +1,9 @@
+{
+  "name": "coral-evaluation",
+  "voice": "coral",
+  "input": "あ、い、う、え、お。パパもママも、パンを食べます。東京の高校へ行きます。Please repeat the word slowly. Take your time.",
+  "instructions": "Speak like a friendly Japanese language tutor. Separate the initial five Japanese vowels with clear pauses. Speak the Japanese naturally, then the English slowly. No music.",
+  "model": "gpt-4o-mini-tts-2025-12-15",
+  "generated": "2026-09-12T22:24:50.265Z",
+  "synthetic": true
+}
