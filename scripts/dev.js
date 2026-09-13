@@ -452,6 +452,10 @@ debug('Build complete.');
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.glb': 'model/gltf-binary',
+  '.webp': 'image/webp',
+  '.wav': 'audio/wav',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.ico': 'image/x-icon'

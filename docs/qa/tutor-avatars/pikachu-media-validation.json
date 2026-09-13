@@ -1,0 +1,14 @@
+[
+  {
+    "file": "chromium-pikachu-desktop.webm",
+    "decodedVideo": true,
+    "videoCodec": "vp8",
+    "audioCodec": "opus"
+  },
+  {
+    "file": "chromium-pikachu-mobile.webm",
+    "decodedVideo": true,
+    "videoCodec": "vp8",
+    "audioCodec": "opus"
+  }
+]

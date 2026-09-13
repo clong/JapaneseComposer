@@ -766,26 +766,27 @@ export function AppShell() {
                     <strong id="tutor-current-goal">Start today's mission</strong>
                     <div className="tutor-activity-track" aria-hidden="true"><span id="tutor-activity-progress" /></div>
                   </div>
-                  <div className="tutor-avatar-shell" id="tutor-avatar" data-state="idle">
-                    <div className="tutor-avatar-halo" aria-hidden="true" />
-                    <div className="tutor-avatar-portrait" aria-hidden="true">
-                      <div className="tutor-avatar-hair" />
-                      <div className="tutor-avatar-face">
-                        <div className="tutor-avatar-brow tutor-avatar-brow-left" />
-                        <div className="tutor-avatar-brow tutor-avatar-brow-right" />
-                        <div className="tutor-avatar-eye tutor-avatar-eye-left" />
-                        <div className="tutor-avatar-eye tutor-avatar-eye-right" />
-                        <div className="tutor-avatar-nose" />
-                        <div className="tutor-avatar-mouth" />
-                      </div>
-                      <div className="tutor-avatar-neck" />
-                      <div className="tutor-avatar-shoulders" />
+                  <div className="tutor-avatar-experience" id="tutor-avatar" data-state="idle">
+                    <div className="tutor-avatar-heading">
+                      <span data-avatar-eyebrow="">Your practice companion</span>
+                      <div><strong data-avatar-name="">Pikachu</strong><span data-avatar-subtitle="">ピカチュウ</span></div>
                     </div>
-                    <div className="tutor-audio-rings" aria-hidden="true">
-                      <span />
-                      <span />
-                      <span />
+                    <div className="tutor-avatar-scene" data-avatar-stage="">
+                      <img className="tutor-avatar-poster" data-avatar-portrait="" src="./assets/tutor/pikachu.webp" alt="Pikachu" />
+                      <span className="tutor-avatar-ground" aria-hidden="true" />
+                      <div className="tutor-avatar-presence"><i aria-hidden="true" /><span data-avatar-status="">Ready when you are</span></div>
                     </div>
+                    <p className="tutor-avatar-message" data-avatar-message="" role="status" hidden />
+                    <button type="button" className="tutor-avatar-secondary" data-avatar-retry="" hidden>Reload character</button>
+                    <button type="button" className="tutor-avatar-secondary" data-avatar-enable-audio="" hidden>Enable audio</button>
+                    <div className="tutor-avatar-options">
+                      <button type="button" className="tutor-avatar-preview" data-avatar-preview="">Meet Pikachu</button>
+                      <label><span className="sr-only" data-avatar-motion-label="">Animation</span>
+                        <select data-avatar-motion="" defaultValue="auto"><option value="auto">Natural</option><option value="reduced">Reduced motion</option><option value="off">Still portrait</option></select>
+                      </label>
+                    </div>
+                    <p className="tutor-avatar-preview-caption" data-avatar-preview-caption="" hidden />
+                    <p className="tutor-avatar-note" data-avatar-note="">A prerecorded Japanese greeting. No microphone needed.</p>
                   </div>
                   <div className="tutor-stage-activity" id="tutor-stage-activity" role="status" aria-live="polite" hidden>
                     <span className="tutor-thinking-dots" aria-hidden="true">

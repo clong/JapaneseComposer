@@ -1,0 +1,9 @@
+{
+  "name": "preview-ja",
+  "voice": "marin",
+  "input": "こんにちは。一緒に日本語を練習しましょう。ゆっくりで大丈夫です。",
+  "instructions": "Speak warm, clear, natural Japanese as a patient adult language tutor. Gentle and unhurried. No music or other sounds.",
+  "model": "gpt-4o-mini-tts-2025-12-15",
+  "generated": "2026-09-12T22:24:18.155Z",
+  "synthetic": true
+}

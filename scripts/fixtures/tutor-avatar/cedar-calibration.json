@@ -1,0 +1,9 @@
+{
+  "name": "cedar-calibration",
+  "voice": "cedar",
+  "input": "あーー。\n\nいーー。\n\nうーー。\n\nえーー。\n\nおーー。\n\nまーー。",
+  "instructions": "Speak only these six Japanese sounds, in order, each sustained for one second, with one second of complete silence between sounds. No introduction or background sound.",
+  "model": "gpt-4o-mini-tts-2025-12-15",
+  "generated": "2026-09-12T22:46:33.877Z",
+  "synthetic": true
+}

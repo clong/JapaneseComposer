@@ -1,0 +1,11 @@
+.git
+node_modules
+docs/qa/tutor-avatars
+scripts/fixtures/tutor-avatar
+scripts/build-pikachu.py
+scripts/optimize-tutor-characters.js
+scripts/tutor-avatar-browser.js
+scripts/tutor-avatar-app-browser.js
+scripts/tutor-avatar-recordings.js
+scripts/tutor-avatar-calibration.js
+**/*.blend

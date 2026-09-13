@@ -1,3 +1,4 @@
+@import './tutor-avatar.css';
 @import '@radix-ui/themes/styles.css';
 @import './reading.css';
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap');
@@ -2375,159 +2376,6 @@ body.image-lightbox-open {
   box-shadow: 0 18px 50px rgba(30, 22, 20, 0.1);
 }
 
-.tutor-avatar-shell {
-  --tutor-level: 0;
-  position: relative;
-  width: min(100%, 260px);
-  aspect-ratio: 1;
-  display: grid;
-  place-items: center;
-  isolation: isolate;
-}
-
-.tutor-avatar-halo {
-  position: absolute;
-  inset: 12%;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 50% 38%, rgba(72, 132, 122, 0.24), transparent 52%),
-    radial-gradient(circle at 44% 68%, rgba(217, 95, 76, 0.18), transparent 50%);
-  transform: scale(calc(0.96 + var(--tutor-level) * 0.08));
-  transition: transform 0.12s ease;
-  z-index: -1;
-}
-
-.tutor-avatar-portrait {
-  position: relative;
-  width: 76%;
-  height: 82%;
-}
-
-.tutor-avatar-hair {
-  position: absolute;
-  left: 18%;
-  top: 6%;
-  width: 64%;
-  height: 52%;
-  border-radius: 48% 52% 44% 44%;
-  background: linear-gradient(145deg, #302824, #5a4037 58%, #241b18);
-  box-shadow: inset -18px 0 28px rgba(0, 0, 0, 0.18);
-}
-
-.tutor-avatar-face {
-  position: absolute;
-  left: 22%;
-  top: 18%;
-  width: 56%;
-  height: 54%;
-  border-radius: 45% 45% 48% 48%;
-  background: linear-gradient(160deg, #f0c6ad, #d99b7f 62%, #c88772);
-  box-shadow:
-    inset 10px 0 24px rgba(255, 255, 255, 0.18),
-    inset -8px -10px 18px rgba(111, 55, 44, 0.15),
-    0 16px 32px rgba(64, 36, 28, 0.18);
-}
-
-.tutor-avatar-brow {
-  position: absolute;
-  top: 32%;
-  width: 20%;
-  height: 4px;
-  border-radius: 999px;
-  background: rgba(75, 43, 35, 0.68);
-}
-
-.tutor-avatar-brow-left {
-  left: 23%;
-  transform: rotate(-7deg);
-}
-
-.tutor-avatar-brow-right {
-  right: 23%;
-  transform: rotate(7deg);
-}
-
-.tutor-avatar-eye {
-  position: absolute;
-  top: 40%;
-  width: 11%;
-  height: 7%;
-  border-radius: 50%;
-  background: #2b211e;
-  box-shadow: 0 0 0 4px rgba(255, 245, 235, 0.48);
-  animation: tutor-blink 7s infinite;
-}
-
-.tutor-avatar-eye-left {
-  left: 28%;
-}
-
-.tutor-avatar-eye-right {
-  right: 28%;
-}
-
-.tutor-avatar-nose {
-  position: absolute;
-  left: 48%;
-  top: 46%;
-  width: 7%;
-  height: 16%;
-  border-radius: 999px;
-  border-right: 2px solid rgba(122, 68, 54, 0.34);
-}
-
-.tutor-avatar-mouth {
-  position: absolute;
-  left: 39%;
-  top: 67%;
-  width: 22%;
-  height: calc(5% + var(--tutor-level) * 16%);
-  min-height: 5%;
-  border-radius: 0 0 999px 999px;
-  background: linear-gradient(180deg, #8d3d42, #4b1f25);
-  transform-origin: top;
-  transition: height 0.08s ease;
-}
-
-.tutor-avatar-shell[data-state='speaking'] .tutor-avatar-mouth {
-  animation: tutor-mouth 0.22s infinite alternate;
-}
-
-.tutor-avatar-shell[data-state='thinking'] .tutor-avatar-halo {
-  background:
-    radial-gradient(circle at 50% 38%, rgba(164, 95, 28, 0.28), transparent 52%),
-    radial-gradient(circle at 44% 68%, rgba(246, 215, 118, 0.22), transparent 50%);
-  animation: tutor-thinking-pulse 1.15s ease-in-out infinite;
-}
-
-.tutor-avatar-shell[data-state='listening'] .tutor-avatar-halo {
-  background:
-    radial-gradient(circle at 50% 38%, rgba(72, 132, 122, 0.32), transparent 52%),
-    radial-gradient(circle at 44% 68%, rgba(246, 215, 118, 0.2), transparent 50%);
-}
-
-.tutor-avatar-neck {
-  position: absolute;
-  left: 42%;
-  top: 66%;
-  width: 16%;
-  height: 20%;
-  border-radius: 0 0 40% 40%;
-  background: linear-gradient(160deg, #d99b7f, #bd765f);
-  z-index: -1;
-}
-
-.tutor-avatar-shoulders {
-  position: absolute;
-  left: 16%;
-  top: 76%;
-  width: 68%;
-  height: 22%;
-  border-radius: 42% 42% 18% 18%;
-  background: linear-gradient(145deg, #355f5a, #223d3a);
-  box-shadow: 0 18px 30px rgba(30, 22, 20, 0.18);
-  z-index: -2;
-}
 
 .tutor-audio-rings {
   position: absolute;
@@ -2980,39 +2828,6 @@ body.image-lightbox-open {
   font-size: 11px;
   font-weight: 700;
   padding: 6px 8px;
-}
-
-@keyframes tutor-blink {
-  0%,
-  92%,
-  100% {
-    transform: scaleY(1);
-  }
-  95% {
-    transform: scaleY(0.12);
-  }
-}
-
-@keyframes tutor-mouth {
-  from {
-    height: calc(6% + var(--tutor-level) * 10%);
-  }
-  to {
-    height: calc(12% + var(--tutor-level) * 18%);
-  }
-}
-
-@keyframes tutor-thinking-pulse {
-  0%,
-  100% {
-    transform: scale(0.96);
-    opacity: 0.82;
-  }
-
-  50% {
-    transform: scale(1.03);
-    opacity: 1;
-  }
 }
 
 @keyframes tutor-thinking-dot {
@@ -4690,16 +4505,6 @@ html[data-theme='dark'] .image-lightbox-image {
   border-radius: inherit;
   background: #317e70;
   transition: width 0.25s ease;
-}
-
-.tutor-avatar-shell {
-  width: min(100%, 220px);
-}
-
-.tutor-avatar-shell[data-state='repair'] .tutor-avatar-halo {
-  background:
-    radial-gradient(circle at 50% 38%, rgba(202, 92, 71, 0.28), transparent 52%),
-    radial-gradient(circle at 44% 68%, rgba(224, 182, 61, 0.22), transparent 50%);
 }
 
 .tutor-controls,
