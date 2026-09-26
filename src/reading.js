@@ -10,7 +10,8 @@ const copy = {
     empty: 'Your reading sessions will appear here when you start an article.', start: 'Start reading', resume: 'Resume',
     today: 'Today’s articles', random: 'Random articles', loading: 'Loading articles…', retry: 'Retry', close: 'Close',
     todayList: 'Articles for {date} (Japan time)', randomList: '4 articles from random dates within the past year',
-    noToday: 'No articles have been published for today (Japan time). Try Random articles or check again later.',
+    latestList: 'Latest articles from {date} (Japan time)',
+    noToday: 'No recent articles are available. Try Random articles or check again later.',
     originalLink: 'Original NHK article', mirrorLink: 'Read on NHK Easier',
     jaEn: 'Japanese → English', enJa: 'English → Japanese', newAttempt: 'New attempt', translate: 'Translate', readAloud: 'Read aloud', activity: 'Practice mode',
     furiganaOn: 'Furigana: On', furiganaOff: 'Furigana: Off',
@@ -48,7 +49,8 @@ const copy = {
     empty: '記事を開くと、練習がここに保存されます。', start: '練習を始める', resume: '再開',
     today: '今日の記事', random: 'ランダムな記事', loading: '記事を読み込み中…', retry: '再試行', close: '閉じる',
     todayList: '{date}の記事（日本時間）', randomList: '過去1年の異なる日付から無作為に選んだ4つの記事',
-    noToday: '今日（日本時間）の記事はまだありません。「ランダムな記事」を選ぶか、後でもう一度お試しください。',
+    latestList: '最新の記事：{date}（日本時間）',
+    noToday: '最近の記事がありません。「ランダムな記事」を選ぶか、後でもう一度お試しください。',
     originalLink: 'NHKの元記事', mirrorLink: 'NHK Easierで読む',
     jaEn: '日本語 → 英語', enJa: '英語 → 日本語', newAttempt: '新しく練習する', translate: '翻訳', readAloud: '音読', activity: '練習モード',
     furiganaOn: 'ふりがな：オン', furiganaOff: 'ふりがな：オフ',
@@ -304,7 +306,7 @@ export function createReadingPage({ root, lookup, translate, annotateTitle, requ
       error.append(button(c().retry, () => { void loadArticles(articlesMode, true); })); panel.append(error);
     }
     if (library) {
-      panel.append(el('p', 'reading-library-caption', library.mode === 'random' ? c().randomList : format(c().todayList, { date: library.date || '' })));
+      panel.append(el('p', 'reading-library-caption', library.mode === 'random' ? c().randomList : format(library.fallback ? c().latestList : c().todayList, { date: library.date || '' })));
       panel.append(el('p', library.stale ? 'reading-notice' : 'reading-muted', format(library.stale ? c().stale : c().fetched, { date: date(library.fetchedAt) })));
     }
     const grid = el('div', 'reading-article-grid');
