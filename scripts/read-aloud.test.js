@@ -5,7 +5,7 @@ import { parseReadingArticles } from './reading-source.js';
 import { articleHtml } from './reading-fixtures.js';
 import { createReadingSession, validateSession, validateArticle } from '../src/reading-model.js';
 import { alignSpeech, normalizeSpeech, LiveTranscript, liveSentenceId, validateAloudReview } from '../src/read-aloud-model.js';
-import { encodeWav, inspectWav } from '../src/read-aloud-wav.js';
+import { encodeWav, inspectWav, trimLeadingSilence } from '../src/read-aloud-wav.js';
 import { createReadAloudService, createSpeechNormalizer, ALOUD_PROMPT } from './read-aloud-service.js';
 import kuromoji from 'kuromoji';
 import { audioRange, readAudioBody } from './read-aloud-api.js';
@@ -33,6 +33,27 @@ test('recording encoding resamples to mono PCM and measures duration, activity a
   const silence = inspectWav(waveform(2, 0)); assert.equal(silence.rms, 0); assert.deepEqual(silence.pauses, [{ start: 0, end: 2 }]);
   assert.throws(() => inspectWav(new Uint8Array(20)));
   const bad = wav.slice(); new DataView(bad.buffer).setUint32(24, 48000, true); assert.throws(() => inspectWav(bad));
+});
+
+test('grading audio drops only the lead-in, preserving the speech onset and later pauses', () => {
+  const silence = (seconds) => new Float32Array(24000 * seconds);
+  const voice = Float32Array.from({ length: 24000 }, (_, i) => .1 * Math.sin(i / 5));
+  const original = encodeWav([silence(10), voice, silence(.8), voice, silence(1)], 24000);
+  // Uploaded buffers can have a nonzero byte offset in their backing allocation.
+  const padded = Buffer.concat([Buffer.alloc(8), original]).subarray(8);
+  const { bytes, offset, recordingDuration, measurements } = trimLeadingSilence(padded);
+  assert.equal(offset, 9.9); assert.equal(recordingDuration, 13.8);
+  assert.equal(measurements.duration, 3.9); assert.equal(measurements.speechStart, .1);
+  assert.deepEqual(measurements.pauses, [{ start: 1.1, end: 1.9 }, { start: 2.9, end: 3.9 }]);
+  assert.deepEqual(Buffer.from(bytes.subarray(44)), Buffer.from(original.subarray(44 + 9.9 * 24000 * 2)));
+  assert.equal(new DataView(bytes.buffer).getUint32(4, true), bytes.length - 8);
+  assert.equal(inspectWav(original).duration, 13.8);
+  assert.deepEqual(trimLeadingSilence(bytes).bytes, bytes);
+  for (const unchanged of [waveform(), waveform(2, 0), encodeWav([silence(.06), voice], 24000)]) {
+    const trimmed = trimLeadingSilence(unchanged);
+    assert.equal(trimmed.bytes, unchanged); assert.equal(trimmed.offset, 0);
+  }
+  assert.equal(inspectWav(waveform(2, 0)).speechStart, null);
 });
 
 test('alignment tolerates introductions, skips and repeats without assigning uncertain sentence times', () => {
@@ -175,7 +196,45 @@ test('silence produces uncertainty without paid model requests; durations and mi
   const result = await service.review({ id: 'silent', article, sentenceIds: [ids[0]] }, Buffer.from(waveform(2, 0)));
   assert.equal(result.review.ratings.pronunciation, 'uncertain'); assert.equal(result.review.transcript, '');
   await assert.rejects(service.review({ id: 'long', article, sentenceIds: [ids[0]] }, Buffer.from(waveform(91))), (e) => e.status === 400);
+  const longLeadIn = encodeWav([new Float32Array(90 * 24000), new Float32Array(24000).fill(.1)], 24000);
+  await assert.rejects(service.review({ id: 'long-silence', article, sentenceIds: [ids[0]] }, longLeadIn), (e) => e.status === 400);
   await assert.rejects(makeService(() => {}, { apiKey: () => '' }).transcriptionSession(), (e) => e.status === 501);
+});
+
+test('sentence and article grading exclude opening silence and keep original replay timestamps', async () => {
+  const delayed = encodeWav([new Float32Array(30 * 24000).fill(.0005),
+    Float32Array.from({ length: .5 * 24000 }, (_, i) => .02 * Math.sin(i / 5))], 24000);
+  assert.ok(inspectWav(delayed).rms < .002); // Waiting must not dilute audible speech into a silent-recording result.
+  for (const scope of ['sentence', 'article']) {
+    const sentenceIds = scope === 'sentence' ? [ids[0]] : ids;
+    let transcribed, assessed = false;
+    const service = makeService(async (url, options) => {
+      if (url.startsWith('https://nhkeasier.com')) return mp3();
+      if (url.endsWith('transcriptions')) {
+        transcribed = Buffer.from(await options.body.get('file').arrayBuffer());
+        assert.equal(inspectWav(transcribed).duration, .6);
+        return json({ text: article.sentences[0].text, words: [{ word: article.sentences[0].text, start: .1, end: .6 }] });
+      }
+      const body = JSON.parse(options.body);
+      if (url.endsWith('chat/completions')) {
+        assessed = true;
+        const content = body.messages[1].content;
+        assert.deepEqual(Buffer.from(content[1].input_audio.data, 'base64'), transcribed);
+        const context = JSON.parse(content[0].text.slice('Context data: '.length).split('\nLEARNER recording:')[0]);
+        assert.equal(context.measuredAudio.duration, .6); assert.deepEqual(context.measuredAudio.pauses, []);
+        assert.deepEqual(context.learnerSentenceTimings, [{ id: ids[0], start: .1, end: .6 }]);
+        assert.match(body.messages[0].content, /Ignore any silence or preparation before that point/);
+        return json({ choices: [{ finish_reason: 'stop', message: { content: 'The spoken sentence is clear.' } }] });
+      }
+      const feedback = { ...example(), sentences: sentenceIds.map((id) => ({ id, status: 'read', observation: '' })) };
+      return json({ status: 'completed', output: [{ content: [{ type: 'output_text', text: JSON.stringify(feedback) }] }] });
+    });
+    const { review } = await service.review({ id: 'delayed', article, sentenceIds, scope }, delayed);
+    assert.ok(assessed); assert.equal(review.ratings.pacing, 'clear');
+    assert.equal(review.duration, 30.5);
+    assert.equal(review.sentences[0].start, 30); assert.equal(review.sentences[0].end, 30.5);
+    for (const sentence of review.sentences.slice(1)) { assert.equal(sentence.start, null); assert.equal(sentence.end, null); }
+  }
 });
 
 test('incomplete model feedback never becomes a successful review; missing references allow honest feedback', async () => {
