@@ -17,17 +17,19 @@ const bundle = await build({ stdin: { contents: `
   const article = ${JSON.stringify(article)};
   const makeArticle = (id, title, day) => ({ ...article, id, title, titleSegments: [{ text: title, reading: '' }], publishedAt: day + 'T08:00:00Z', sentenceCount: article.sentences.length });
   const today = [makeArticle('nhkeasier-1', '今日の記事', '2026-09-10')];
+  const previous = [makeArticle('nhkeasier-6', '前日の記事', '2026-09-09')];
   const random = ['2025-10-24', '2026-01-15', '2026-05-18', '2026-08-26'].map((day, index) => makeArticle('nhkeasier-' + (index + 2), '過去の記事 ' + (index + 1), day));
-  window.fixture = { calls: [], pending: [], delay: false, fail: false, empty: false };
+  window.fixture = { calls: [], pending: [], delay: false, fail: false, empty: false, fallback: false };
   let context = { active: true, language: 'en', owner: 'guest' };
   const controller = createReadingPage({ root: document.querySelector('#reading-root'), lookup: async () => ({ status: 'miss' }),
     request: async route => {
       fixture.calls.push(route);
-      if (route.startsWith('articles/nhkeasier-')) return { article: [...today, ...random].find(article => article.id === route.slice(9)) };
+      if (route.startsWith('articles/nhkeasier-')) return { article: [...today, ...previous, ...random].find(article => article.id === route.slice(9)) };
       if (fixture.delay) await new Promise(resolve => fixture.pending.push(resolve));
       if (fixture.fail) throw new Error('Temporary archive failure');
       const mode = route === 'articles/random' ? 'random' : 'today';
-      return { articles: mode === 'random' ? random : fixture.empty ? [] : today, mode, date: '2026-09-10', fetchedAt: Date.now(), stale: false };
+      return { articles: mode === 'random' ? random : fixture.empty ? [] : fixture.fallback ? previous : today,
+        mode, date: fixture.fallback ? '2026-09-09' : '2026-09-10', fallback: fixture.fallback, fetchedAt: Date.now(), stale: false };
     }
   });
   fixture.language = language => controller.update(context = { ...context, language });
@@ -81,8 +83,20 @@ try {
   assert.equal(await page.locator('.reading-article-card').count(), 1);
   assert.equal(await today.getAttribute('aria-pressed'), 'true');
 
+  await page.evaluate(() => { fixture.fallback = true; });
+  await today.click(); await page.getByText('Latest articles from 2026-09-09 (Japan time)', { exact: true }).waitFor();
+  await count(1); assert.match(await page.locator('.reading-article-card').innerText(), /前日の記事/);
+  await page.evaluate(() => { fixture.language('ja'); });
+  await page.getByText('最新の記事：2026-09-09（日本時間）', { exact: true }).waitFor();
+  await page.evaluate(() => { fixture.language('en'); });
+  await random.click(); await count(4);
+  await today.click(); await count(1);
+  assert.match(await page.locator('.reading-library-caption').innerText(), /Latest articles from 2026-09-09/);
+  await page.evaluate(() => { fixture.fallback = false; });
+  await today.click(); await page.getByText('Articles for 2026-09-10 (Japan time)', { exact: true }).waitFor();
+  assert.match(await page.locator('.reading-article-card').innerText(), /今日の記事/);
   await page.evaluate(() => { fixture.empty = true; });
-  await today.click(); await page.getByText('No articles have been published for today (Japan time). Try Random articles or check again later.', { exact: true }).waitFor();
+  await today.click(); await page.getByText('No recent articles are available. Try Random articles or check again later.', { exact: true }).waitFor();
   await count(0);
   await page.evaluate(() => { fixture.fail = true; });
   await random.click(); await page.getByText('Temporary archive failure', { exact: false }).waitFor();

@@ -86,15 +86,59 @@ test('today uses Japan time, filters other publication dates, and refresh bypass
   await source.list({ refresh: true }); assert.equal(requests, 2);
 });
 
-test('unpublished days are empty and a new day never falls back to yesterday’s cached articles', async () => {
+test('source failures on a new day are not treated as a missing publication', async () => {
   let clock = fixtureNow, status = 200;
   const source = createReadingSource({ now: () => clock, fetchImpl: async () => new Response(status === 200 ? articleHtml : '', { status }) });
   assert.equal((await source.list()).articles.length, 1);
   clock += 86400000; status = 503;
   await assert.rejects(source.list(), /unavailable/);
-  status = 404;
-  const empty = await source.list();
-  assert.deepEqual(empty.articles, []); assert.equal(empty.date, '2026-09-11'); assert.equal(empty.stale, false);
+});
+
+test('unpublished days load the latest publication day across weekends and share its cached listing', async () => {
+  const requests = [];
+  const source = createReadingSource({ now: () => Date.parse('2026-09-13T12:00:00Z'), fetchImpl: async url => {
+    requests.push(url);
+    if (url.endsWith('/2026/09/13/')) return new Response('', { status: 404 });
+    assert.equal(url, 'https://nhkeasier.com/');
+    return new Response(['1', '2', '3', '4', '1'].map(id => articleOn('2026-09-11', id)).join('')
+      + articleOn('2026-09-10', '5') + articleOn('2026-09-14', '6'));
+  } });
+  const [a, b] = await Promise.all([source.list(), source.list()]);
+  assert.deepEqual(a, b); assert.equal(requests.length, 2);
+  assert.equal(a.date, '2026-09-11'); assert.equal(a.mode, 'today');
+  assert.equal(a.fallback, true); assert.equal(a.stale, false);
+  assert.deepEqual(a.articles.map(article => article.id), ['nhkeasier-1', 'nhkeasier-2', 'nhkeasier-3', 'nhkeasier-4']);
+  assert.deepEqual(await source.list(), a); assert.equal(requests.length, 2);
+  assert.equal((await source.article('nhkeasier-1')).id, 'nhkeasier-1'); assert.equal(requests.length, 2);
+});
+
+test('Today refreshes its fallback and returns to today once new articles are published', async () => {
+  let published = false;
+  const requests = [];
+  const source = createReadingSource({ now: () => fixtureNow, fetchImpl: async url => {
+    requests.push(url);
+    if (url.endsWith('/2026/09/10/')) return published ? new Response(articleOn('2026-09-10')) : new Response('', { status: 404 });
+    assert.equal(url, 'https://nhkeasier.com/');
+    return new Response(articleOn('2026-09-09'));
+  } });
+  assert.equal((await source.list()).date, '2026-09-09');
+  await source.list({ refresh: true }); assert.equal(requests.length, 4);
+  published = true;
+  const today = await source.list({ refresh: true });
+  assert.equal(today.date, '2026-09-10'); assert.equal(today.fallback, false); assert.equal(requests.length, 5);
+});
+
+test('failed fallback refreshes retain their cached publication date with a stale notice', async () => {
+  let clock = fixtureNow, fail = false;
+  const source = createReadingSource({ now: () => clock, fetchImpl: async url => {
+    if (url.endsWith('/2026/09/10/')) return new Response('', { status: 404 });
+    return fail ? new Response('', { status: 503 }) : new Response(articleOn('2026-09-09'));
+  } });
+  await source.list(); clock += 600001; fail = true;
+  const stale = await source.list();
+  assert.equal(stale.stale, true); assert.equal(stale.fallback, true);
+  assert.equal(stale.date, '2026-09-09'); assert.equal(stale.fetchedAt, fixtureNow);
+  assert.equal(stale.articles.length, 1);
 });
 
 test('random discovery returns exactly four different dates in the past year and keeps today separate', async () => {

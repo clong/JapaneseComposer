@@ -91,41 +91,51 @@ export function createReadingSource({ fetchImpl = fetch, now = Date.now, random 
     articles.set(article.id, article);
     if (articles.size > 150) articles.delete(articles.keys().next().value);
   }
-  async function loadDay(day, { refresh = false, timeout } = {}) {
-    const cached = days.get(day);
+  async function loadListing(day, { refresh = false, timeout } = {}) {
+    // The undated listing supplies the latest publication day across weekends and holidays.
+    const key = day || 'latest';
+    const cached = days.get(key);
     if (!refresh && cached && now() - cached.fetchedAt < CACHE_MS) return cached;
-    if (inFlightDays.has(day)) return inFlightDays.get(day);
+    if (inFlightDays.has(key)) return inFlightDays.get(key);
     const task = (async () => {
       const fetchedAt = now();
-      const html = await download(`${ORIGIN}/${day.replaceAll('-', '/')}/`, { allowMissing: true, timeout });
+      const html = await download(day ? `${ORIGIN}/${day.replaceAll('-', '/')}/` : `${ORIGIN}/`, { allowMissing: Boolean(day), timeout });
       const found = html === null ? [] : parseReadingArticles(html, fetchedAt);
       if (html !== null && !found.length) throw new ReadingError('No articles could be read from NHK Easier. Please retry later.', 502);
       const seen = new Set();
       const matches = found.filter((article) => {
         const published = Date.parse(article.publishedAt);
-        if (!Number.isFinite(published) || published > fetchedAt || japanDate(published) !== day || seen.has(article.id)) return false;
+        if (!Number.isFinite(published) || published > fetchedAt || (day && japanDate(published) !== day) || seen.has(article.id)) return false;
         seen.add(article.id); return true;
       });
-      matches.forEach(remember);
-      const result = { articles: matches, fetchedAt };
-      days.delete(day); days.set(day, result);
+      const date = day || matches.map(article => japanDate(article.publishedAt)).sort().at(-1);
+      const latest = matches.filter(article => japanDate(article.publishedAt) === date);
+      if (!day && !latest.length) throw new ReadingError('No recent articles could be read from NHK Easier. Please retry later.', 502);
+      latest.forEach(remember);
+      const result = { articles: latest, fetchedAt, date };
+      days.delete(key); days.set(key, result);
       if (days.size > 60) days.delete(days.keys().next().value);
       return result;
     })();
-    inFlightDays.set(day, task);
-    try { return await task; } finally { inFlightDays.delete(day); }
+    inFlightDays.set(key, task);
+    try { return await task; } finally { inFlightDays.delete(key); }
   }
   return {
     async list({ refresh = false } = {}) {
       const day = japanDate(now());
-      let result, stale = false;
-      try { result = await loadDay(day, { refresh }); }
-      catch (error) {
-        result = days.get(day);
-        if (!result) throw error;
-        stale = true;
+      let stale = false;
+      async function load(date) {
+        try { return await loadListing(date, { refresh }); }
+        catch (error) {
+          const cached = days.get(date || 'latest');
+          if (!cached) throw error;
+          stale = true;
+          return cached;
+        }
       }
-      return { ...result, articles: summarize(result.articles), mode: 'today', date: day, stale };
+      let result = await load(day);
+      if (!result.articles.length) result = await load(null);
+      return { ...result, articles: summarize(result.articles), mode: 'today', fallback: result.date !== day, stale };
     },
     async random() {
       if (randomInFlight) return randomInFlight;
@@ -149,7 +159,7 @@ export function createReadingSource({ fetchImpl = fetch, now = Date.now, random 
         while (selected.length < 4 && checked < Math.min(24, dates.length)) {
           const batch = dates.slice(checked, Math.min(checked + 4, 24));
           checked += batch.length;
-          const results = await Promise.all(batch.map((day) => loadDay(day, { timeout: 8000 })));
+          const results = await Promise.all(batch.map((day) => loadListing(day, { timeout: 8000 })));
           for (const result of results) {
             const candidates = result.articles.filter((article) => !seen.has(article.id));
             if (!candidates.length) continue;
