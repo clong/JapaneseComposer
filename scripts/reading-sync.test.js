@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ReadingSync } from '../src/reading-sync.js';
-import { createReadingSession, updateReadingAnswer } from '../src/reading-model.js';
+import { createReadingSession, updateReadingAnswer, addReadingVocabulary } from '../src/reading-model.js';
 import { parseReadingArticles } from './reading-source.js';
 import { articleHtml, englishFor } from './reading-fixtures.js';
 
@@ -15,6 +15,7 @@ test('guest drafts, reverse prompts and expanded editors survive reload without 
   const first = new ReadingSync({storage,request}); t.after(()=>first.dispose()); first.setOwner('guest');
   const session = createReadingSession(article,'draft'); session.english = englishFor(article); session.mode='en-ja'; session.expanded=[article.sentences[0].id];
   updateReadingAnswer(session,'en-ja',article.sentences[0].id,'本が三冊あります。');
+  addReadingVocabulary(session, 'library', [{ word: '図書館', reading: 'としょかん', meaning: 'library' }]);
   first.save(session); first.activate('draft');
   const restored = new ReadingSync({storage,request}); t.after(()=>restored.dispose()); restored.setOwner('guest');
   assert.equal(restored.activeId,'draft'); assert.deepEqual(restored.sessions,[session]); assert.equal(restored.status,'local');
@@ -44,10 +45,13 @@ test('conflicts preserve local answers as a recovered session and adopt the remo
   }});
   t.after(()=>sync.dispose()); sync.owner='alice';
   const local = createReadingSession(article,'draft'); updateReadingAnswer(local,'ja-en',article.sentences[0].id,'Local answer');
+  addReadingVocabulary(local, '図書館', [{ word: '図書館', reading: 'としょかん', meaning: 'library' }]);
   sync.save(local); sync.activate('draft'); await sync.flush();
   assert.equal(sync.entries.draft.revision,5); assert.equal(sync.entries.draft.session.mode,'en-ja');
   assert.equal(sync.activeId,'recovered'); assert.equal(sync.entries.recovered.dirty,true);
   assert.equal(sync.entries.recovered.session.answers['ja-en'][article.sentences[0].id].input,'Local answer');
+  assert.deepEqual(sync.entries.recovered.session.vocabulary, local.vocabulary);
+  assert.deepEqual(sync.entries.draft.session.vocabulary, []);
 });
 
 test('offline failures keep dirty drafts and retry successfully', async (t) => {

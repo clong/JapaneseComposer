@@ -192,7 +192,7 @@ After a student submits a shared review, they can use the workflow panel's "Upda
 
 ## Reading practice
 
-The **Reading** tab lists the latest NHK Easy stories available through [NHK Easier](https://nhkeasier.com/). Each article links to the mirror and the original NHK page. Article discovery is cached for ten minutes; a source outage shows the last fetched list when available.
+The **Reading** tab opens **Today’s articles**, showing NHK Easy stories published on the current date in Japan through [NHK Easier](https://nhkeasier.com/). Selecting **Today’s articles** fetches that day again, including after viewing random stories. If no stories have been published that day, the page shows an empty-day message. **Random articles**, directly below it, retrieves four articles from four randomly selected publication dates within the preceding year. Dates with no articles are skipped; selecting the button again draws another set. Each article links to the mirror and the original NHK page. Daily archives are cached for ten minutes. If refreshing today fails, only a cached list for that same date can be shown.
 
 Click a sentence to expand its translation editor. Several editors can stay open. Use **Grade sentence** for one answer or **Grade filled sentences** for all nonblank answers. Feedback accepts meaning-preserving paraphrases and minor mistakes, with optional wording suggestions. Editing an answer clears its previous grade.
 
@@ -200,7 +200,11 @@ Switch to **English → Japanese** to practice in reverse. English prompts are g
 
 Reading uses the same `OPENAI_API_KEY` and optional `OPENAI_MODEL` as proofreading (default `gpt-4.1`). The model must support Responses API Structured Outputs. Article text and submitted translations are sent to OpenAI for grading, and the Japanese article is sent to generate reverse prompts. Model requests use `store: false`.
 
-Sessions autosave in browser storage. Signed-in sessions also sync to the `reading_sessions` table in the existing workspace SQLite database. Browser caches are separated by account; signed-out sessions stay local. **Saved sessions** restores an article snapshot, answers, grades, direction, and expanded editors. **New attempt** creates a separate session. Conflicting edits are preserved as a recovered copy; deletion markers prevent stale devices from restoring deleted sessions. Saving states report storage or sync failures and allow retrying.
+In **Translate** mode, word lookups fall back to Google Translate when the dictionary has no match or returns an error. Japanese selections translate into English, and English selections translate into Japanese. The fallback uses the existing `GOOGLE_TRANSLATE_API_KEY` configuration. A small footer in the lookup dialog identifies dictionary results or Google Translate results. If both services fail, the dialog shows an error.
+
+Successful lookups and fallback translations are automatically saved in the **Vocabulary** memory bank beside the article (below it on narrow screens). Dictionary entries keep the selected word, Japanese dictionary forms, readings, and English definitions. Google Translate entries keep the Japanese and English text and their source label; they do not invent a reading. Repeated lookups of the same selection share one entry. **Collapse** hides the list, and **Clear** removes the vocabulary for that reading session. Read aloud lookups do not add entries.
+
+Sessions autosave in browser storage. Signed-in sessions also sync to the `reading_sessions` table in the existing workspace SQLite database. Browser caches are separated by account; signed-out sessions stay local. **Saved sessions** restores an article snapshot, answers, grades, vocabulary, direction, and expanded editors. **New attempt** creates a separate session with an empty vocabulary bank. Conflicting edits are preserved as a recovered copy; deletion markers prevent stale devices from restoring deleted sessions. Saving states report storage or sync failures and allow retrying.
 
 Run `npm test` to check article extraction, sentence alignment, model response validation, answer edits, account isolation, revision conflicts, and persistence. These tests use synthetic article text and mocked model responses; they do not make paid OpenAI requests.
 

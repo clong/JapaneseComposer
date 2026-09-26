@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createReadingStore, READING_TABLE_SQL } from './reading-store.js';
-import { createReadingSession } from '../src/reading-model.js';
+import { createReadingSession, addReadingVocabulary } from '../src/reading-model.js';
 import { parseReadingArticles } from './reading-source.js';
 import { articleHtml } from './reading-fixtures.js';
 
@@ -20,8 +20,10 @@ test('SQLite sessions isolate accounts, detect concurrent revisions and retain d
   const store = createReadingStore({dbPath,runSqlite});
   const [article] = parseReadingArticles(articleHtml);
   const session = createReadingSession(article,'same-id');
+  addReadingVocabulary(session, '図書館', [{ word: '図書館', reading: 'としょかん', meaning: 'library' }]);
   const first = await store.write('alice',session.id,session,0);
   assert.equal(first.revision,1);
+  assert.deepEqual((await store.get('alice', session.id)).session.vocabulary, session.vocabulary);
   assert.equal(await store.get('bob',session.id),null);
   assert.deepEqual(await store.list('bob'),[]);
   await store.write('bob',session.id,{...session,recovered:true},0);
