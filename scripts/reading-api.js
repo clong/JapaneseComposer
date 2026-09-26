@@ -28,7 +28,8 @@ export function createReadingApi({ dbPath, runSqlite, getUser, isDbReady, source
     try {
       const route = url.pathname.slice('/api/reading/'.length);
       if (await aloudApi(req, res, route, readBody, send)) return true;
-      if (route === 'articles' && req.method === 'GET') send(res, 200, await source.list());
+      if (route === 'articles' && req.method === 'GET') send(res, 200, await source.list({ refresh: url.searchParams.get('refresh') === '1' }));
+      else if (route === 'articles/random' && req.method === 'GET') send(res, 200, await source.random());
       else if (route.startsWith('articles/') && req.method === 'GET') send(res, 200, { article: await source.article(route.slice(9)) });
       else if (route === 'reverse' && req.method === 'POST') send(res, 200, await ai.reverse(await readBody(req)));
       else if (route === 'grade' && req.method === 'POST') send(res, 200, await ai.grade(await readBody(req)));

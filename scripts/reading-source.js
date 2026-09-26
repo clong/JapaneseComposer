@@ -4,6 +4,9 @@ import { ReadingError, readingImageUrl, splitJapaneseSentences, validateArticle 
 
 const ORIGIN = 'https://nhkeasier.com';
 const CACHE_MS = 10 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const japanDate = (value) => new Date(new Date(value).getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+const summarize = (found) => found.map(({ sentences, ...article }) => ({ ...article, sentenceCount: sentences.length }));
 function attr(node, name) { return node.attrs?.find((item) => item.name === name)?.value || ''; }
 function descendants(node, tag) {
   return (node.childNodes || []).flatMap((child) => [ ...(child.tagName === tag ? [child] : []), ...descendants(child, tag) ]);
@@ -66,12 +69,14 @@ export function parseReadingArticles(html, fetchedAt = Date.now()) {
   });
 }
 
-export function createReadingSource({ fetchImpl = fetch, now = Date.now } = {}) {
-  let listing = null;
-  let inFlight = null;
+export function createReadingSource({ fetchImpl = fetch, now = Date.now, random = Math.random } = {}) {
+  const days = new Map();
+  const inFlightDays = new Map();
+  let randomInFlight = null;
   const articles = new Map();
-  async function download(url) {
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(15000), redirect: 'error', headers: { Accept: 'text/html' } });
+  async function download(url, { allowMissing = false, timeout = 15000 } = {}) {
+    const response = await fetchImpl(url, { signal: AbortSignal.timeout(timeout), redirect: 'error', headers: { Accept: 'text/html' } });
+    if (allowMissing && response.status === 404) return null;
     if (!response.ok) throw new ReadingError('The article source is unavailable. Please retry.', 502);
     let html = '';
     const decoder = new TextDecoder();
@@ -86,24 +91,77 @@ export function createReadingSource({ fetchImpl = fetch, now = Date.now } = {}) 
     articles.set(article.id, article);
     if (articles.size > 150) articles.delete(articles.keys().next().value);
   }
+  async function loadDay(day, { refresh = false, timeout } = {}) {
+    const cached = days.get(day);
+    if (!refresh && cached && now() - cached.fetchedAt < CACHE_MS) return cached;
+    if (inFlightDays.has(day)) return inFlightDays.get(day);
+    const task = (async () => {
+      const fetchedAt = now();
+      const html = await download(`${ORIGIN}/${day.replaceAll('-', '/')}/`, { allowMissing: true, timeout });
+      const found = html === null ? [] : parseReadingArticles(html, fetchedAt);
+      if (html !== null && !found.length) throw new ReadingError('No articles could be read from NHK Easier. Please retry later.', 502);
+      const seen = new Set();
+      const matches = found.filter((article) => {
+        const published = Date.parse(article.publishedAt);
+        if (!Number.isFinite(published) || published > fetchedAt || japanDate(published) !== day || seen.has(article.id)) return false;
+        seen.add(article.id); return true;
+      });
+      matches.forEach(remember);
+      const result = { articles: matches, fetchedAt };
+      days.delete(day); days.set(day, result);
+      if (days.size > 60) days.delete(days.keys().next().value);
+      return result;
+    })();
+    inFlightDays.set(day, task);
+    try { return await task; } finally { inFlightDays.delete(day); }
+  }
   return {
-    async list() {
-      if (listing && now() - listing.fetchedAt < CACHE_MS) return { ...listing, stale: false };
-      if (inFlight) return inFlight;
-      inFlight = (async () => {
-        try {
-          const fetchedAt = now();
-          const found = parseReadingArticles(await download(`${ORIGIN}/`), fetchedAt);
-          if (!found.length) throw new ReadingError('No articles could be read from NHK Easier. Please retry later.', 502);
-          found.forEach(remember);
-          listing = { articles: found.map(({ sentences, ...article }) => ({ ...article, sentenceCount: sentences.length })), fetchedAt };
-          return { ...listing, stale: false };
-        } catch (error) {
-          if (listing) return { ...listing, stale: true };
-          throw error;
-        } finally { inFlight = null; }
+    async list({ refresh = false } = {}) {
+      const day = japanDate(now());
+      let result, stale = false;
+      try { result = await loadDay(day, { refresh }); }
+      catch (error) {
+        result = days.get(day);
+        if (!result) throw error;
+        stale = true;
+      }
+      return { ...result, articles: summarize(result.articles), mode: 'today', date: day, stale };
+    },
+    async random() {
+      if (randomInFlight) return randomInFlight;
+      randomInFlight = (async () => {
+        const fetchedAt = now();
+        const end = Date.parse(`${japanDate(fetchedAt)}T00:00:00Z`);
+        const start = new Date(end);
+        start.setUTCFullYear(start.getUTCFullYear() - 1);
+        // February 29 maps to February 28 in the previous year.
+        if (start.getUTCMonth() !== new Date(end).getUTCMonth()) start.setUTCDate(0);
+        const dates = [];
+        for (let day = start.getTime(); day < end; day += DAY_MS) dates.push(new Date(day).toISOString().slice(0, 10));
+        for (let i = dates.length - 1; i > 0; i--) {
+          const j = Math.floor(random() * (i + 1));
+          [dates[i], dates[j]] = [dates[j], dates[i]];
+        }
+        const selected = [], seen = new Set();
+        // At most four requests at a time, and 24 dates total, including unpublished days.
+        // Eight-second archive timeouts keep the whole operation within the client timeout.
+        let checked = 0;
+        while (selected.length < 4 && checked < Math.min(24, dates.length)) {
+          const batch = dates.slice(checked, Math.min(checked + 4, 24));
+          checked += batch.length;
+          const results = await Promise.all(batch.map((day) => loadDay(day, { timeout: 8000 })));
+          for (const result of results) {
+            const candidates = result.articles.filter((article) => !seen.has(article.id));
+            if (!candidates.length) continue;
+            const article = candidates[Math.floor(random() * candidates.length)];
+            selected.push(article); seen.add(article.id);
+            if (selected.length === 4) break;
+          }
+        }
+        if (selected.length !== 4) throw new ReadingError('Could not find four articles from the past year. Please try Random articles again.', 502);
+        return { articles: summarize(selected), fetchedAt, mode: 'random', stale: false };
       })();
-      return inFlight;
+      try { return await randomInFlight; } finally { randomInFlight = null; }
     },
     async article(id) {
       const match = /^nhkeasier-(\d{1,12})$/.exec(id);

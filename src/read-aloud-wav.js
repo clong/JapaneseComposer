@@ -25,7 +25,7 @@ export function inspectWav(bytes) {
     || view.getUint32(24, true) !== WAV_RATE || view.getUint16(34, true) !== 16 || ascii(36, 4) !== 'data'
     || view.getUint32(40, true) !== bytes.length - 44 || (bytes.length - 44) % 2) throw new Error('Use a mono 24 kHz PCM WAV recording.');
   const count = (bytes.length - 44) / 2;
-  let sum = 0, peak = 0, silenceStart = null, voicedSeconds = 0;
+  let sum = 0, peak = 0, silenceStart = null, voicedSeconds = 0, speechStart = null;
   const pauses = [];
   for (let start = 0; start < count; start += 480) {
     let energy = 0; const end = Math.min(count, start + 480);
@@ -33,11 +33,27 @@ export function inspectWav(bytes) {
     sum += energy;
     if (Math.sqrt(energy / (end - start)) < .009) { if (silenceStart === null) silenceStart = start / WAV_RATE; }
     else {
+      if (speechStart === null) speechStart = start / WAV_RATE;
       voicedSeconds += (end - start) / WAV_RATE;
       if (silenceStart !== null && start / WAV_RATE - silenceStart >= .5) pauses.push({ start: silenceStart, end: start / WAV_RATE });
       silenceStart = null;
     }
   }
   if (silenceStart !== null && count / WAV_RATE - silenceStart >= .5) pauses.push({ start: silenceStart, end: count / WAV_RATE });
-  return { duration: count / WAV_RATE, rms: Math.sqrt(sum / Math.max(1, count)), peak, voicedSeconds, pauses: pauses.slice(0, 100) };
+  return { duration: count / WAV_RATE, rms: Math.sqrt(sum / Math.max(1, count)), peak, voicedSeconds, speechStart, pauses: pauses.slice(0, 100) };
+}
+
+export function trimLeadingSilence(bytes) {
+  const measurements = inspectWav(bytes);
+  // Keep 100 ms before detected activity so quiet consonants at the onset are preserved.
+  const samples = Math.max(0, Math.round(((measurements.speechStart ?? 0) - .1) * WAV_RATE));
+  const offset = samples / WAV_RATE, recordingDuration = measurements.duration;
+  if (!samples) return { bytes, offset, recordingDuration, measurements };
+  const trimmed = new Uint8Array(bytes.length - samples * 2);
+  trimmed.set(bytes.subarray(0, 44));
+  trimmed.set(bytes.subarray(44 + samples * 2), 44);
+  const view = new DataView(trimmed.buffer);
+  view.setUint32(4, trimmed.length - 8, true);
+  view.setUint32(40, trimmed.length - 44, true);
+  return { bytes: trimmed, offset, recordingDuration, measurements: inspectWav(trimmed) };
 }

@@ -1,4 +1,5 @@
 import { audioPath, validateAloudReview } from './read-aloud-model.js';
+import { englishLookupQuery } from './dictionary-query.js';
 
 export const READING_DIRECTIONS = ['ja-en', 'en-ja'];
 export const MAX_READING_ANSWER = 4000;
@@ -137,6 +138,7 @@ export function validateSession(value) {
   return {
     id: readingId(value.id), article, mode: value.mode,
     activity: value.activity === 'aloud' ? 'aloud' : 'translate',
+    vocabulary: validateReadingVocabulary(value.vocabulary),
     reviews: (Array.isArray(value.reviews) ? value.reviews : []).slice(0, 20).map((review) => validateAloudReview(review, article)),
     english: value.english ? validateEnglish(value.english, article) : null,
     answers, expanded: Array.isArray(value.expanded) ? [...new Set(value.expanded.filter((id) => ids.has(id)))] : [],
@@ -148,6 +150,37 @@ export function validateSession(value) {
 
 export function createReadingSession(article, id, now = Date.now()) {
   return validateSession({ id, article, mode: 'ja-en', answers: {}, expanded: [], createdAt: now, updatedAt: now });
+}
+
+function validateReadingVocabulary(value = []) {
+  if (!Array.isArray(value)) throw new ReadingError('Invalid reading vocabulary.');
+  return value.map((lookup) => {
+    if (!lookup || !Array.isArray(lookup.entries) || !lookup.entries.length || lookup.entries.length > 5) {
+      throw new ReadingError('Invalid reading vocabulary entry.');
+    }
+    return {
+      query: text(lookup.query, 80, true),
+      entries: lookup.entries.map((entry) => ({
+        word: text(entry.word, 200, true), reading: text(entry.reading || '', 500), meaning: text(entry.meaning || '', 4000),
+        ...(entry.source === 'google-translate' ? { source: 'google-translate' } : {})
+      }))
+    };
+  });
+}
+
+// Keep the selected text as well as dictionary forms and English lookup alternatives.
+export function addReadingVocabulary(session, query, entries) {
+  const [lookup] = validateReadingVocabulary([{ query, entries }]);
+  const key = (value) => englishLookupQuery(value) || value.normalize('NFKC').trim();
+  const vocabulary = session.vocabulary || [];
+  const index = vocabulary.findIndex((item) => key(item.query) === key(query));
+  if (index >= 0) {
+    lookup.query = vocabulary[index].query;
+    if (JSON.stringify(vocabulary[index]) === JSON.stringify(lookup)) return false;
+    vocabulary[index] = lookup;
+  } else vocabulary.unshift(lookup);
+  session.vocabulary = vocabulary;
+  return true;
 }
 
 export function readingProgress(session, direction = session.mode) {

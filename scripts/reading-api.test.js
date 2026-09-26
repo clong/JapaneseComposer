@@ -27,3 +27,19 @@ test('Reading API bounds input and requires account authentication for every ses
   const res=response(); await api(request('POST',{answers:[]}),res,new URL('http://localhost/api/reading/grade')); assert.equal(calls,1);assert.equal(res.status,200);
   const unrelated=await api(request('GET'),response(),new URL('http://localhost/api/lookup'));assert.equal(unrelated,false);
 });
+
+test('article discovery routes today, forced refresh, and random requests separately', async () => {
+  const calls = [];
+  const api = createReadingApi({ dbPath: 'unused', runSqlite: () => {}, isDbReady: () => false,
+    getUser: async () => null, source: {
+      list: async options => { calls.push(['today', options]); return { articles: [], mode: 'today' }; },
+      random: async () => { calls.push(['random']); return { articles: [], mode: 'random' }; },
+      article: async id => { calls.push(['article', id]); return { id }; }
+    }
+  });
+  for (const route of ['articles', 'articles/random', 'articles?refresh=1', 'articles/nhkeasier-123']) {
+    const res = response(); await api(request('GET'), res, new URL(`http://localhost/api/reading/${route}`));
+    assert.equal(res.status, 200);
+  }
+  assert.deepEqual(calls, [['today', { refresh: false }], ['random'], ['today', { refresh: true }], ['article', 'nhkeasier-123']]);
+});

@@ -11600,6 +11600,7 @@ async function init() {
   window.addEventListener('storage', (event) => textSizeControls.sync(event));
   readingPageController = createReadingPage({
     root: document.querySelector('#reading-root'),
+    translate: async (selected, options) => decodeHtml((await requestTranslation(selected, options))?.translation || '').trim(),
     annotateTitle: async (title) => {
       await initKuromoji();
       return applyReadingOverrides(tokenizeLineWithKuromoji(title))?.map((token) => ({
