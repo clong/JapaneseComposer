@@ -1,11 +1,15 @@
-import { createReadingSession, readingProgress, updateReadingAnswer, applyReadingGrade, addReadingVocabulary, MAX_READING_ANSWER, MAX_READING_BATCH } from './reading-model.js';
+import { createReadingSession, readingProgress, updateReadingAnswer, applyReadingGrade, addReadingVocabulary, MAX_READING_ANSWER, MAX_READING_BATCH, MAX_CUSTOM_READING_TEXT } from './reading-model.js';
 import { ReadingSync, requestReading, newReadingId } from './reading-sync.js';
 import { createReadAloud } from './read-aloud.js';
 import { dictionarySelectionLanguage, dictionaryClipboardText } from './dictionary-query.js';
 
 const copy = {
   en: {
-    title: 'Reading', subtitle: 'Translate real news, one sentence at a time.', articles: 'Choose an article',
+    title: 'Reading', subtitle: 'Practice with news or your own Japanese text, one sentence at a time.', articles: 'Choose an article',
+    pasteText: 'Paste your own text', customSource: 'Your pasted text', customTitle: 'Title (optional)', customText: 'Japanese text',
+    customHint: 'Paste up to 12,000 characters. We preserve your wording and split the text into sentences. Passages without punctuation are sent to OpenAI to identify natural sentence breaks.',
+    customPlaceholder: 'Paste the text you want to practice reading…', importText: 'Start reading this text', importing: 'Preparing your text…', cancelImport: 'Cancel',
+    customCount: '{count} / 12,000 characters', importTimeout: 'Preparing the text timed out. Your text is still here; please retry.',
     source: 'NHK Easy via NHK Easier', browse: 'Browse articles', savedSessions: 'Saved sessions',
     empty: 'Your reading sessions will appear here when you start an article.', start: 'Start reading', resume: 'Resume',
     today: 'Today’s articles', random: 'Random articles', loading: 'Loading articles…', retry: 'Retry', close: 'Close',
@@ -44,7 +48,11 @@ const copy = {
     noArticles: 'No articles are available. Try refreshing.', gradeError: 'Some sentences could not be graded. Retry those sentences below.'
   },
   ja: {
-    title: '読解', subtitle: 'ニュースを一文ずつ翻訳して練習しましょう。', articles: '記事を選ぶ',
+    title: '読解', subtitle: 'ニュースや自分の日本語の文章を一文ずつ練習しましょう。', articles: '記事を選ぶ',
+    pasteText: '自分の文章を貼り付ける', customSource: '貼り付けた文章', customTitle: 'タイトル（任意）', customText: '日本語の文章',
+    customHint: '12,000文字まで貼り付けられます。原文を変えずに文ごとに分割します。句読点のない部分は、自然な文の区切りを判断するためOpenAIに送信します。',
+    customPlaceholder: '練習したい文章を貼り付けてください…', importText: 'この文章で練習する', importing: '文章を準備中…', cancelImport: 'キャンセル',
+    customCount: '{count} / 12,000文字', importTimeout: '文章の準備がタイムアウトしました。入力内容は残っています。もう一度お試しください。',
     source: 'NHKやさしいことばニュース（NHK Easier経由）', browse: '記事一覧', savedSessions: '保存した練習',
     empty: '記事を開くと、練習がここに保存されます。', start: '練習を始める', resume: '再開',
     today: '今日の記事', random: 'ランダムな記事', loading: '記事を読み込み中…', retry: '再試行', close: '閉じる',
@@ -111,6 +119,8 @@ export function createReadingPage({ root, lookup, translate, annotateTitle, requ
   let articlesMode = 'today';
   let articlesRequest = 0;
   let attemptedLoad = false;
+  let importOpen = false, importBusy = false, importError = '', importRequest = 0, importController;
+  let importDraft = { title: '', text: '' };
   let showLibrary = false;
   let drawerOpen = true;
   let furigana = true;
@@ -142,6 +152,7 @@ export function createReadingPage({ root, lookup, translate, annotateTitle, requ
   };
   const sync = new ReadingSync({ storage, request, onChange(reason) {
     if (reason === 'owner') {
+      stopImport(); importOpen = false; importDraft = { title: '', text: '' }; importError = '';
       operation = null; notice = ''; sentenceErrors.clear(); reverseErrors.clear(); rows.clear();
       vocabularyCleared.clear(); vocabularyCollapsed = false;
       showLibrary = false; openRequest += 1; hideDictionary();
@@ -153,6 +164,7 @@ export function createReadingPage({ root, lookup, translate, annotateTitle, requ
   } });
   const aloud = createReadAloud({ request, getSession: active, save });
   function save(session) { session.updatedAt = Date.now(); sync.save(session); }
+  function stopImport() { importRequest++; importController?.abort(); importController = null; importBusy = false; }
   function hideDictionary() { dictionary.hidden = true; dictionaryToken += 1; selectionKey = ''; }
   function sessionProgressText(session) {
     if (session.activity !== 'aloud') return format(c().progress, readingProgress(session));
@@ -181,7 +193,7 @@ export function createReadingPage({ root, lookup, translate, annotateTitle, requ
     }
   }
   function render() {
-    if (!context.active || !context.owner || showLibrary || active()?.activity !== 'aloud') aloud.leave();
+    if (!context.active || !context.owner || importOpen || showLibrary || active()?.activity !== 'aloud') aloud.leave();
     if (!context.active || !context.owner) return;
     clearTimeout(clickTimer);
     rows.clear();
@@ -195,20 +207,72 @@ export function createReadingPage({ root, lookup, translate, annotateTitle, requ
     drawerButton.setAttribute('aria-controls', 'reading-sessions-drawer');
     syncNode = el('span', 'reading-save-status'); syncNode.setAttribute('role', 'status');
     syncRetry = button(c().retry, () => { void sync.refresh(); });
-    tools.append(syncNode, syncRetry, drawerButton);
+    const paste = button(c().pasteText, () => {
+      openRequest++; importOpen = true; importError = ''; hideDictionary(); render();
+      root.querySelector('#reading-custom-text')?.focus();
+    });
+    paste.disabled = importOpen;
+    tools.append(syncNode, syncRetry, paste, drawerButton);
     header.append(heading, tools); root.append(header);
     if (notice) { const note = el('div', 'reading-notice', notice); note.setAttribute('role', 'status'); root.append(note); }
     const layout = el('div', `reading-layout ${drawerOpen ? 'with-drawer' : ''}`);
     if (drawerOpen) layout.append(renderDrawer());
     const panel = el('section', 'panel reading-content');
-    if (!active() || showLibrary) renderLibrary(panel); else renderArticle(panel, active());
+    if (importOpen) renderImport(panel);
+    else if (!active() || showLibrary) renderLibrary(panel); else renderArticle(panel, active());
     const workspace = el('div', 'reading-workspace');
     workspace.append(panel);
-    if (active() && !showLibrary && active().activity !== 'aloud') {
+    if (active() && !showLibrary && !importOpen && active().activity !== 'aloud') {
       workspace.classList.add('with-vocabulary');
       workspace.append(renderVocabulary(active()));
     }
     layout.append(workspace); root.append(layout); updateStatus();
+  }
+  function renderImport(panel) {
+    const form = el('form', 'reading-import');
+    const heading = el('h3', '', c().pasteText);
+    const hint = el('p', 'reading-muted', c().customHint); hint.id = 'reading-custom-hint';
+    const titleLabel = el('label', '', c().customTitle), title = el('input');
+    title.type = 'text'; title.maxLength = 200; title.value = importDraft.title; title.readOnly = importBusy;
+    title.addEventListener('input', () => { importDraft.title = title.value; }); titleLabel.append(title);
+    const textLabel = el('label', '', c().customText), text = el('textarea');
+    text.id = 'reading-custom-text'; text.lang = 'ja'; text.rows = 12;
+    text.value = importDraft.text; text.placeholder = c().customPlaceholder; text.readOnly = importBusy;
+    text.setAttribute('aria-describedby', hint.id); textLabel.append(text);
+    const actions = el('div', 'reading-actions');
+    const submit = button(importBusy ? c().importing : c().importText, () => {}, true); submit.type = 'submit';
+    const count = el('p', 'reading-muted'); count.setAttribute('aria-live', 'polite');
+    const updateSubmit = () => {
+      const oversized = importDraft.text.length > MAX_CUSTOM_READING_TEXT;
+      submit.disabled = importBusy || !importDraft.text.trim() || oversized || fileMode();
+      count.textContent = format(c().customCount, { count: importDraft.text.length.toLocaleString(context.language) });
+      count.className = oversized ? 'reading-error' : 'reading-muted';
+    };
+    text.addEventListener('input', () => { importDraft.text = text.value; updateSubmit(); }); updateSubmit();
+    const cancel = button(c().cancelImport, () => { stopImport(); importOpen = false; render(); });
+    actions.append(submit, cancel); form.append(heading, hint, titleLabel, textLabel, count, actions);
+    form.setAttribute('aria-busy', String(importBusy));
+    if (importBusy) { const status = el('p', 'reading-muted', c().importing); status.setAttribute('role', 'status'); form.append(status); }
+    if (importError || fileMode()) { const error = el('p', 'reading-error', fileMode() ? c().fileOnly : importError); error.setAttribute('role', 'alert'); form.append(error); }
+    form.addEventListener('submit', event => { event.preventDefault(); if (!submit.disabled) void importText(); });
+    panel.append(form);
+  }
+  async function importText() {
+    const token = ++importRequest, epoch = sync.epoch;
+    importBusy = true; importError = ''; importController = new AbortController(); render();
+    const controller = importController, timeout = setTimeout(() => controller.abort(), 75000);
+    try {
+      const { article } = await request('articles/import', { method: 'POST', body: { ...importDraft }, signal: importController.signal });
+      if (token !== importRequest || epoch !== sync.epoch) return;
+      const session = createReadingSession(article, newReadingId());
+      sync.save(session); importDraft = { title: '', text: '' }; importOpen = false; importBusy = false;
+      openSession(session.id);
+    } catch (error) {
+      if (token === importRequest && epoch === sync.epoch) importError = error.name === 'AbortError' ? c().importTimeout : error.message || c().requestError;
+    } finally {
+      clearTimeout(timeout);
+      if (token === importRequest && epoch === sync.epoch) { importBusy = false; importController = null; render(); }
+    }
   }
   function renderVocabulary(session) {
     const panel = el('aside', `panel reading-vocabulary ${vocabularyCollapsed ? 'is-collapsed' : ''}`);
@@ -339,10 +403,11 @@ export function createReadingPage({ root, lookup, translate, annotateTitle, requ
       if (token === articlesRequest) library = result;
     } catch (error) { if (token === articlesRequest) articlesError = error.message || c().requestError; }
     finally {
-      if (token === articlesRequest) { articlesLoading = false; if (showLibrary || !active()) render(); }
+      if (token === articlesRequest) { articlesLoading = false; if (!importOpen && (showLibrary || !active())) render(); }
     }
   }
   function openSession(id) {
+    stopImport(); importOpen = false;
     openRequest += 1;
     hideDictionary(); sync.activate(id); showLibrary = false; notice = ''; sentenceErrors.clear(); render();
     if (active()?.activity !== 'aloud' && active()?.mode === 'en-ja' && !active().english) void prepareEnglish();
@@ -376,7 +441,8 @@ export function createReadingPage({ root, lookup, translate, annotateTitle, requ
     panel.append(isReverse ? el('h3', 'reading-article-title', session.english?.title || c().generating)
       : renderJapaneseTitle('h3', session.article, 'reading-article-title'));
     const attribution = el('div', 'reading-attribution');
-    attribution.append(el('span', '', date(session.article.publishedAt)), link(c().originalLink, session.article.sourceUrl), link(c().mirrorLink, session.article.providerUrl));
+    if (session.article.sourceType === 'custom') attribution.append(el('span', '', c().customSource));
+    else attribution.append(el('span', '', date(session.article.publishedAt)), link(c().originalLink, session.article.sourceUrl), link(c().mirrorLink, session.article.providerUrl));
     panel.append(attribution);
     const activities = el('div', 'reading-toolbar');
     const activityToggle = el('fieldset', 'reading-activity-toggle');
@@ -713,7 +779,7 @@ export function createReadingPage({ root, lookup, translate, annotateTitle, requ
       const previous = context;
       context = next;
       sync.setOwner(next.owner);
-      if (!next.active) { hideDictionary(); aloud.leave(); return; }
+      if (!next.active) { stopImport(); hideDictionary(); aloud.leave(); return; }
       if (next.active !== previous.active || next.language !== previous.language || next.owner !== previous.owner) {
         render();
         if (!attemptedLoad && !active()) void loadArticles();

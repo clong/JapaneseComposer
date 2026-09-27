@@ -4,6 +4,7 @@ import { englishLookupQuery } from './dictionary-query.js';
 export const READING_DIRECTIONS = ['ja-en', 'en-ja'];
 export const MAX_READING_ANSWER = 4000;
 export const MAX_READING_BATCH = 10;
+export const MAX_CUSTOM_READING_TEXT = 12000;
 
 export class ReadingError extends Error {
   constructor(message, status = 400) {
@@ -57,6 +58,11 @@ export function validateArticle(value) {
     throw new ReadingError('The article must contain between 1 and 200 sentences.');
   }
   const ids = new Set();
+  const sourceType = value.sourceType || 'nhk';
+  if (!['nhk', 'custom'].includes(sourceType) || (sourceType === 'custom' && !/^custom-/.test(value.id))) {
+    throw new ReadingError('Invalid article source.');
+  }
+  const custom = sourceType === 'custom';
   let total = 0;
   const sentences = value.sentences.map((sentence) => {
     const id = readingId(sentence.id);
@@ -84,9 +90,10 @@ export function validateArticle(value) {
     throw new ReadingError('Article annotations do not match the title.');
   }
   return {
-    id: readingId(value.id), title, titleSegments, audioPath: audioPath(value.audioPath), imageUrl: readingImageUrl(value.imageUrl),
-    publishedAt: text(value.publishedAt || '', 100),
-    sourceUrl: sourceUrl(value.sourceUrl), providerUrl: sourceUrl(value.providerUrl, true),
+    id: readingId(value.id), sourceType, title, titleSegments,
+    audioPath: custom ? null : audioPath(value.audioPath), imageUrl: custom ? null : readingImageUrl(value.imageUrl),
+    publishedAt: custom ? '' : text(value.publishedAt || '', 100),
+    sourceUrl: custom ? null : sourceUrl(value.sourceUrl), providerUrl: custom ? null : sourceUrl(value.providerUrl, true),
     fetchedAt: Number.isFinite(value.fetchedAt) ? value.fetchedAt : Date.now(), sentences
   };
 }

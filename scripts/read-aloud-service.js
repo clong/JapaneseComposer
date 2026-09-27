@@ -1,7 +1,5 @@
 import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
-import path from 'node:path';
-import kuromoji from 'kuromoji';
+import { japaneseTokenizer } from './japanese-tokenizer.js';
 import { ReadingError, validateArticle, readingId } from '../src/reading-model.js';
 import { alignSpeech, normalizeSpeech, practiceIds, validateAloudReview, audioPath } from '../src/read-aloud-model.js';
 import { trimLeadingSilence } from '../src/read-aloud-wav.js';
@@ -19,7 +17,6 @@ function withTimeout(signal, milliseconds) {
   return controller.signal;
 }
 const articleText = (a) => a.sentences.map((s) => s.text).join('\n');
-let tokenizerPromise;
 export function createSpeechNormalizer(article, tokenizer) {
   const annotations = new Map(article.sentences.flatMap((s) => s.segments).filter((s) => s.reading).map((s) => [s.text, s.reading]));
   const reading = (token) => normalizeSpeech(token.surface_form)
@@ -32,11 +29,7 @@ export function createSpeechNormalizer(article, tokenizer) {
   };
 }
 async function speechNormalizer(article) {
-  if (!tokenizerPromise) tokenizerPromise = new Promise((resolve, reject) => {
-    const require = createRequire(import.meta.url);
-    kuromoji.builder({ dicPath: path.join(path.dirname(require.resolve('kuromoji/package.json')), 'dict') }).build((error, tokenizer) => error ? reject(error) : resolve(tokenizer));
-  });
-  return createSpeechNormalizer(article, await tokenizerPromise);
+  return createSpeechNormalizer(article, await japaneseTokenizer());
 }
 const obj = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const str = { type: 'string' };
@@ -97,6 +90,7 @@ export function createReadAloudService({ source, dbPath, runSqlite, isDbReady = 
     return result;
   }
   async function reference(snapshot, signal, retry = false) {
+    if (snapshot.sourceType === 'custom') return { timings: [], audioPath: null };
     const clip = await audio(snapshot.id, signal);
     if (articleText(clip.article) !== articleText(snapshot)) throw new ReadingError('The source article changed; reference comparison is unavailable for this saved text.', 409);
     const key = hash(`${articleText(snapshot)}:${snapshot.sentences.map((s) => s.id).join(',')}:${clip.version}:alignment-v2`);
@@ -151,7 +145,9 @@ export function createReadAloudService({ source, dbPath, runSqlite, isDbReady = 
       const normalize = await normalizeFactory(article);
       const timings = alignSpeech(selected, transcript.words, normalize).filter((t) => t.end <= measurements.duration + .1);
       let clip;
-      try { clip = await audio(article.id, signal); if (articleText(clip.article) !== articleText(article)) clip = null; } catch { clip = null; }
+      if (article.sourceType !== 'custom') {
+        try { clip = await audio(article.id, signal); if (articleText(clip.article) !== articleText(article)) clip = null; } catch { clip = null; }
+      }
       if (signal?.aborted) throw new ReadingError('Audio review cancelled.', 499);
       const context = { article: { title: article.title, sentences: article.sentences.map(({ id, text }) => ({ id, text })) }, practiceSentenceIds: ids,
         learnerTranscript: transcript.text, measuredAudio: measurements, learnerSentenceTimings: timings, referenceAvailable: Boolean(clip) };

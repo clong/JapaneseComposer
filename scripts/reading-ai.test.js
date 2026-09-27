@@ -65,6 +65,16 @@ test('reverse prompts require complete one-to-one alignment and can be returned 
   }
 });
 
+test('custom documents use the same translation grading and reverse prompt validation', async () => {
+  const custom = createReadingSession({ ...article, id: 'custom-text', sourceType: 'custom' }, 'session').article;
+  const ai = createReadingAi({ apiKey: () => 'test', fetchImpl: async (_, options) => {
+    const body = JSON.parse(options.body);
+    return response(body.text.format.name === 'reading_reverse' ? englishFor(custom) : { results: [result] });
+  } });
+  assert.deepEqual((await ai.reverse({ article: custom })).english, englishFor(custom));
+  assert.deepEqual((await ai.grade({ article: custom, direction: 'ja-en', answers: [answer] })).results, [result]);
+});
+
 test('grading results match the submitted answer and direction; editing invalidates grades', () => {
   const session = createReadingSession(article,'session-1');
   updateReadingAnswer(session,'ja-en',id,answer.input);

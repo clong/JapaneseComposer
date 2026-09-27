@@ -103,7 +103,7 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
     referenceError = ''; playbackError = ''; error = ''; notice = ''; live = {}; currentSentence = ''; root.replaceChildren();
   }
   async function prepareReference(retry = false) {
-    if (!article || referenceBusy) return;
+    if (!article || article.sourceType === 'custom' || referenceBusy) return;
     const token = key; referenceBusy = true; referenceError = ''; render();
     referenceController?.abort(); referenceController = new AbortController();
     try {
@@ -241,7 +241,8 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
     if (!referenceBusy && (referenceError || playbackError || matchedCount < article.sentences.length)) {
       const retry = control(c().retryPlayback, () => { playbackError = ''; referencePlayer.load(); void prepareReference(true); }); retry.disabled = busy(); referenceBox.append(retry);
     }
-    root.append(referenceBox, node('p', 'reading-notice', c().disclosure));
+    if (article.sourceType !== 'custom') root.append(referenceBox);
+    root.append(node('p', 'reading-notice', c().disclosure));
     const actions = node('div', 'reading-actions');
     const whole = control(c().whole, () => { void start(article.sentences.map((s) => s.id), 'article'); }, true); whole.disabled = busy(); actions.append(whole);
     if (busy()) {
@@ -274,7 +275,9 @@ export function createReadAloud({ request, getSession, save, recordFactory = (op
       const tools = node('div', 'reading-actions');
       const record = control(c().sentence, () => { void start([sentence.id]); }); record.disabled = busy();
       record.setAttribute('aria-label', `${c().sentence} · ${index + 1}`);
-      tools.append(record, sentenceListen(sentence.id)); row.append(tools);
+      tools.append(record);
+      if (article.sourceType !== 'custom') tools.append(sentenceListen(sentence.id));
+      row.append(tools);
       const feedback = reviews.filter((result) => result.sentenceIds.includes(sentence.id));
       if (feedback.length) {
         row.append(renderSentenceFeedback(feedback[0], sentence));

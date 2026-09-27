@@ -43,3 +43,13 @@ test('article discovery routes today, forced refresh, and random requests separa
   }
   assert.deepEqual(calls, [['today', { refresh: false }], ['random'], ['today', { refresh: true }], ['article', 'nhkeasier-123']]);
 });
+
+test('pasted documents import through the Reading API without publisher fetches', async () => {
+  const api = createReadingApi({ dbPath: 'unused', runSqlite: () => {}, isDbReady: () => false, getUser: async () => null,
+    source: { article: () => { throw new Error('Must not fetch NHK for pasted text'); } }, ai: { split: () => { throw new Error('Punctuation already supplies sentence boundaries'); } } });
+  const res = response();
+  await api(request('POST', { title: '練習', text: '今日は晴れです。明日は雨です。' }), res, new URL('http://localhost/api/reading/articles/import'));
+  assert.equal(res.status, 200); assert.equal(res.data.article.sourceType, 'custom'); assert.equal(res.data.article.sentences.length, 2);
+  const bad = response(); await api(request('POST', { text: ' ' }), bad, new URL('http://localhost/api/reading/articles/import'));
+  assert.equal(bad.status, 400);
+});
