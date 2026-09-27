@@ -1,10 +1,14 @@
 import { normalizeTutorAvatarId, normalizeTutorAvatarMotion } from '../src/tutor-avatar-model.js';
+import { DIAGNOSTIC_ASSESSMENT_SCHEMA, DIAGNOSTIC_ASSESSMENT_INSTRUCTIONS, diagnosticReply,
+  diagnosticReport, recordDiagnosticResult, pauseDiagnostic, resumeDiagnostic, finishDiagnosticIfDue,
+  validateDiagnosticDecision } from '../src/tutor-diagnostic.js';
+import { createTutorDiagnosticDirector } from './tutor-diagnostic-director.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import WebSocket from 'ws';
-import { isTutorLiveModel, TUTOR_LIVE_MODEL, tutorLiveActivityContext } from '../src/tutor-live.js';
+import { isTutorLiveModel, TUTOR_LIVE_MODEL, tutorLiveActivityContext, tutorLiveAppends } from '../src/tutor-live.js';
 import { createTutorLiveCall, createTutorLiveDirector, createTutorLiveAudioBuffer, createTutorLiveGreeting, tutorLiveSidebandUrl } from './tutor-live-server.js';
 import {
   createTutorRealtimeTraceState,
@@ -59,7 +63,7 @@ export const TUTOR_V2_AUDIO_RETENTION_DAYS = 30;
 
 const MAX_JSON_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_AUDIO_BODY_BYTES = 25 * 1024 * 1024;
-const MAX_EVENT_LOG = 240;
+const MAX_EVENT_LOG = 1200;
 const MAX_RECENT_TURNS = 12;
 const ACTIVITY_POLL_CACHE_MS = 300;
 const SIDEBAND_INITIAL_DELAY_MS = 250;
@@ -259,6 +263,7 @@ function applyAssessmentDimensions(profile, assessment, now = Date.now()) {
   const normalized = normalizeSpeakingProfile(profile);
   const dimensions = { ...normalized.dimensions };
   TUTOR_SPEAKING_DIMENSIONS.forEach((dimension) => {
+    if (!Number.isFinite(assessment.dimensions[dimension])) return;
     if (dimension === 'phonology' && !Number.isFinite(assessment.acoustic?.accuracy)) return;
     const previous = dimensions[dimension];
     const confidence = dimension === 'phonology'
@@ -305,6 +310,22 @@ function applyProfileDimensionEvidence(profile, dimension, score, confidence, no
     },
     updatedAt: now
   });
+}
+
+function profileWithDiagnostic(profile, state) {
+  const normalized = normalizeSpeakingProfile(profile);
+  const report = diagnosticReport(state);
+  const dimensions = { ...normalized.dimensions };
+  for (const signal of report.domains) {
+    if (!signal.sampleCount) continue;
+    dimensions[signal.domain] = { ...dimensions[signal.domain],
+      level: signal.level || dimensions[signal.domain].level,
+      confidence: Math.min(0.75, signal.sampleCount * 0.08), evidenceCount: signal.sampleCount,
+      score: (signal.independent + signal.supported * 0.5) / signal.sampleCount };
+  }
+  const prioritySkills = [...new Set([...state.evidence.filter(e => ['supported', 'not_yet_demonstrated'].includes(e.outcome))
+    .map(e => e.skillId), ...normalized.prioritySkills])].slice(0, 6);
+  return normalizeSpeakingProfile({ ...normalized, dimensions, prioritySkills, baseline: report, updatedAt: Date.now() });
 }
 
 export function rebuildTutorLearningState({
@@ -358,7 +379,7 @@ export function rebuildTutorLearningState({
     });
     mastery = updated.mastery;
     reviewItems = updated.reviewItems;
-    rebuiltProfile = deriveSpeakingProfile(rebuiltProfile, mastery);
+    if (assessment.diagnosticVersion !== 1) rebuiltProfile = deriveSpeakingProfile(rebuiltProfile, mastery);
     rebuiltProfile = applyAssessmentDimensions(rebuiltProfile, {
       ...assessment,
       acoustic: {
@@ -505,6 +526,7 @@ function buildAssessmentInstructions() {
   return [
     'You are the private assessment layer for a Japanese speaking tutor.',
     'Score only evidence present in the learner turn and current activity.',
+    'Set any untested dimension to null. A name alone does not establish vocabulary breadth, fluency, or overall speaking proficiency.',
     'A transcript is an ASR hypothesis, not proof of pronunciation. Do not report a pronunciation error unless acoustic evidence explicitly supports it.',
     'Require repair only for a meaning-blocking issue, a missed target, or one high-confidence grammar/word-choice error worth immediate practice.',
     'When the mission is a diagnostic, measure the sample without requiring repair or treating a learner clarification question as a speaking mistake.',
@@ -572,6 +594,7 @@ export function createTutorV2Service({
         PRIMARY KEY(user_id, session_id, event_id)
       );
       INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES ('tutor_v2_004_live', ${now});
+      INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES ('tutor_v2_005_adaptive_diagnostic', ${now});
       INSERT INTO users (id, email, name, picture, created_at, updated_at)
       VALUES ('local', '', 'Local learner', '', ${now}, ${now})
       ON CONFLICT(id) DO NOTHING;
@@ -805,6 +828,9 @@ export function createTutorV2Service({
       runSqlite(workspaceDbPath, reviewsSql, { json: true }).then(parseSqliteJson)
     ]);
     let profile = normalizeSpeakingProfile(parseStoredJson(profileRows[0]?.profile, {}));
+    if (profile.completedDiagnosticAt && !profile.baseline) {
+      profile = normalizeSpeakingProfile({ ...profile, completedDiagnosticAt: null });
+    }
     const preferences = normalizePreferences(parseStoredJson(
       profileRows[0]?.preferences,
       { voice: configuredDefaultVoice }
@@ -847,9 +873,7 @@ export function createTutorV2Service({
         userTurnCount: Number(row.user_turn_count) || 0
       })));
       profile = reconciled.profile;
-      for (const sessionId of reconciled.invalidSessionIds) {
-        await deleteSession({ id: userId }, sessionId, { rebuildLearningState: false });
-      }
+      // Invalid milestones remain readable history; reconciliation must not delete recordings.
       if (profile.completedDiagnosticAt !== previousDiagnosticAt
         || profile.lastBenchmarkAt !== previousBenchmarkAt) {
         await writeUserLearningState(userId, {
@@ -932,10 +956,12 @@ export function createTutorV2Service({
       LIMIT 1;
     `;
     const assessmentSql = `
-      SELECT assessment
-      FROM user_tutor_turn_assessments
-      WHERE user_id = ${sqlString(userId)}
-      ORDER BY created_at ASC;
+      SELECT a.assessment FROM user_tutor_turn_assessments a
+      JOIN user_tutor_sessions_v2 s ON s.user_id = a.user_id AND s.session_id = a.session_id
+      WHERE a.user_id = ${sqlString(userId)}
+        AND (json_extract(s.mission, '$.id') NOT LIKE 'diagnostic_%'
+          OR json_extract(a.assessment, '$.diagnosticVersion') = 1)
+      ORDER BY a.created_at ASC;
     `;
     const milestoneSql = `
       SELECT session.session_id, session.status, session.mission,
@@ -977,12 +1003,27 @@ export function createTutorV2Service({
       ...rebuilt,
       preferences
     });
+    const baselineRows = parseSqliteJson(await runSqlite(workspaceDbPath, `
+      SELECT activity_state FROM user_tutor_sessions_v2 WHERE user_id = ${sqlString(userId)}
+      AND json_extract(activity_state, '$.diagnostic.version') = 1 ORDER BY updated_at DESC LIMIT 1;`, { json: true }));
+    const baseline = baselineRows.length ? parseStoredJson(baselineRows[0].activity_state, {}).diagnostic : null;
+    learningState.profile = baseline ? profileWithDiagnostic(learningState.profile, baseline)
+      : normalizeSpeakingProfile({ ...learningState.profile, baseline: null });
+    learningState.profile.completedDiagnosticAt = learningState.profile.baseline?.completionReason === 'sufficient_coverage'
+      ? learningState.profile.completedDiagnosticAt : null;
+    await writeUserLearningState(userId, learningState);
     controllers.forEach((controller) => {
       if (controller.userId !== userId) return;
       controller.profile = learningState.profile;
       controller.mastery = learningState.mastery;
       controller.reviewItems = learningState.reviewItems;
       if (controller.status === 'active') {
+        if (isTutorLiveModel(controller.model)) {
+          for (const event of tutorLiveAppends('session.thinking.append', tutorLiveActivityContext(controller), null, createId('profile_context'))) {
+            sendSideband(controller, event);
+          }
+          return;
+        }
         sendSideband(controller, {
           type: 'session.update',
           session: {
@@ -1008,6 +1049,7 @@ export function createTutorV2Service({
       mission: controller.mission,
       blueprint: controller.blueprint,
       activityState: controller.activityState,
+      diagnostic: controller.mission.id.startsWith('diagnostic_') ? diagnosticReport(controller.activityState.diagnostic) : null,
       currentActivity: getCurrentActivity(controller.blueprint, controller.activityState),
       latestAssessment: controller.latestAssessment || null,
       turns: controller.recentTurns.slice(-MAX_RECENT_TURNS),
@@ -1183,19 +1225,21 @@ export function createTutorV2Service({
       itemId: cleanString(event?.item_id || event?.item?.id, 140),
       responseId: cleanString(event?.response_id || event?.response?.id, 140),
       status: cleanString(event?.response?.status || event?.status, 80),
-      detail: cleanString(event?.detail, 500),
+      detail: cleanString(event?.detail, 5000),
       requestId: cleanString(event?.requestId, 160),
+      questionId: cleanString(event?.questionId, 160),
+      answerRevision: Number(event?.answerRevision) || 0,
       at: Date.now()
     });
     controller.eventLog = controller.eventLog.slice(-MAX_EVENT_LOG);
     controller.updatedAt = Date.now();
   }
 
-  async function requestStructured({ name, schema, instructions, input, maxOutputTokens = 1200 }) {
+  async function requestStructured({ name, schema, instructions, input, maxOutputTokens = 1200, timeoutMs = 20000 }) {
     if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
     const response = await fetchImpl('https://api.openai.com/v1/responses', {
       method: 'POST',
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(timeoutMs),
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`
@@ -1311,10 +1355,12 @@ export function createTutorV2Service({
   }
 
   function assessmentEvidence(controller, assessment) {
-    const dimensionAverage = Object.values(assessment.dimensions)
-      .reduce((sum, value) => sum + value, 0) / Math.max(1, Object.keys(assessment.dimensions).length);
+    const measured = Object.values(assessment.dimensions).filter(Number.isFinite);
+    const dimensionAverage = measured.length
+      ? measured.reduce((sum, value) => sum + value, 0) / measured.length : assessment.taskScore;
     const score = (assessment.taskScore * 0.65) + (dimensionAverage * 0.35);
-    const confidence = Math.max(0.35, assessment.transcriptConfidence, assessment.correction.confidence);
+    const confidence = assessment.diagnosticVersion === 1 ? assessment.transcriptConfidence
+      : Math.max(0.35, assessment.transcriptConfidence, assessment.correction.confidence);
     const evidence = assessment.targetSkillIds.map((skillId) => normalizeMasteryEvidence({
       id: `evidence_${assessment.id}_${skillId.replace(/[^a-z0-9]+/gi, '_')}`,
       skillId,
@@ -1352,11 +1398,71 @@ export function createTutorV2Service({
   function sendSideband(controller, event) {
     if (controller.ws?.readyState !== WebSocket.OPEN) return false;
     try {
+      if (event.type?.endsWith('.append') && typeof event.content === 'string') {
+        appendEvent(controller, { type: 'control.sent', detail: JSON.stringify({
+          type: event.type, id: event.event_id, content: event.content
+        }), questionId: controller.activityState.diagnostic?.pendingQuestion?.id });
+      }
       controller.ws.send(JSON.stringify(event));
       return true;
     } catch (error) {
       return false;
     }
+  }
+
+  async function assessDiagnosticTurn(controller, turn) {
+    const state = controller.activityState.diagnostic;
+    const question = { ...state.pendingQuestion };
+    if (question.id !== turn.questionId) return null;
+    const result = validateDiagnosticDecision(await requestStructured({
+      name: 'tutor_diagnostic_probe', schema: DIAGNOSTIC_ASSESSMENT_SCHEMA,
+      instructions: DIAGNOSTIC_ASSESSMENT_INSTRUCTIONS, maxOutputTokens: 500, timeoutMs: 8000,
+      input: JSON.stringify({ question, transcript: turn.transcript, explicitPrompt: turn.prompt,
+        recentTurns: controller.recentTurns.slice(-6).map(t => ({ role: t.role, transcript: t.transcript })) })
+    }));
+    if (!turn.isCurrent()) return null;
+    const next = recordDiagnosticResult(state, result, turn);
+    const evidence = next.evidence.find(e => e.turnId === turn.turnId && e.answerRevision === turn.answerRevision);
+    const assessment = normalizeTurnAssessment({
+      id: createId('assessment'), diagnosticVersion: 1, intent: result.intent, questionId: question.id,
+      answerRevision: turn.answerRevision, turnId: turn.turnId, activityId: question.id,
+      activityRevision: question.revision,
+      transcript: turn.transcript, transcriptConfidence: result.confidence,
+      understood: result.intent === 'answer' && result.confidence >= 0.65,
+      taskCompleted: evidence?.outcome === 'independent' || evidence?.outcome === 'supported',
+      taskScore: evidence?.outcome === 'independent' ? 0.85 : evidence?.outcome === 'supported' ? 0.55 : 0.25,
+      dimensions: {}, targetSkillIds: evidence && evidence.outcome !== 'uncertain' ? [question.skillId] : [],
+      correction: { required: false }, notes: [result.observation], createdAt: Date.now()
+    });
+    controller.activityState.diagnostic = next;
+    controller.latestAssessment = assessment;
+    controller.metrics.userTurns += evidence ? 1 : 0;
+    controller.updatedAt = Date.now();
+    if (evidence && evidence.outcome !== 'uncertain') {
+      const learning = applyAssessmentToMastery({ mastery: controller.mastery, reviewItems: controller.reviewItems, assessment });
+      controller.mastery = learning.mastery; controller.reviewItems = learning.reviewItems;
+      // A successful easy probe is evidence of that task, not a high global CEFR score.
+      controller.profile = profileWithDiagnostic(controller.profile, next);
+    }
+    appendEvent(controller, { type: 'diagnostic.decision', questionId: question.id, answerRevision: turn.answerRevision,
+      detail: JSON.stringify({ intent: result.intent, outcome: evidence?.outcome, next: evidence?.nextDecision,
+        nextQuestionId: next.pendingQuestion.id }) });
+    const learningSnapshot = { profile: controller.profile, preferences: controller.preferences,
+      mastery: controller.mastery, reviewItems: controller.reviewItems };
+    // State is committed synchronously with the revision check. Storage is drained on stop/delete;
+    // it must not delay speech or let a late caption land halfway through a state transition.
+    controller.pendingDiagnosticWrites = (controller.pendingDiagnosticWrites || Promise.resolve()).then(async () => {
+      await persistAssessment(controller, assessment);
+      await persistController(controller);
+      if (evidence && evidence.outcome !== 'uncertain') {
+        await persistEvidence(controller, assessmentEvidence(controller, assessment));
+        await writeUserLearningState(controller.userId, learningSnapshot);
+      }
+    }).catch(error => {
+      controller.directorStatus = 'assessment_unavailable';
+      logger.warn?.('[tutor-v2] diagnostic persistence failed', error.message);
+    });
+    return { ...result, speak: diagnosticReply(next, result, question) };
   }
 
   async function assessTurn(controller, { turnId, transcript, acoustic = {}, modelObservation = null, isCurrent = () => true }) {
@@ -1882,10 +1988,26 @@ export function createTutorV2Service({
       controller.callId = result.callId;
       controller.liveGreeting = createTutorLiveGreeting((event) => sendSideband(controller, event));
       controller.liveAudio = createTutorLiveAudioBuffer();
-      controller.liveAudioClips = [];
-      controller.liveDirector = createTutorLiveDirector({
+      controller.liveAudioClips = await readSessionAudio(controller.userId, controller.id);
+      controller.liveConnectedAt = Date.now();
+      const adaptive = Boolean(controller.activityState.diagnostic);
+      controller.liveDirector = (adaptive ? createTutorDiagnosticDirector : createTutorLiveDirector)({
         send: (event) => sendSideband(controller, event),
-        assess: (turn) => assessTurn(controller, turn),
+        assess: (turn) => adaptive ? assessDiagnosticTurn(controller, turn) : assessTurn(controller, turn),
+        question: () => controller.activityState.diagnostic?.pendingQuestion,
+        onQuestion: (transcript, rowId) => {
+          const q = controller.activityState.diagnostic?.pendingQuestion;
+          if (q && (q.spokenRowId === rowId || (!q.spokenText && /[?？]|ですか|ますか|ください|質問|どうぞ/.test(transcript)))) {
+            q.spokenText = transcript; q.spokenRowId = rowId;
+          }
+        },
+        trace: (event) => {
+          appendEvent(controller, event);
+          if (event.type === 'director.first_audio') {
+            controller.metrics.firstAudioLatenciesMs.push(Number(event.detail));
+            controller.metrics.firstAudioLatenciesMs = controller.metrics.firstAudioLatenciesMs.slice(-100);
+          }
+        },
         context: () => tutorLiveActivityContext(controller),
         persistFragment: (event) => runSqlite(workspaceDbPath, `
           INSERT OR IGNORE INTO user_tutor_live_fragments
@@ -1896,7 +2018,7 @@ export function createTutorV2Service({
             ${sqlString(event.delta)}, ${event.start_ms}, ${event.end_ms});`),
         persistRow: async (row) => {
           const turn = { turnId: row.id, itemId: row.id, role: row.role, transcript: row.transcript,
-            status: 'streaming', startedAt: controller.startedAt + row.startMs, endedAt: controller.startedAt + row.endMs };
+            status: 'streaming', startedAt: controller.liveConnectedAt + row.startMs, endedAt: controller.liveConnectedAt + row.endMs };
           const index = controller.recentTurns.findIndex((entry) => entry.turnId === row.id);
           if (index === -1) controller.recentTurns.push(turn);
           else controller.recentTurns[index] = turn;
@@ -1948,9 +2070,30 @@ export function createTutorV2Service({
   }
 
   async function createSession(actor, body) {
+    if (body?.diagnostic && !body?.benchmark && !isTutorLiveModel(realtimeModel)) {
+      throw Object.assign(new Error('The adaptive baseline requires OPENAI_REALTIME_MODEL=gpt-live-1. Ordinary practice can still use the configured Realtime model.'), { status: 409 });
+    }
+    if (body?.diagnostic && body?.resumeSessionId) {
+      const existing = await readController(actor.id, sanitizeId(body.resumeSessionId));
+      if (!existing?.activityState?.diagnostic || existing.activityState.diagnostic.status === 'completed') {
+        throw Object.assign(new Error('This baseline cannot be resumed.'), { status: 409 });
+      }
+      if (existing.liveDirector && existing.status === 'active') await completeSession(existing);
+      if (!existing.liveDirector && existing.activityState.diagnostic.status === 'active') {
+        existing.activityState.diagnostic = pauseDiagnostic(existing.activityState.diagnostic, existing.updatedAt);
+      }
+      const learning = await readUserLearningState(actor.id);
+      Object.assign(existing, { status: 'active', endedAt: null, outcome: null, callId: '', ws: null,
+        liveClosing: false, liveFinalized: false, liveReconnects: 0, liveDirector: null,
+        profile: learning.profile, preferences: learning.preferences, mastery: learning.mastery, reviewItems: learning.reviewItems });
+      existing.activityState.diagnostic = resumeDiagnostic(existing.activityState.diagnostic);
+      existing.activityState.status = 'active'; existing.updatedAt = Date.now();
+      await persistController(existing);
+      return existing;
+    }
     const state = await readUserLearningState(actor.id);
     let profile = normalizeSpeakingProfile(body?.speakingProfile || {}, body?.legacyProfile || body?.profile || {});
-    if (state.profile.updatedAt && state.profile.completedDiagnosticAt) {
+    if (state.profile.completedDiagnosticAt || state.profile.baseline) {
       profile = state.profile;
     } else {
       profile = normalizeSpeakingProfile({
@@ -1984,12 +2127,13 @@ export function createTutorV2Service({
         topic: preferences.topic
       });
     let blueprint = body?.diagnostic
-      ? buildDiagnosticBlueprint({ profile, durationMinutes: 15 })
+      ? buildDiagnosticBlueprint({ profile, durationMinutes: body?.benchmark ? 15 : 10 })
       : buildLessonBlueprint({ mission, profile, topic: preferences.topic });
     if (body?.benchmark) {
       const benchmarkId = `benchmark_${Date.now()}`;
       blueprint = normalizeLessonBlueprint({
         ...blueprint,
+        diagnosticVersion: 0,
         id: `blueprint_${benchmarkId}`,
         mission: {
           ...blueprint.mission,
@@ -2078,10 +2222,12 @@ export function createTutorV2Service({
   }
 
   async function completeSession(controller) {
+    if (controller.status === 'paused') return controller;
     if (controller.status === 'completed') return controller;
     if (controller.liveDirector && !controller.liveClosing) {
       controller.liveClosing = true;
       const finalized = await controller.liveDirector.close();
+      await controller.pendingDiagnosticWrites;
       controller.metrics.liveUsage = { ...controller.metrics.liveUsage, finalized };
       for (const row of controller.liveDirector.transcript.rows) {
         const bytes = controller.liveAudio.wav(row.role, Math.max(0, row.startMs - 200), row.endMs + 300);
@@ -2117,7 +2263,25 @@ export function createTutorV2Service({
     `;
     const assessmentRows = parseSqliteJson(await runSqlite(workspaceDbPath, assessmentSql, { json: true }));
     const assessments = assessmentRows.map((row) => parseStoredJson(row.assessment, null)).filter(Boolean);
-    try {
+    if (controller.activityState.diagnostic) {
+      const diagnostic = pauseDiagnostic(finishDiagnosticIfDue(controller.activityState.diagnostic));
+      controller.activityState.diagnostic = diagnostic;
+      const report = diagnosticReport(diagnostic);
+      outcome = {
+        overview: report.status === 'completed'
+          ? 'Your baseline conversation has ended. These findings are provisional and apply only to the tasks sampled.'
+          : 'Baseline paused. Resume to sample the remaining skills; this is not a complete speaking assessment.',
+        wins: report.domains.filter(d => d.independent).map(d => `${d.domain}: ${d.independent} independent answers${d.level ? `; provisional ${d.level}` : ''}.`),
+        priorityWeakness: report.domains.filter(d => d.supported || d.gaps).map(d => `${d.domain}: ${d.supported} answers with help, ${d.gaps} not yet demonstrated.`).join(' ') || 'No confirmed weakness yet; more samples are needed.',
+        nextMission: (() => {
+          const target = diagnostic.evidence.findLast(e => ['supported', 'not_yet_demonstrated'].includes(e.outcome));
+          return target ? `Practice: ${TUTOR_SKILL_GRAPH.find(skill => skill.id === target.skillId)?.objective || target.prompt}`
+            : 'Practice one more familiar conversation using the words you demonstrated independently.';
+        })(),
+        diagnostic: report, dimensionSignals: {}
+      };
+      controller.profile = normalizeSpeakingProfile({ ...controller.profile, baseline: report });
+    } else try {
       outcome = await requestStructured({
         name: 'tutor_session_outcome',
         schema: TUTOR_SESSION_OUTCOME_JSON_SCHEMA,
@@ -2135,10 +2299,10 @@ export function createTutorV2Service({
       logger.warn?.('[tutor-v2] outcome fallback', error?.message || error);
       outcome = buildFallbackOutcome(controller);
     }
-    controller.status = 'completed';
+    controller.status = controller.activityState.diagnostic?.status === 'paused' ? 'paused' : 'completed';
     controller.activityState = normalizeActivityState({
       ...controller.activityState,
-      status: 'completed',
+      status: controller.activityState.diagnostic?.status === 'paused' ? 'active' : 'completed',
       updatedAt: Date.now()
     }, controller.blueprint);
     controller.outcome = outcome;
@@ -2146,10 +2310,9 @@ export function createTutorV2Service({
     controller.updatedAt = Date.now();
     const isDiagnostic = controller.mission.id.startsWith('diagnostic_');
     const isBenchmark = controller.mission.id.startsWith('benchmark_');
-    const shouldRecordMilestone = shouldRecordTutorMilestone(
-      controller.mission.id,
-      assessments.length
-    );
+    const shouldRecordMilestone = controller.activityState.diagnostic
+      ? controller.activityState.diagnostic.completionReason === 'sufficient_coverage'
+      : shouldRecordTutorMilestone(controller.mission.id, assessments.length);
     if (shouldRecordMilestone) {
       controller.profile = normalizeSpeakingProfile({
         ...controller.profile,
@@ -2186,7 +2349,7 @@ export function createTutorV2Service({
       `, { json: true }));
       const benchmarkDimensions = {};
       TUTOR_SPEAKING_DIMENSIONS.forEach((dimension) => {
-        const values = assessments.map((assessment) => Number(assessment?.dimensions?.[dimension])).filter(Number.isFinite);
+        const values = assessments.map((assessment) => assessment?.dimensions?.[dimension]).filter(Number.isFinite);
         benchmarkDimensions[dimension] = values.length
           ? values.reduce((sum, value) => sum + value, 0) / values.length
           : 0.5;
@@ -2276,6 +2439,7 @@ export function createTutorV2Service({
     return {
       schemaVersion: TUTOR_V2_SCHEMA_VERSION,
       profile: state.profile,
+      diagnostic: state.profile.baseline || null,
       preferences: state.preferences,
       mastery: state.mastery,
       dueReviews: getDueReviewItems(state.reviewItems),
@@ -2464,6 +2628,8 @@ export function createTutorV2Service({
       mission: normalizeMission(parseStoredJson(row.mission, {})),
       blueprint: normalizeLessonBlueprint(parseStoredJson(row.blueprint, {})),
       activityState: parseStoredJson(row.activity_state, {}),
+      diagnostic: parseStoredJson(row.mission, {}).id?.startsWith('diagnostic_')
+        ? diagnosticReport(parseStoredJson(row.activity_state, {}).diagnostic) : null,
       outcome: parseStoredJson(row.outcome, null),
       model: row.model || '',
       voice: row.voice || '',
@@ -2610,6 +2776,7 @@ export function createTutorV2Service({
       controller.liveDirector.cancel();
       controller.liveAudio?.clear();
     }
+    await controller?.pendingDiagnosticWrites;
     const audioRows = parseSqliteJson(await runSqlite(workspaceDbPath, `
       SELECT storage_path
       FROM user_tutor_audio_v2
@@ -2664,6 +2831,7 @@ export function createTutorV2Service({
         clearSidebandRetry(controller);
         await controller.liveDirector?.close();
         controller.liveDirector?.cancel();
+        await controller.pendingDiagnosticWrites;
       }));
     const audioRows = parseSqliteJson(await runSqlite(workspaceDbPath, `
       SELECT storage_path
@@ -3048,6 +3216,11 @@ export function createTutorV2Service({
 
       if (pathname === `${TUTOR_V2_API_PREFIX}/today` && req.method === 'GET') {
         const state = await readUserLearningState(actor.id);
+        const resumable = parseSqliteJson(await runSqlite(workspaceDbPath, `
+          SELECT session_id FROM user_tutor_sessions_v2 WHERE user_id = ${sqlString(actor.id)}
+          AND json_extract(activity_state, '$.diagnostic.version') = 1
+          AND json_extract(activity_state, '$.diagnostic.status') IN ('active','paused')
+          ORDER BY updated_at DESC LIMIT 1;`, { json: true }));
         const mission = selectDailyMission({
           profile: state.profile,
           mastery: state.mastery,
@@ -3060,6 +3233,7 @@ export function createTutorV2Service({
           preferences: state.preferences,
           dueReviews: getDueReviewItems(state.reviewItems),
           diagnosticRecommended: !state.profile.completedDiagnosticAt,
+          resumeBaselineId: resumable[0]?.session_id || null,
           voiceModel: realtimeModel
         }, { 'Cache-Control': 'no-store' });
         return true;
@@ -3110,6 +3284,15 @@ export function createTutorV2Service({
           return true;
         }
         controller.lastReadAt = Date.now();
+        const diagnostic = controller.activityState.diagnostic;
+        if (diagnostic?.status === 'active' && controller.liveDirector?.quiet) {
+          const checked = finishDiagnosticIfDue(diagnostic);
+          if (checked.status === 'completed') {
+            controller.activityState.diagnostic = checked;
+            controller.liveDirector.announce('Thank the learner briefly in Japanese. The baseline conversation is finished. Ask no new question.');
+            await persistController(controller);
+          }
+        }
         writeJson(res, 200, {
           session: {
             ...serializeController(controller),
@@ -3122,6 +3305,34 @@ export function createTutorV2Service({
       if (sessionMatch && req.method === 'DELETE') {
         writeJson(res, 200, await deleteSession(actor, decodeURIComponent(sessionMatch[1])));
         return true;
+      }
+
+      const controlMatch = pathname.match(/^\/api\/tutor\/v2\/sessions\/([^/]+)\/control$/);
+      if (controlMatch && req.method === 'POST') {
+        const controller = await readController(actor.id, sanitizeId(decodeURIComponent(controlMatch[1])));
+        if (!controller || controller.status !== 'active' || !controller.liveDirector) {
+          writeJson(res, 409, { error: 'The voice connection is not ready.' }); return true;
+        }
+        const body = await readRequestJson(req);
+        const action = body.action;
+        if (!['handoff', 'repeat', 'hint', 'explain'].includes(action)) {
+          writeJson(res, 400, { error: 'Unknown tutor control.' }); return true;
+        }
+        const q = controller.activityState.diagnostic?.pendingQuestion;
+        if (action === 'handoff' && q) {
+          controller.liveDirector.finalize();
+        } else {
+          if (q && ['hint', 'explain'].includes(action)) q.assistance = action === 'hint' ? 'hint' : 'explanation';
+          const instruction = action === 'handoff'
+            ? 'The learner has finished. Delegate their answer silently, without announcing assessment or changing the pending question.'
+            : action === 'repeat' ? 'Repeat the same pending Japanese question, without adding a new question.'
+              : action === 'hint' ? 'Give one short hint for the same pending Japanese question. Do not give the full answer.'
+                : 'Explain the same pending question in one English sentence, then repeat it in Japanese. Do not ask for English practice.';
+          for (const event of tutorLiveAppends('session.instructions.append', instruction, null, createId('control'))) sendSideband(controller, event);
+        }
+        appendEvent(controller, { type: 'control.requested', detail: action, questionId: q?.id });
+        await persistController(controller);
+        writeJson(res, 200, { accepted: true, session: serializeController(controller) }); return true;
       }
 
       const connectMatch = pathname.match(/^\/api\/tutor\/v2\/sessions\/([^/]+)\/connect$/);
@@ -3176,6 +3387,10 @@ export function createTutorV2Service({
         const controller = await readController(actor.id, sanitizeId(body.sessionId));
         if (!controller) {
           writeJson(res, 404, { error: 'Tutor session not found' });
+          return true;
+        }
+        if (controller.activityState.diagnostic) {
+          writeJson(res, 409, { error: 'Baseline answers are assessed by the server-owned voice director. Use the session handoff control to finalize an answer.' });
           return true;
         }
         const assessment = await assessTurn(controller, {
@@ -3305,6 +3520,7 @@ export function createTutorV2Service({
       .map(async (controller) => {
         controller.liveClosing = true;
         await controller.liveDirector.close();
+        await controller.pendingDiagnosticWrites;
         controller.liveAudio?.clear();
       }));
     controllers.forEach((controller) => {

@@ -1,3 +1,5 @@
+import { createDiagnosticState, diagnosticActivity, normalizeDiagnosticState } from './tutor-diagnostic.js';
+
 export const TUTOR_V2_SCHEMA_VERSION = 2;
 
 export const TUTOR_CEFR_LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
@@ -161,6 +163,7 @@ export function normalizeSpeakingProfile(profile = {}, legacyProfile = null) {
     goal: cleanString(source.goal, 240) || 'Hold comfortable everyday conversations in Japanese.',
     nativeLanguage: cleanString(source.nativeLanguage, 40) || 'English',
     targetLanguage: 'Japanese',
+    baseline: source.baseline?.version === 1 ? source.baseline : null,
     dimensions,
     strengths: cleanStringList(source.strengths || legacy.strengths, 12, 180),
     prioritySkills: cleanStringList(source.prioritySkills, 12, 120),
@@ -379,6 +382,7 @@ export function normalizeLessonBlueprint(blueprint = {}) {
   return {
     id: cleanString(blueprint.id, 120) || `blueprint_${Date.now()}`,
     schemaVersion: TUTOR_V2_SCHEMA_VERSION,
+    diagnosticVersion: blueprint.diagnosticVersion === 1 ? 1 : 0,
     mission,
     activities,
     languageBudget: {
@@ -432,16 +436,16 @@ export function buildLessonBlueprint({ mission = {}, profile = {}, topic = '' } 
   });
 }
 
-export function buildDiagnosticBlueprint({ profile = {}, durationMinutes = 15 } = {}) {
+export function buildDiagnosticBlueprint({ profile = {}, durationMinutes = 10 } = {}) {
   const normalizedProfile = normalizeSpeakingProfile(profile);
   const mission = normalizeMission({
     id: `diagnostic_${Date.now()}`,
     title: 'Speaking baseline',
-    objective: 'Establish a reliable baseline across interaction, production, listening, language control, fluency, and phonology.',
+    objective: 'Sample Japanese interaction, sentence construction, familiar vocabulary, and listening, beginning with one-word answers.',
     mode: 'guided',
     level: 'A1',
     durationMinutes,
-    targetSkillIds: ['a1.introductions', 'a1.simple-questions', 'a1.mora-timing', 'a2.experiences', 'b1.opinions'],
+    targetSkillIds: ['a1.introductions', 'a1.core-vocabulary', 'a1.polite-present', 'a1.listening-core'],
     successTarget: 0.75
   });
   const definitions = [
@@ -504,6 +508,7 @@ export function buildDiagnosticBlueprint({ profile = {}, durationMinutes = 15 } 
   ];
   return normalizeLessonBlueprint({
     id: `blueprint_${mission.id}`,
+    diagnosticVersion: 1,
     mission,
     activities: definitions.map((definition, index) => createActivity({
       ...definition,
@@ -532,6 +537,7 @@ export function normalizeActivityState(state = {}, blueprint = null) {
     diagnosticPassCount: Math.max(0, Math.trunc(Number(state.diagnosticPassCount) || 0)),
     diagnosticStruggleCount: Math.max(0, Math.trunc(Number(state.diagnosticStruggleCount) || 0)),
     diagnosticHighestLevel: normalizeCefrLevel(state.diagnosticHighestLevel, 'A1'),
+    diagnostic: normalizeDiagnosticState(state.diagnostic),
     status: ['active', 'completed', 'error'].includes(state.status) ? state.status : 'active',
     startedAt: cleanTimestamp(state.startedAt),
     updatedAt: cleanTimestamp(state.updatedAt)
@@ -540,6 +546,7 @@ export function normalizeActivityState(state = {}, blueprint = null) {
 
 export function createInitialActivityState(blueprint) {
   return normalizeActivityState({
+    diagnostic: blueprint?.diagnosticVersion === 1 ? createDiagnosticState(blueprint.id) : null,
     blueprintId: blueprint?.id,
     activityIndex: 0,
     attemptCount: 0,
@@ -557,10 +564,15 @@ export function normalizeTurnAssessment(assessment = {}) {
   const acoustic = source.acoustic && typeof source.acoustic === 'object' ? source.acoustic : {};
   const dimensions = {};
   TUTOR_SPEAKING_DIMENSIONS.forEach((dimension) => {
-    dimensions[dimension] = cleanNumber(source.dimensions?.[dimension], 0.5);
+    dimensions[dimension] = source.dimensions?.[dimension] == null ? null : cleanNumber(source.dimensions[dimension]);
   });
   return {
     id: cleanString(source.id, 120) || `assessment_${Date.now()}`,
+    diagnosticVersion: source.diagnosticVersion === 1 ? 1 : 0,
+    intent: ['answer', 'clarification', 'off_topic', 'unclear', 'incomplete'].includes(source.intent) ? source.intent : 'answer',
+    questionId: cleanString(source.questionId, 160),
+    answerRevision: Math.max(0, Number(source.answerRevision) || 0),
+    activityRevision: Math.max(0, Number(source.activityRevision) || 0),
     turnId: cleanString(source.turnId, 120),
     activityId: cleanString(source.activityId, 120),
     transcript: cleanString(source.transcript, 12000),
@@ -597,8 +609,8 @@ export function normalizeTurnAssessment(assessment = {}) {
       durationMs: Math.max(0, Math.trunc(Number(acoustic.durationMs) || 0)),
       speechRate: Math.max(0, Number(acoustic.speechRate) || 0),
       pauseRatio: cleanNumber(acoustic.pauseRatio, 0),
-      accuracy: Number.isFinite(Number(acoustic.accuracy)) ? cleanNumber(acoustic.accuracy) : null,
-      fluency: Number.isFinite(Number(acoustic.fluency)) ? cleanNumber(acoustic.fluency) : null,
+      accuracy: acoustic.accuracy != null && Number.isFinite(Number(acoustic.accuracy)) ? cleanNumber(acoustic.accuracy) : null,
+      fluency: acoustic.fluency != null && Number.isFinite(Number(acoustic.fluency)) ? cleanNumber(acoustic.fluency) : null,
       calibratedPitchScore: null
     },
     notes: cleanStringList(source.notes, 8, 280),
@@ -694,7 +706,10 @@ export function advanceLessonState({ blueprint, state, assessment }) {
     return normalizeActivityState({ ...state, status: 'error' });
   }
   const current = normalizeActivityState(state, normalizedBlueprint);
+  // Adaptive diagnostics advance only through question-bound DiagnosticEvidence.
+  if (current.diagnostic) return current;
   const result = normalizeTurnAssessment(assessment);
+  if (result.intent !== 'answer') return current;
   const activity = normalizedBlueprint.activities[current.activityIndex];
   if (!activity || current.status !== 'active') {
     return current;
@@ -765,10 +780,10 @@ export function applyAssessmentToMastery({ mastery = {}, reviewItems = [], asses
   const targetSkillIds = result.targetSkillIds.length ? result.targetSkillIds : [];
   targetSkillIds.forEach((skillId) => {
     const previous = normalizedMastery[skillId] || normalizeMasteryRecord({}, skillId);
-    const dimensionScores = Object.values(result.dimensions);
-    const dimensionAverage = dimensionScores.reduce((sum, score) => sum + score, 0) / Math.max(1, dimensionScores.length);
+    const dimensionScores = Object.values(result.dimensions).filter(Number.isFinite);
+    const dimensionAverage = dimensionScores.length ? dimensionScores.reduce((sum, score) => sum + score, 0) / dimensionScores.length : result.taskScore;
     const evidenceScore = cleanNumber((result.taskScore * 0.6) + (dimensionAverage * 0.4));
-    const evidenceConfidence = Math.max(0.35, result.transcriptConfidence, result.correction.confidence);
+    const evidenceConfidence = result.diagnosticVersion ? result.transcriptConfidence : Math.max(0.35, result.transcriptConfidence, result.correction.confidence);
     const weight = 0.15 + (0.35 * evidenceConfidence);
     const repairedBoost = result.repairSuccessful ? 0.04 : 0;
     normalizedMastery[skillId] = normalizeMasteryRecord({
@@ -862,6 +877,7 @@ export function getCurrentActivity(blueprint, state) {
     return null;
   }
   const normalizedState = normalizeActivityState(state, normalizedBlueprint);
+  if (normalizedState.diagnostic) return diagnosticActivity(normalizedState.diagnostic);
   return normalizedBlueprint.activities[normalizedState.activityIndex] || null;
 }
 
@@ -972,7 +988,7 @@ export const TUTOR_TURN_ASSESSMENT_JSON_SCHEMA = Object.freeze({
       additionalProperties: false,
       required: TUTOR_SPEAKING_DIMENSIONS,
       properties: Object.fromEntries(TUTOR_SPEAKING_DIMENSIONS.map((dimension) => [dimension, {
-        type: 'number', minimum: 0, maximum: 1
+        type: ['number', 'null'], minimum: 0, maximum: 1
       }]))
     },
     targetSkillIds: { type: 'array', items: { type: 'string' }, maxItems: 8 },
