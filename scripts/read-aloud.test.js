@@ -251,6 +251,24 @@ test('incomplete model feedback never becomes a successful review; missing refer
   }
 });
 
+test('pasted text receives audio feedback without requesting publisher reference audio', async () => {
+  let sourceCalls = 0, assessed = false;
+  const custom = validateArticle({ ...article, id: 'custom-text', sourceType: 'custom' });
+  const service = makeService(async (url, options) => {
+    if (url.endsWith('transcriptions')) return json({ text: custom.sentences[0].text, words: [{ word: custom.sentences[0].text, start: .1, end: 1.8 }] });
+    if (url.endsWith('chat/completions')) {
+      assessed = true;
+      assert.equal(JSON.parse(options.body).messages[1].content.filter(c => c.type === 'input_audio').length, 1);
+      return json({ choices: [{ finish_reason: 'stop', message: { content: 'The reading is clear.' } }] });
+    }
+    return json({ status: 'completed', output: [{ content: [{ type: 'output_text', text: JSON.stringify(example()) }] }] });
+  }, { source: { article: async () => { sourceCalls++; throw new Error('No publisher source'); } } });
+  assert.deepEqual(await service.reference({ article: custom }), { timings: [], audioPath: null });
+  const { review } = await service.review({ id: 'pasted', article: custom, sentenceIds: [ids[0]] }, waveform());
+  assert.equal(sourceCalls, 0); assert.ok(assessed); assert.equal(review.referenceUsed, false);
+  assert.equal(review.ratings.pronunciation, 'clear'); assert.equal(review.sentences[0].start, .1);
+});
+
 test('transcription credentials are short-lived and scoped to Japanese transcription', async () => {
   const service = makeService(async (url, options) => {
     const body = JSON.parse(options.body); assert.ok(url.endsWith('/realtime/client_secrets'));

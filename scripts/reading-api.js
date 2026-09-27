@@ -3,6 +3,7 @@ import { createReadingStore } from './reading-store.js';
 import { createReadingAi } from './reading-ai.js';
 import { ReadingError } from '../src/reading-model.js';
 import { createReadAloudApi } from './read-aloud-api.js';
+import { createReadingImporter } from './reading-import.js';
 
 async function readBody(req) {
   let size = 0;
@@ -23,6 +24,7 @@ const send = (res, status, body) => {
 export function createReadingApi({ dbPath, runSqlite, getUser, isDbReady, source = createReadingSource(), ai = createReadingAi(), aloud }) {
   const store = createReadingStore({ dbPath, runSqlite });
   const aloudApi = createReadAloudApi({ dbPath, runSqlite, isDbReady, source, aloud });
+  const importText = createReadingImporter({ ai });
   return async (req, res, url) => {
     if (!url.pathname.startsWith('/api/reading/')) return false;
     try {
@@ -30,6 +32,7 @@ export function createReadingApi({ dbPath, runSqlite, getUser, isDbReady, source
       if (await aloudApi(req, res, route, readBody, send)) return true;
       if (route === 'articles' && req.method === 'GET') send(res, 200, await source.list({ refresh: url.searchParams.get('refresh') === '1' }));
       else if (route === 'articles/random' && req.method === 'GET') send(res, 200, await source.random());
+      else if (route === 'articles/import' && req.method === 'POST') send(res, 200, await importText(await readBody(req)));
       else if (route.startsWith('articles/') && req.method === 'GET') send(res, 200, { article: await source.article(route.slice(9)) });
       else if (route === 'reverse' && req.method === 'POST') send(res, 200, await ai.reverse(await readBody(req)));
       else if (route === 'grade' && req.method === 'POST') send(res, 200, await ai.grade(await readBody(req)));

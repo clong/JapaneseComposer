@@ -37,4 +37,8 @@ test('SQLite sessions isolate accounts, detect concurrent revisions and retain d
   await assert.rejects(store.write('alice',session.id,session,3),(error)=>error.status===409);
   await assert.rejects(store.write('alice',session.id,session,0),(error)=>error.status===409);
   assert.equal((await store.get('bob',session.id)).session.recovered,true);
+  const custom = createReadingSession({ ...article, id: 'custom-pasted', sourceType: 'custom' }, 'custom-session');
+  await store.write('alice', custom.id, custom, 0);
+  assert.deepEqual((await store.get('alice', custom.id)).session, custom);
+  assert.equal(await store.get('bob', custom.id), null);
 });
