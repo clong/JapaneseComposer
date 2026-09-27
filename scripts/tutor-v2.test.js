@@ -186,8 +186,8 @@ test('diagnostic and realtime instructions expose controlled phases', () => {
   assert.match(instructions, /Vocabulary ceiling: N4/);
 });
 
-test('diagnostic repeats simple tasks before advancing and never routes through repair', () => {
-  const blueprint = buildDiagnosticBlueprint();
+test('legacy diagnostic repeats simple tasks before advancing and never routes through repair', () => {
+  const blueprint = { ...buildDiagnosticBlueprint(), diagnosticVersion: 0 };
   let state = createInitialActivityState(blueprint);
   const missed = assessment({
     understood: false,
@@ -214,8 +214,8 @@ test('diagnostic repeats simple tasks before advancing and never routes through 
   assert.equal(state.diagnosticStruggleCount, 2);
 });
 
-test('diagnostic unlocks harder bands only after lower-band success', () => {
-  const blueprint = buildDiagnosticBlueprint();
+test('legacy diagnostic unlocks harder bands only after lower-band success', () => {
+  const blueprint = { ...buildDiagnosticBlueprint(), diagnosticVersion: 0 };
   let state = createInitialActivityState(blueprint);
   for (let index = 0; index < 5; index += 1) {
     state = advanceLessonState({ blueprint, state, assessment: assessment() });

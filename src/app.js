@@ -44,6 +44,7 @@ import {
 import {
   assessTutorV2Turn,
   createTutorV2Session,
+  controlTutorV2Session,
   deleteTutorV2Data,
   deleteTutorV2Session,
   endTutorV2Session,
@@ -59,6 +60,7 @@ import { connectTutorV2WebRtc } from './tutor-v2-transport.js';
 import { createTutorLiveHandoff, createTutorLiveTranscript, isTutorLiveModel, TUTOR_LIVE_MODEL, tutorLiveAppends,
   tutorLivePaceInstruction, waitForTutorLiveClose } from './tutor-live.js';
 import { analyzeTutorAudioBlob } from './tutor-audio-metrics.js';
+import { diagnosticReport } from './tutor-diagnostic.js';
 
 const PROXY_DICT_ENDPOINT = '/api/lookup?keyword=';
 const VOCAB_API_ENDPOINT = '/api/vocab';
@@ -4179,6 +4181,7 @@ function applyTutorV2Today(payload = {}) {
   tutorState.speakingProfile = normalizeSpeakingProfile(payload.profile || tutorState.speakingProfile, tutorState.profile);
   tutorState.dueReviews = Array.isArray(payload.dueReviews) ? payload.dueReviews : [];
   tutorState.diagnosticRecommended = Boolean(payload.diagnosticRecommended);
+  tutorState.resumeBaselineId = payload.resumeBaselineId || '';
   applyTutorV2Preferences(payload.preferences || {});
 }
 
@@ -6077,6 +6080,10 @@ function renderTutorLesson(copy) {
     return;
   }
   tutorLessonPlan.replaceChildren();
+  if (tutorState.activityState?.diagnostic) {
+    appendDiagnosticFindings(tutorLessonPlan, diagnosticReport(tutorState.activityState.diagnostic));
+    return;
+  }
   const blueprint = normalizeTutorV2LessonBlueprint(tutorState.blueprint || {});
   if (blueprint) {
     blueprint.activities.forEach((activity, index) => {
@@ -6484,6 +6491,13 @@ function renderTutorProfile(copy) {
     ? normalizeSpeakingProfile(tutorState.speakingProfile, tutorState.profile)
     : null;
   if (speakingProfile) {
+    if (speakingProfile.baseline) {
+      const title = document.createElement('strong');
+      title.textContent = speakingProfile.baseline.status === 'completed' ? 'Provisional baseline' : 'Baseline incomplete';
+      tutorProfile.appendChild(title);
+      appendDiagnosticFindings(tutorProfile, speakingProfile.baseline);
+      return;
+    }
     const summary = document.createElement('div');
     summary.className = 'tutor-speaking-level';
     const level = document.createElement('strong');
@@ -6563,6 +6577,7 @@ function normalizeTutorV2SessionList(payload = {}) {
     return [{
       id,
       status: String(record.status || 'completed'),
+      diagnostic: record.diagnostic || null,
       mode: normalizeTutorV2Mode(record.mode),
       mission: normalizeTutorV2Mission(record.mission || {}),
       outcome: record.outcome && typeof record.outcome === 'object' ? record.outcome : null,
@@ -6700,7 +6715,9 @@ function renderTutorLogs(copy) {
     meta.textContent = [
       formatTutorTimestamp(session.startedAt),
       session.mode || normalizeTutorVocabularyLevel(session.vocabularyLevel || tutorState.vocabularyLevel),
-      `${session.turnCount ?? session.turns.length} turns`
+      `${session.turnCount ?? session.turns.length} turns`,
+      session.diagnostic?.status === 'limited_evidence' ? 'Older baseline: limited evidence'
+        : session.diagnostic ? `${session.diagnostic.status !== 'completed' ? 'Baseline incomplete' : 'Provisional baseline'} - ${Math.round(session.diagnostic.coverage * 100)}% sampled` : ''
     ].filter(Boolean).join(' - ');
     heading.appendChild(title);
     heading.appendChild(meta);
@@ -6714,6 +6731,13 @@ function renderTutorLogs(copy) {
       ? copy.tutorDeletingSession
       : copy.tutorDeleteSession;
     header.appendChild(heading);
+    if (session.diagnostic?.version === 1 && session.diagnostic.status !== 'completed') {
+      const resume = document.createElement('button');
+      resume.type = 'button'; resume.className = 'tutor-session-resume';
+      resume.textContent = 'Resume baseline'; resume.dataset.sessionId = session.id;
+      resume.disabled = Boolean(tutorState.currentSession);
+      header.appendChild(resume);
+    }
     header.appendChild(deleteButton);
     card.appendChild(header);
 
@@ -6755,16 +6779,20 @@ function renderTutorLogs(copy) {
 
 function renderTutorMission() {
   const mission = normalizeTutorV2Mission(tutorState.mission || {});
+  const diagnostic = tutorState.currentSession ? tutorState.activityState?.diagnostic : null;
   if (tutorMissionTitle) tutorMissionTitle.textContent = mission.title;
   if (tutorMissionObjective) tutorMissionObjective.textContent = mission.objective;
   if (tutorMissionMeta) {
     tutorMissionMeta.replaceChildren();
-    [
+    (diagnostic ? [
+      'Adaptive baseline', '8-10 min', `${diagnostic.evidence.length} answers sampled`,
+      `${Math.round(diagnosticReport(diagnostic).coverage * 100)}% skill coverage`
+    ] : [
       mission.level,
       `${mission.durationMinutes} min`,
       `${Math.round(mission.successTarget * 100)}% target`,
       tutorState.dueReviews.length ? `${tutorState.dueReviews.length} due` : 'No reviews due'
-    ].forEach((value) => {
+    ]).forEach((value) => {
       const chip = document.createElement('span');
       chip.textContent = value;
       tutorMissionMeta.appendChild(chip);
@@ -6786,7 +6814,7 @@ function renderTutorCurrentActivity() {
     ? getTutorV2CurrentActivity(blueprint, stateValue)
     : null;
   if (tutorCurrentPhase) {
-    tutorCurrentPhase.textContent = activity
+    tutorCurrentPhase.textContent = stateValue?.diagnostic ? 'Baseline conversation' : activity
       ? activity.phase.replaceAll('_', ' ')
       : 'Ready';
   }
@@ -6796,7 +6824,8 @@ function renderTutorCurrentActivity() {
   if (tutorActivityProgress) {
     const total = blueprint?.activities.length || 1;
     const completed = stateValue?.completedActivityIds.length || 0;
-    const progress = stateValue?.status === 'completed' ? 1 : Math.min(1, completed / total);
+    const progress = stateValue?.diagnostic ? diagnosticReport(stateValue.diagnostic).coverage
+      : stateValue?.status === 'completed' ? 1 : Math.min(1, completed / total);
     tutorActivityProgress.style.width = `${Math.round(progress * 100)}%`;
   }
 }
@@ -6849,6 +6878,34 @@ function renderTutorSessionReview() {
   tutorSessionReview.appendChild(overview);
   tutorSessionReview.appendChild(win);
   if (priority.textContent) tutorSessionReview.appendChild(priority);
+  if (outcome.diagnostic) appendDiagnosticFindings(tutorSessionReview, outcome.diagnostic);
+}
+
+function appendDiagnosticFindings(container, report) {
+  const labels = { independent: 'Demonstrated independently', supported: 'Demonstrated with help',
+    not_yet_demonstrated: 'Not yet demonstrated', not_assessed: 'Not assessed' };
+  const list = document.createElement('dl'); list.className = 'tutor-diagnostic-findings';
+  const completion = document.createElement('p');
+  completion.textContent = report.completionReason === 'sufficient_coverage'
+    ? 'Baseline sufficiently sampled. These findings remain provisional.'
+    : report.completionReason === 'time_limit_partial' ? 'Time limit reached. Some skills still need more samples.'
+      : report.status === 'paused' ? 'Baseline incomplete. Your findings are saved for the next conversation.' : 'Baseline in progress.';
+  container.appendChild(completion);
+  for (const item of report.domains || []) {
+    const term = document.createElement('dt'); term.textContent = item.domain;
+    const detail = document.createElement('dd');
+    detail.textContent = `${labels[item.status] || 'Not assessed'}${item.level ? ` - provisional ${item.level}` : ''} (${item.sampleCount} samples)`;
+    for (const example of item.examples || []) {
+      const finding = document.createElement('p');
+      finding.textContent = `"${example.answer}" - ${example.observation} (${labels[example.outcome] || 'Uncertain'})`;
+      detail.appendChild(finding);
+    }
+    list.append(term, detail);
+  }
+  container.appendChild(list);
+  const untested = document.createElement('p');
+  untested.textContent = `Not assessed: ${(report.unassessed || []).join(', ')}.`;
+  container.appendChild(untested);
 }
 
 function appendTutorProgressBar(container, labelText, value, meta = '') {
@@ -6884,8 +6941,10 @@ function renderTutorProgress() {
   if (tutorProgressDimensions) {
     tutorProgressDimensions.replaceChildren();
     const profile = normalizeSpeakingProfile(progress?.profile || tutorState.speakingProfile, tutorState.profile);
+    if (profile.baseline) appendDiagnosticFindings(tutorProgressDimensions, profile.baseline);
     TUTOR_SPEAKING_DIMENSIONS.forEach((dimension) => {
       const signal = profile.dimensions[dimension];
+      if (profile.baseline || !signal.evidenceCount) return;
       appendTutorProgressBar(
         tutorProgressDimensions,
         dimension.charAt(0).toUpperCase() + dimension.slice(1),
@@ -7159,9 +7218,9 @@ function renderTutor() {
   const sessionActive = Boolean(tutorState.currentSession)
     && ['connecting', 'listening', 'thinking', 'speaking'].includes(tutorState.status);
   if (tutorHandoff) {
-    setElementText(tutorHandoff, tutorLiveHandoff.pending ? copy.tutorHandoffPending : copy.tutorHandoff);
+    setElementText(tutorHandoff, tutorState.controlPending || tutorLiveHandoff.pending ? copy.tutorHandoffPending : copy.tutorHandoff);
     tutorHandoff.title = copy.tutorHandoffHint;
-    tutorHandoff.disabled = !canHandoffTutorTurn() || tutorLiveHandoff.pending;
+    tutorHandoff.disabled = !canHandoffTutorTurn() || tutorLiveHandoff.pending || tutorState.controlPending;
   }
   [tutorRepeat, tutorHint, tutorExplain].forEach((button) => {
     if (button) button.disabled = !sessionActive || tutorState.status !== 'listening';
@@ -7171,6 +7230,7 @@ function renderTutor() {
     tutorTryAgain.disabled = !sessionActive || !tutorState.activityState?.repairRequired;
   }
   if (tutorDiagnostic) {
+    setElementText(tutorDiagnostic, tutorState.resumeBaselineId ? 'Resume baseline' : 'Take baseline');
     tutorDiagnostic.disabled = sessionActive;
     tutorDiagnostic.hidden = !tutorState.diagnosticRecommended && Boolean(tutorState.speakingProfile?.completedDiagnosticAt);
   }
@@ -9532,6 +9592,11 @@ function applyTutorV2SessionSnapshot(snapshot = {}) {
     ? normalizeTutorV2TurnAssessment(snapshot.latestAssessment)
     : tutorState.latestAssessment;
   tutorState.directorStatus = snapshot.director?.status || 'idle';
+  if (tutorState.directorStatus === 'response_unavailable') {
+    tutorState.error = 'The tutor has not started speaking. Use Repeat to hear the current question.';
+  } else if (tutorState.directorStatus === 'assessment_unavailable') {
+    tutorState.error = 'Assessment is temporarily unavailable. Your answer is retained; use Tutor\'s turn to retry.';
+  }
   if (typeof snapshot.director?.sidebandConnected === 'boolean') {
     tutorState.sidebandConnected = snapshot.director.sidebandConnected;
   }
@@ -9540,6 +9605,10 @@ function applyTutorV2SessionSnapshot(snapshot = {}) {
     tutorState.currentSession.model = snapshot.model || tutorState.currentSession.model;
     tutorState.currentSession.voice = snapshot.voice || tutorState.currentSession.voice;
     tutorState.currentSession.updatedAt = snapshot.updatedAt || Date.now();
+  }
+  if (snapshot.diagnostic?.status === 'completed' && tutorState.currentSession
+    && !tutorState.tutorAudioOutputActive && tutorState.directorStatus === 'idle') {
+    void stopTutorSession();
   }
   const assessment = tutorState.latestAssessment;
   if (assessment?.turnId && tutorState.currentSession) {
@@ -10304,15 +10373,17 @@ async function generateTutorLessonPlanLegacy() {
   }
 }
 
-async function startTutorSession({ diagnostic = false, benchmark = false } = {}) {
+async function startTutorSession({ diagnostic = false, benchmark = false, resumeSessionId = '' } = {}) {
   const copy = i18n[state.language];
   if (['listening', 'thinking', 'speaking', 'connecting'].includes(tutorState.status)) return;
   tutorState.topic = (tutorTopicInput?.value || tutorState.topic || '').trim();
   tutorState.error = '';
   tutorState.outcome = null;
+  const resumingId = diagnostic ? resumeSessionId || tutorState.resumeBaselineId || '' : '';
   setTutorRuntimeStatus('connecting');
   try {
     const result = await createTutorV2Session({
+      resumeSessionId: resumingId || undefined,
       mode: tutorState.mode,
       topic: tutorState.topic,
       vocabularyLevel: tutorState.vocabularyLevel,
@@ -10340,7 +10411,7 @@ async function startTutorSession({ diagnostic = false, benchmark = false } = {})
       status: 'active',
       startedAt: v2Session.startedAt || Date.now(),
       endedAt: null,
-      turns: [],
+      turns: (v2Session.turns || []).map(turn => ({ ...turn, id: turn.id || turn.turnId })),
       summary: null,
       model: v2Session.model || '',
       voice: v2Session.voice || tutorState.voice,
@@ -10365,7 +10436,7 @@ async function startTutorSession({ diagnostic = false, benchmark = false } = {})
     cleanupTutorConnection();
     tutorState.currentSession = null;
     tutorState.v2SessionId = '';
-    if (failedSessionId) {
+    if (failedSessionId && !resumingId) {
       await deleteTutorV2Session(failedSessionId).catch(() => {});
     }
     setTutorRuntimeStatus('error', error?.message || copy.tutorTokenError);
@@ -10607,10 +10678,18 @@ const tutorLiveHandoff = createTutorLiveHandoff({
   }
 });
 
-function handoffTutorTurn() {
+async function handoffTutorTurn() {
   if (!canHandoffTutorTurn()) return false;
   tutorState.error = '';
-  if (isTutorLiveModel(tutorState.voiceModel)) return tutorLiveHandoff.request();
+  if (isTutorLiveModel(tutorState.voiceModel)) {
+    if (tutorState.controlPending) return false;
+    tutorState.controlPending = true; renderTutor();
+    try {
+      const result = await controlTutorV2Session(tutorState.v2SessionId, 'handoff');
+      applyTutorV2SessionSnapshot(result.session); return true;
+    } catch (error) { tutorState.error = error.message; return false; }
+    finally { tutorState.controlPending = false; renderTutor(); }
+  }
   const sent = requestTutorResponse('manual_handoff');
   if (sent) scheduleTutorResponseWatchdog('manual_handoff');
   return sent;
@@ -10628,6 +10707,12 @@ function requestTutorGuidance(kind) {
       : 'Ask the learner to try the current speaking target one more time. Keep it to one short Japanese sentence.'
   };
   if (isTutorLiveModel(tutorState.voiceModel)) {
+    if (['repeat', 'hint', 'explain'].includes(kind) && tutorState.v2SessionId) {
+      void controlTutorV2Session(tutorState.v2SessionId, kind)
+        .then(result => applyTutorV2SessionSnapshot(result.session))
+        .catch(error => { tutorState.error = error.message; renderTutor(); });
+      return true;
+    }
     return sendTutorLiveContext('session.instructions.append', instructions[kind] || instructions.hint);
   }
   const didSend = sendTutorRealtimeEvent({
@@ -11227,6 +11312,11 @@ function bindEvents() {
     const target = event.target;
     if (!(target instanceof HTMLElement)) {
       return;
+    }
+    const resume = target.closest('.tutor-session-resume');
+    if (resume instanceof HTMLElement) {
+      tutorState.activeView = 'practice'; renderTutor();
+      void startTutorSession({ diagnostic: true, resumeSessionId: resume.dataset.sessionId }); return;
     }
     const deleteButton = target.closest('.tutor-session-delete');
     if (deleteButton instanceof HTMLElement) {

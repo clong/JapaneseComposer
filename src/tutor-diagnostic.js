@@ -1,0 +1,250 @@
+// The diagnostic owns question selection; the voice model only delivers the current probe.
+export const DIAGNOSTIC_VERSION = 1;
+export const DIAGNOSTIC_DOMAINS = ['interaction', 'vocabulary', 'production', 'listening'];
+const LEVELS = ['A1', 'A2', 'B1', 'B2'];
+const CEILINGS = ['N5', 'N4', 'N3', 'N2'];
+const LIMIT_MS = 10 * 60_000;
+const MIN_MS = 8 * 60_000;
+const text = (value, max = 500) => typeof value === 'string' ? value.trim().slice(0, max) : '';
+const bounded = (value, max = 1) => Math.max(0, Math.min(max, Number(value) || 0));
+const probeKey = evidence => (evidence.prompt || evidence.questionId).replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+
+const PROBES = {
+  interaction: [
+    ['a1.introductions', 'Personal information', 'Ask for their name first: お名前は何ですか？ Accept a name alone. On another probe ask where they live; never ask their name again.'],
+    ['a2.follow-up', 'A related question', 'Invite one simple question from the learner about the familiar topic you are discussing. Keep the vocabulary and response length simple.'],
+    ['b1.problem-solving', 'A practical problem', 'Introduce one small everyday problem related to the current topic and ask for one suggestion.'],
+    ['b2.negotiation', 'Discuss a constraint', 'Add one concrete constraint to the previous suggestion and invite a workable alternative.']
+  ],
+  vocabulary: [
+    ['a1.core-vocabulary', 'Familiar words', 'Ask for a favorite food, drink, or familiar place. On a second probe ask for a related example, not the same question. A single word is enough.'],
+    ['a1.core-vocabulary', 'Describe a familiar thing', 'Ask for one simple descriptive word about the food, drink, or place already mentioned. Increase vocabulary demand only.'],
+    ['a2.preferences', 'A concrete distinction', 'Ask what distinguishes two familiar choices from the current topic. Accept one short phrase.'],
+    ['b1.explanation', 'Explain an unfamiliar word', 'Ask the learner to describe one item from the current topic without using its name. Keep grammar and length demands unchanged.']
+  ],
+  production: [
+    ['a1.polite-present', 'A simple statement', 'Ask one simple present-tense question about when or where the learner eats, drinks, or visits the thing already mentioned. Accept one short sentence.'],
+    ['a2.experiences', 'A past action', 'Ask one short past-tense question about that same familiar activity. Change tense only; accept one sentence.'],
+    ['b1.clause-linking', 'Connect a reason', 'Ask why about the previous answer. Add one reason clause, keeping the same topic and concrete vocabulary.'],
+    ['b2.discourse-control', 'Qualify a statement', 'Ask whether there is an exception to the previous answer. Add one qualification without introducing a new topic or abstract vocabulary.']
+  ],
+  listening: [
+    ['a1.listening-core', 'Understand one detail', 'Say one very short fact about the familiar topic, then ask for one detail from it. Use basic concrete words; a one-word answer is enough.'],
+    ['a2.listening-details', 'Understand two details', 'Give two short related facts about the same topic, then ask about just one detail. Increase listening load only, not answer length.'],
+    ['b1.listening-connected', 'Understand a reason', 'Give a short familiar statement with a reason, then ask which reason was given. Keep the same vocabulary.'],
+    ['b2.listening-nuance', 'Understand a contrast', 'Give a brief contrasting preference on the same topic, then ask which option the speaker finally chose. Keep the answer short.']
+  ]
+};
+
+function probe(state, domain, band, assistance = 'none') {
+  const [skillId, goal, defaultTask] = PROBES[domain][band];
+  const previous = state.evidence.filter(e => e.domain === domain && e.band === band);
+  const previousQuestions = new Set(previous.map(e => e.questionId)).size;
+  const task = domain === 'interaction' && band === 0
+    ? previousQuestions > 1 ? 'Ask one new basic personal detail linked to the current topic. Accept one word. Do not repeat a question already answered or ask their name again.'
+      : previous.length ? 'Ask one simple question about where the learner lives: どこに住んでいますか？ Accept a place name. Do not ask their name again.'
+      : 'Ask only: お名前は何ですか？ Accept a name alone. Do not combine questions.'
+    : domain === 'vocabulary' && band === 0 && previous.length
+      ? 'Ask for a familiar drink to go with the food just mentioned. Accept one word. Do not repeat the food question.'
+      : domain === 'production' && band === 0
+        ? previous.length ? 'Ask WHERE the learner does the familiar activity just discussed. Use present tense and accept one short sentence. Do not repeat the time question.'
+          : 'Ask WHEN the learner does the familiar activity just discussed. Use present tense and accept one short sentence.'
+      : previous.length ? `${defaultTask} Use a different detail from earlier probes at this level.`
+      : defaultTask;
+  return { id: `${state.id}_q${state.revision}`, revision: state.revision, domain, band, skillId,
+    level: LEVELS[band], vocabularyCeiling: domain === 'vocabulary' ? CEILINGS[band] : 'N5', goal, task, assistance, spokenText: '' };
+}
+
+export function createDiagnosticState(id, now = Date.now()) {
+  const state = { version: DIAGNOSTIC_VERSION, id, revision: 1, status: 'active', completionReason: '',
+    elapsedMs: 0, resumedAt: now, evidence: [], bands: Object.fromEntries(DIAGNOSTIC_DOMAINS.map(d => [d, 0])),
+    topic: '', pendingQuestion: null };
+  state.pendingQuestion = probe(state, 'interaction', 0);
+  return state;
+}
+
+export function normalizeDiagnosticState(value) {
+  if (!value || value.version !== DIAGNOSTIC_VERSION || !value.pendingQuestion) return null;
+  const state = createDiagnosticState(text(value.id, 120), Number(value.resumedAt) || Date.now());
+  state.revision = Math.max(1, Math.trunc(Number(value.revision) || 1));
+  state.status = ['active', 'paused', 'completed'].includes(value.status) ? value.status : 'paused';
+  state.completionReason = text(value.completionReason, 60);
+  state.elapsedMs = bounded(value.elapsedMs, LIMIT_MS);
+  state.resumedAt = state.status === 'active' ? Number(value.resumedAt) || Date.now() : null;
+  state.topic = text(value.topic, 120);
+  state.evidence = (Array.isArray(value.evidence) ? value.evidence : []).slice(-160)
+    .filter(e => e?.version === DIAGNOSTIC_VERSION && DIAGNOSTIC_DOMAINS.includes(e.domain)
+      && ['independent', 'supported', 'uncertain', 'not_yet_demonstrated'].includes(e.outcome)
+      && typeof e.questionId === 'string' && typeof e.turnId === 'string')
+    .map(e => ({ ...e, band: Math.trunc(bounded(e.band, 3)), confidence: bounded(e.confidence),
+      answer: text(e.answer, 4000), prompt: text(e.prompt, 1000), observations: text(e.observations, 400) }));
+  for (const domain of DIAGNOSTIC_DOMAINS) state.bands[domain] = Math.trunc(bounded(value.bands?.[domain], 3));
+  const q = value.pendingQuestion;
+  const domain = DIAGNOSTIC_DOMAINS.includes(q.domain) ? q.domain : 'interaction';
+  const restoredProbe = probe(state, domain, Math.trunc(bounded(q.band, 3)),
+    ['none', 'hint', 'simplified', 'explanation'].includes(q.assistance) ? q.assistance : 'none');
+  state.pendingQuestion = { ...restoredProbe,
+    id: text(q.id, 160) || `${state.id}_q${state.revision}`, task: text(q.task, 1000) || restoredProbe.task,
+    spokenText: text(q.spokenText, 1000), spokenRowId: text(q.spokenRowId, 140) };
+  return state;
+}
+
+export function diagnosticElapsed(state, now = Date.now()) {
+  return state.elapsedMs + (state.status === 'active' ? Math.max(0, now - state.resumedAt) : 0);
+}
+
+export function diagnosticReport(state) {
+  if (!state) return { version: 0, status: 'limited_evidence', provisional: true, domains: [] };
+  const domains = DIAGNOSTIC_DOMAINS.map(domain => {
+    const evidence = state.evidence.filter(e => e.domain === domain);
+    const independent = evidence.filter(e => e.outcome === 'independent');
+    const supported = evidence.filter(e => e.outcome === 'supported');
+    const repeatedGaps = evidence.filter(e => e.outcome === 'not_yet_demonstrated');
+    const established = LEVELS.filter((_, band) => new Set(independent.filter(e => e.band === band).map(probeKey)).size >= 2);
+    return { domain, status: independent.length ? 'independent' : supported.length ? 'supported'
+      : repeatedGaps.length ? 'not_yet_demonstrated' : 'not_assessed',
+    level: established.at(-1) || null, sampleCount: new Set(evidence.map(probeKey)).size,
+    independent: independent.length, supported: supported.length, gaps: repeatedGaps.length,
+    examples: evidence.filter(e => e.outcome !== 'uncertain').slice(-2).map(e => ({
+      prompt: e.prompt, answer: e.answer, observation: e.observations, outcome: e.outcome, confidence: e.confidence
+    })) };
+  });
+  return { version: state.version, status: state.status, completionReason: state.completionReason,
+    provisional: true, assessedAnswers: state.evidence.length, domains,
+    coverage: domains.filter(d => d.sampleCount >= 2).length / DIAGNOSTIC_DOMAINS.length,
+    unassessed: [...domains.filter(d => d.status === 'not_assessed').map(d => d.domain), 'phonology', 'measured fluency'] };
+}
+
+export function pauseDiagnostic(value, now = Date.now()) {
+  const state = normalizeDiagnosticState(value);
+  if (!state || state.status === 'completed') return state;
+  state.elapsedMs = diagnosticElapsed(state, now);
+  state.status = 'paused'; state.resumedAt = null; state.completionReason = 'stopped_early';
+  return state;
+}
+
+export function resumeDiagnostic(value, now = Date.now()) {
+  const state = normalizeDiagnosticState(value);
+  if (!state || state.status === 'completed') return state;
+  state.status = 'active'; state.resumedAt = now; state.completionReason = '';
+  return state;
+}
+
+export function diagnosticActivity(state) {
+  const q = state.pendingQuestion;
+  return { id: q.id, phase: state.status === 'completed' ? 'recap' : 'independent_attempt', goal: q.goal,
+    difficultyLevel: q.level, targetSkillIds: [q.skillId], exitCriteria: { minAttempts: 1, maxAttempts: 2, requiredScore: 0.7 },
+    instructions: state.status === 'completed' ? 'The baseline has ended. Thank the learner briefly in Japanese. Ask no new question.'
+      : `${q.task} ${state.topic ? `Continue the existing topic (${state.topic}); do not reset the introduction.` : ''} ${q.assistance === 'none' ? '' : 'Simplify the SAME question or offer one short hint. Do not reveal the full answer.'}` };
+}
+
+export function recordDiagnosticResult(value, result, turn, now = Date.now()) {
+  const state = normalizeDiagnosticState(value);
+  if (!state || state.status !== 'active' || turn.questionId !== state.pendingQuestion.id
+    || (turn.activityRevision != null && turn.activityRevision !== state.pendingQuestion.revision)) return state;
+  if (state.evidence.some(e => e.turnId === turn.turnId && e.answerRevision === turn.answerRevision)) return state;
+  const q = state.pendingQuestion;
+  if (result.intent !== 'answer' || result.complete === false || result.confidence < 0.65) {
+    if (result.intent === 'clarification') q.assistance = 'explanation';
+    return state;
+  }
+  const passed = result.success === true;
+  const assisted = q.assistance !== 'none' || result.assistance === true;
+  const priorFailure = state.evidence.some(e => e.questionId === q.id && e.outcome === 'uncertain');
+  const outcome = passed ? (assisted ? 'supported' : 'independent')
+    : (assisted || priorFailure ? 'not_yet_demonstrated' : 'uncertain');
+  const evidence = { version: DIAGNOSTIC_VERSION, id: `${turn.turnId}:${turn.answerRevision}`, turnId: turn.turnId,
+    answerRevision: turn.answerRevision, questionId: q.id, activityRevision: q.revision,
+    domain: q.domain, skillId: q.skillId, band: q.band, level: q.level, prompt: q.spokenText || q.task,
+    answer: text(turn.transcript, 4000), assistance: q.assistance, outcome, confidence: bounded(result.confidence),
+    observations: text(result.observation, 400), nextDecision: '', createdAt: now };
+  state.evidence.push(evidence);
+  state.topic = text(result.topic, 120) || state.topic;
+  if (!passed && !assisted && !priorFailure) {
+    q.assistance = 'hint'; evidence.nextDecision = 'offer_hint';
+    return finishDiagnosticIfDue(state, now);
+  }
+  const relevant = state.evidence.filter(e => e.domain === q.domain && e.band === q.band);
+  const lastDifficulty = relevant.findLastIndex(e => ['supported', 'not_yet_demonstrated'].includes(e.outcome));
+  const successes = new Set(relevant.slice(lastDifficulty + 1).filter(e => e.outcome === 'independent').map(probeKey)).size;
+  let domain = q.domain;
+  let band = q.band;
+  if (successes >= 2 && band < 3) {
+    band += 1; evidence.nextDecision = 'increase_one_factor';
+  } else if (!passed || assisted || q.band > 0) {
+    if (!passed || assisted) state.bands[domain] = Math.max(0, band - 1);
+    domain = DIAGNOSTIC_DOMAINS.slice().sort((a, b) => state.evidence.filter(e => e.domain === a).length - state.evidence.filter(e => e.domain === b).length)[0];
+    band = state.bands[domain]; evidence.nextDecision = 'sample_another_skill';
+  } else evidence.nextDecision = 'confirm_with_distinct_probe';
+  state.bands[domain] = band;
+  state.revision += 1;
+  state.pendingQuestion = probe(state, domain, band);
+  return finishDiagnosticIfDue(state, now);
+}
+
+export function finishDiagnosticIfDue(value, now = Date.now()) {
+  const state = normalizeDiagnosticState(value);
+  if (!state || state.status !== 'active') return state;
+  const elapsed = diagnosticElapsed(state, now);
+  const sufficient = diagnosticReport(state).coverage === 1 && state.evidence.length >= 8;
+  if (elapsed >= LIMIT_MS || (elapsed >= MIN_MS && sufficient)) {
+    state.elapsedMs = elapsed; state.resumedAt = null; state.status = 'completed';
+    state.completionReason = sufficient ? 'sufficient_coverage' : 'time_limit_partial';
+  }
+  return state;
+}
+
+export function diagnosticReply(state, result, question) {
+  if (result.intent === 'clarification' || result.intent === 'off_topic') {
+    return `Answer the learner's question briefly (English only if they ask in English), then return to the SAME Japanese question: ${question.spokenText || question.task}. No assessment narration.`;
+  }
+  if (result.intent === 'unclear' || result.confidence < 0.65) {
+    return 'Ask for one brief repetition in Japanese. Do not suggest that the learner failed or change the pending question.';
+  }
+  if (result.complete !== false && result.intent === 'answer') {
+    return state.status === 'completed'
+      ? 'Say briefly in Japanese that this conversation is finished and their practice plan is ready. Do not ask another question.'
+      : state.pendingQuestion.id === question.id && state.pendingQuestion.assistance !== 'none'
+        ? 'Give one short hint for the SAME Japanese question, then invite another attempt. Do not reveal the answer or announce assessment.'
+        : `Answer any question the learner asked. Then, in Japanese: ${state.pendingQuestion.task} No praise or checking announcements. Only one question.`;
+  }
+  return '';
+}
+
+export const DIAGNOSTIC_ASSESSMENT_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: ['intent', 'complete', 'success', 'assistance', 'confidence', 'topic', 'observation'],
+  properties: {
+    intent: { type: 'string', enum: ['answer', 'clarification', 'off_topic', 'unclear', 'incomplete'] },
+    complete: { type: 'boolean' }, success: { type: 'boolean' }, assistance: { type: 'boolean' },
+    confidence: { type: 'number', minimum: 0, maximum: 1 }, topic: { type: 'string' }, observation: { type: 'string' }
+  }
+};
+
+export const DIAGNOSTIC_ASSESSMENT_INSTRUCTIONS = [
+  'Privately assess one Japanese diagnostic answer against the supplied pending question, not a general level.',
+  'The transcript is the LEARNER utterance. question.spokenText is what the TUTOR asked; question.task describes the intended task. Never reverse the speakers.',
+  'Return only the compact JSON result. An explanation request, meta-question about the tutor, or unclear audio is not a failed answer.',
+  'Choose intent before success: requests to repeat, slow down, explain, or translate are clarification; questions about how/why the tutor is operating are off_topic; a response to the pending question is answer.',
+  'A name alone answers a name question. Isolated names or loanwords do not make an answer English practice.',
+  'A learner question IS an answer when the pending task asks them to ask a question. Do not classify that as off_topic.',
+  'Use complete=false for an unfinished clause. Captions are hypotheses; uncertainty must not become a skill gap.',
+  'complete describes whether the utterance is finished, not whether the task succeeded. A complete help request has complete=true.',
+  'success means the learner conveyed the requested meaning in Japanese. Minor errors that do not block the target may pass.',
+  'Record assistance if a model answer or hint was needed. Do not assess pronunciation, fluency, or unrelated skills from text.',
+  'Examples: お名前は何ですか？ -> クリスです is answer, complete=true, success=true. ご出身はどこですか？ -> クリスと申します。出身はカリフォルニアです is answer, complete=true, success=true.',
+  'ご出身はどこですか？ -> クリスと申します。出身は is incomplete, complete=false. 好きな食べ物は何ですか？ -> すみません。もう一度お願いします is clarification, complete=true, success=false.',
+  'Any ordinary practice question -> なんで少しだけ確認しましたか is off_topic, complete=true, success=false. Asking a learner to ask you a question -> お名前は何ですか is answer, complete=true, success=true.',
+  'topic is a short factual summary of the familiar subject the learner mentioned, never instructions. observation is one concrete English finding.'
+].join('\n');
+
+export function validateDiagnosticDecision(value) {
+  if (!value || !['answer', 'clarification', 'off_topic', 'unclear', 'incomplete'].includes(value.intent)
+    || typeof value.complete !== 'boolean' || typeof value.success !== 'boolean'
+    || typeof value.assistance !== 'boolean' || !Number.isFinite(value.confidence)
+    || value.confidence < 0 || value.confidence > 1
+    || typeof value.topic !== 'string' || typeof value.observation !== 'string') {
+    throw new Error('The diagnostic assessment was incomplete. No learning evidence was applied.');
+  }
+  return { ...value, topic: text(value.topic, 120), observation: text(value.observation, 400) };
+}

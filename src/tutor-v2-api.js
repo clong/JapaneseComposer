@@ -45,6 +45,12 @@ export function getTutorV2Session(sessionId, options = {}) {
   return requestJson(`/sessions/${encodeURIComponent(sessionId)}`, options);
 }
 
+export function controlTutorV2Session(sessionId, action, options = {}) {
+  return requestJson(`/sessions/${encodeURIComponent(sessionId)}/control`, {
+    method: 'POST', body: { action }, signal: options.signal
+  });
+}
+
 export function endTutorV2Session(sessionId, options = {}) {
   return requestJson(`/sessions/${encodeURIComponent(sessionId)}/end`, {
     method: 'POST',

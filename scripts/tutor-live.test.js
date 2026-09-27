@@ -53,7 +53,7 @@ test('Live starts with client delegation and no Realtime-only configuration', as
   assert.deepEqual(config.delegation, { type: 'client' });
   assert.deepEqual(config.audio, { output: { voice: 'cedar' } });
   for (const key of ['type', 'reasoning', 'tools', 'tool_choice', 'max_output_tokens']) assert.equal(key in config, false);
-  assert.match(config.instructions, /A1\/N5/);
+  assert.match(config.instructions, /Difficulty: A1\. Vocabulary ceiling: N5/);
   assert.match(config.instructions, /Never ask the learner to practice English/);
   assert.match(config.instructions, /one brief English explanation/);
   assert.match(config.instructions, /very slowly/);
@@ -438,4 +438,73 @@ test('Live migration persists raw captions and deletes them with the session', a
   } finally {
     await service.close(); await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('adaptive baseline persists question evidence, survives pause/resume, and deletes derived state', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'tutor-baseline-test-'));
+  const databasePath = path.join(directory, 'test.sqlite');
+  const query = sql => JSON.parse(execFileSync('sqlite3', ['-json', databasePath, sql], { encoding: 'utf8' }) || '[]');
+  query('CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT, name TEXT, picture TEXT, created_at INTEGER, updated_at INTEGER);');
+  const sockets = [];
+  const inputs = [];
+  class Socket extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.sent = []; sockets.push(this); queueMicrotask(() => this.emit('open')); }
+    send(value) {
+      const event = JSON.parse(value); this.sent.push(event);
+      if (event.type === 'session.close') queueMicrotask(() => this.emit('message', JSON.stringify({ type: 'session.closed', usage: { seconds: 5 } })));
+    }
+    close() { this.readyState = 3; this.emit('close'); }
+  }
+  const service = createTutorV2Service({ apiKey: 'test-secret', workspaceDbPath: databasePath, audioDirectory: directory,
+    runSqlite: async (_path, sql, options) => options?.json ? JSON.stringify(query(sql)) : query(sql),
+    sqlString: value => `'${String(value).replaceAll("'", "''")}'`, parseSqliteJson: value => JSON.parse(value || '[]'),
+    writeJson: (res, statusCode, body) => Object.assign(res, { statusCode, body }), getActor: async () => ({ id: 'local' }),
+    WebSocketImpl: Socket, logger: { warn() {}, error(error) { throw error; } },
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/live/sessions')) return new Response(JSON.stringify({ session: { id: `live_${sockets.length}` }, transport: { sdp: 'answer' } }));
+      const input = JSON.parse(JSON.parse(options.body).input); inputs.push(input);
+      const result = { intent: input.transcript.includes('なんで') ? 'off_topic' : 'answer', complete: true,
+        success: true, assistance: false, confidence: 0.9, topic: 'home', observation: 'Answered a personal information question.' };
+      return new Response(JSON.stringify({ output: [{ content: [{ type: 'output_text', text: JSON.stringify(result) }] }] }));
+    } });
+  const request = async (url, method = 'GET', body = '') => {
+    const req = Readable.from([Buffer.from(body)]); req.method = method; req.headers = {};
+    const res = { writeHead(statusCode) { this.statusCode = statusCode; }, end(value) { this.body = value; } };
+    await service.handleRequest(req, res, new URL(url, 'http://localhost')); return res;
+  };
+  const wait = () => new Promise(resolve => setTimeout(resolve, 600));
+  try {
+    await service.ensureSchema();
+    const initial = (await request('/api/tutor/v2/diagnostic', 'POST', '{}')).body.session;
+    const base = `/api/tutor/v2/sessions/${initial.id}`;
+    await request(`${base}/connect`, 'POST', 'offer'); await wait();
+    const emit = event => sockets[0].emit('message', JSON.stringify(event));
+    emit(fragment('assistant', 'a1', 'お名前は何ですか？', 0, 1000));
+    emit(fragment('user', 'u1', 'Chrisです', 2000, 2500));
+    await request(`${base}/control`, 'POST', '{"action":"handoff"}'); await wait();
+    let saved = (await request(base)).body.session;
+    assert.equal(saved.activityState.diagnostic.evidence.length, 1);
+    const pending = saved.activityState.diagnostic.pendingQuestion.id;
+    emit(fragment('user', 'u2', 'なんで確認しますか', 6000, 7000));
+    await request(`${base}/control`, 'POST', '{"action":"handoff"}'); await wait();
+    saved = (await request(base)).body.session;
+    assert.equal(saved.activityState.diagnostic.pendingQuestion.id, pending);
+    assert.equal(saved.activityState.diagnostic.evidence.length, 1);
+    emit(fragment('user', 'u3', 'クリスと申します。出身は', 10000, 11000));
+    emit(fragment('user', 'u4', 'カリフォルニアです', 12700, 14000));
+    await request(`${base}/control`, 'POST', '{"action":"handoff"}'); await wait();
+    assert.equal(inputs.length, 3);
+    assert.match(inputs[2].transcript, /出身は カリフォルニアです/);
+    saved = (await request(`${base}/end`, 'POST')).body.session;
+    assert.equal(saved.status, 'paused');
+    assert.equal(saved.diagnostic.assessedAnswers, 2);
+    assert.equal((await request('/api/tutor/v2/today')).body.resumeBaselineId, initial.id);
+    const resumed = (await request('/api/tutor/v2/diagnostic', 'POST', JSON.stringify({ resumeSessionId: initial.id }))).body.session;
+    assert.equal(resumed.id, initial.id); assert.equal(resumed.activityState.diagnostic.evidence.length, 2);
+    await request(`${base}/connect`, 'POST', 'offer'); await wait();
+    assert.equal(sockets.length, 2);
+    await request(base, 'DELETE');
+    assert.equal(query('SELECT COUNT(*) AS n FROM user_tutor_turn_assessments')[0].n, 0);
+    assert.equal((await request('/api/tutor/v2/progress')).body.profile.baseline, null);
+  } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });
