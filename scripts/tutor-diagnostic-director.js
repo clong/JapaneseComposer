@@ -62,7 +62,8 @@ export function createTutorDiagnosticDirector({ send, assess, question, context,
     const value = pendingDelivery;
     if (value.revision !== revision) { pendingDelivery = null; return; }
     pendingDelivery = null;
-    lastDelivery = value;
+    if (value.commit && !value.commit()) { schedule(); return; }
+    lastDelivery = { message: value.message, delegationId: value.delegationId, revision: value.revision };
     append('session.thinking.append', context(), value.delegationId);
     append('session.commentary.append', value.message, value.delegationId);
     awaitingSpeechAt = lastAnswerEnd;
@@ -90,6 +91,7 @@ export function createTutorDiagnosticDirector({ send, assess, question, context,
     clearTimeout(timer);
     if (closed) return;
     if (operation) { schedule(stableMs, delegationId, manual); return; }
+    if (pendingDelivery) return;
     const rows = transcript.rows.filter(row => row.role === 'user').map(row => {
       const fragments = row.fragments.filter(fragment => !consumed.has(fragment.eventId));
       return { ...row, fragments, transcript: fragments.map(fragment => fragment.delta).join('') };
@@ -107,8 +109,9 @@ export function createTutorDiagnosticDirector({ send, assess, question, context,
       status('listening'); return;
     }
     if (!manual && now() - lastUserAt < stableMs) { schedule(stableMs, delegationId); return; }
-    const q = question();
-    if (!q) return;
+    const pendingQuestion = question();
+    if (!pendingQuestion) return;
+    const q = { ...pendingQuestion };
     const snapshot = revision;
     const voicedSnapshot = lastVoicedInputAt;
     const turnId = `answer_${createHash('sha256').update(`${q.id}:${rows[0].fragments[0].eventId}`).digest('hex').slice(0, 24)}`;
@@ -117,7 +120,8 @@ export function createTutorDiagnosticDirector({ send, assess, question, context,
       finalized: manual,
       transcript: answerText, prompt: q.spokenText || q.task,
       isCurrent: () => !closed && snapshot === revision && lastVoicedInputAt === voicedSnapshot
-        && question()?.id === q.id && question()?.revision === q.revision };
+        && question()?.id === q.id && question()?.revision === q.revision
+        && question()?.assistance === q.assistance };
     trace({ type: 'director.assessment.start', questionId: q.id, answerRevision: snapshot, detail: turn.turnId });
     status('assessing');
     operation = (async () => {
@@ -128,8 +132,14 @@ export function createTutorDiagnosticDirector({ send, assess, question, context,
           detail: JSON.stringify({ durationMs: now() - started, intent: result?.intent, stale: revision !== snapshot }) });
         if (closed) return;
         if (snapshot !== revision || lastVoicedInputAt !== voicedSnapshot || !result) { schedule(stableMs); return; }
+        const commit = () => {
+          if (!turn.isCurrent() || result.commit?.() === false) return false;
+          rows.forEach(row => row.fragments.forEach(fragment => consumed.add(fragment.eventId)));
+          return true;
+        };
         if (result.intent === 'incomplete' || (result.intent === 'answer' && result.complete === false)) {
           // Retain these rows. The next caption or explicit handoff will extend this answer.
+          if (result.commit?.() === false) { schedule(); return; }
           if (manual) {
             pendingDelivery = { message: `Ask one short Japanese clarification to complete this SAME answer: ${q.spokenText || q.task}. Do not score it as a failure.`,
               delegationId, revision: snapshot };
@@ -137,7 +147,6 @@ export function createTutorDiagnosticDirector({ send, assess, question, context,
           }
           status('listening'); return;
         }
-        rows.forEach(row => row.fragments.forEach(fragment => consumed.add(fragment.eventId)));
         errors = 0;
         const userEnd = Math.max(...rows.map(row => row.endMs));
         const userStart = Math.min(...rows.map(row => row.startMs));
@@ -145,14 +154,18 @@ export function createTutorDiagnosticDirector({ send, assess, question, context,
           && transcript.rows.some(row => row.role === 'assistant' && row.startMs >= userStart
             && row.endMs >= userEnd && row.transcript.trim().length > 8);
         if (alreadyAnswered) {
+          if (!commit()) { schedule(); return; }
           append('session.thinking.append', context(), delegationId);
           trace({ type: 'director.reply_already_spoken', questionId: q.id, answerRevision: snapshot });
           status('listening'); return;
         }
         if (result.speak) {
-          pendingDelivery = { message: result.speak, delegationId, revision: snapshot };
+          pendingDelivery = { message: result.speak, delegationId, revision: snapshot, commit };
           deliver();
-        } else status('listening');
+        } else {
+          if (!commit()) { schedule(); return; }
+          status('listening');
+        }
       } catch (error) {
         logError(error);
         errors += 1;
@@ -230,6 +243,8 @@ export function createTutorDiagnosticDirector({ send, assess, question, context,
     finalize() { if (closed) return false; errors = 0; schedule(250, null, true); return true; },
     async drain() { if (operation) await operation; await writes; },
     async close(timeoutMs = 5000) {
+      // Keep a finished, still-current assessment when stopping before its follow-up is spoken.
+      pendingDelivery?.commit?.(); pendingDelivery = null;
       closed = true; clearTimeout(timer); clearTimeout(deliveryTimer);
       clearTimeout(speechTimer); clearTimeout(responseTimer);
       if (!finalEvent) await new Promise(resolve => {

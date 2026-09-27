@@ -1434,35 +1434,41 @@ export function createTutorV2Service({
       dimensions: {}, targetSkillIds: evidence && evidence.outcome !== 'uncertain' ? [question.skillId] : [],
       correction: { required: false }, notes: [result.observation], createdAt: Date.now()
     });
-    controller.activityState.diagnostic = next;
-    controller.latestAssessment = assessment;
-    controller.metrics.userTurns += evidence ? 1 : 0;
-    controller.updatedAt = Date.now();
-    if (evidence && evidence.outcome !== 'uncertain') {
-      const learning = applyAssessmentToMastery({ mastery: controller.mastery, reviewItems: controller.reviewItems, assessment });
-      controller.mastery = learning.mastery; controller.reviewItems = learning.reviewItems;
-      // A successful easy probe is evidence of that task, not a high global CEFR score.
-      controller.profile = profileWithDiagnostic(controller.profile, next);
-    }
-    appendEvent(controller, { type: 'diagnostic.decision', questionId: question.id, answerRevision: turn.answerRevision,
-      detail: JSON.stringify({ intent: result.intent, outcome: evidence?.outcome, next: evidence?.nextDecision,
-        nextQuestionId: next.pendingQuestion.id }) });
-    const learningSnapshot = { profile: controller.profile, preferences: controller.preferences,
-      mastery: controller.mastery, reviewItems: controller.reviewItems };
-    // State is committed synchronously with the revision check. Storage is drained on stop/delete;
-    // it must not delay speech or let a late caption land halfway through a state transition.
-    controller.pendingDiagnosticWrites = (controller.pendingDiagnosticWrites || Promise.resolve()).then(async () => {
-      await persistAssessment(controller, assessment);
-      await persistController(controller);
+    let committed = false;
+    return { ...result, speak: diagnosticReply(next, result, question), commit() {
+      if (committed) return true;
+      if (!turn.isCurrent() || controller.activityState.diagnostic.status !== 'active') return false;
+      committed = true;
+      // Advance only at the delivery boundary. A caption arriving while speech is queued
+      // must still extend the original answer, without awarding evidence twice.
+      controller.activityState.diagnostic = next;
+      controller.latestAssessment = assessment;
+      controller.metrics.userTurns += evidence ? 1 : 0;
+      controller.updatedAt = Date.now();
       if (evidence && evidence.outcome !== 'uncertain') {
-        await persistEvidence(controller, assessmentEvidence(controller, assessment));
-        await writeUserLearningState(controller.userId, learningSnapshot);
+        const learning = applyAssessmentToMastery({ mastery: controller.mastery, reviewItems: controller.reviewItems, assessment });
+        controller.mastery = learning.mastery; controller.reviewItems = learning.reviewItems;
+        // A successful easy probe is evidence of that task, not a high global CEFR score.
+        controller.profile = profileWithDiagnostic(controller.profile, next);
       }
-    }).catch(error => {
-      controller.directorStatus = 'assessment_unavailable';
-      logger.warn?.('[tutor-v2] diagnostic persistence failed', error.message);
-    });
-    return { ...result, speak: diagnosticReply(next, result, question) };
+      appendEvent(controller, { type: 'diagnostic.decision', questionId: question.id, answerRevision: turn.answerRevision,
+        detail: JSON.stringify({ intent: result.intent, outcome: evidence?.outcome, next: evidence?.nextDecision,
+          nextQuestionId: next.pendingQuestion.id }) });
+      const learningSnapshot = { profile: controller.profile, preferences: controller.preferences,
+        mastery: controller.mastery, reviewItems: controller.reviewItems };
+      controller.pendingDiagnosticWrites = (controller.pendingDiagnosticWrites || Promise.resolve()).then(async () => {
+        await persistAssessment(controller, assessment);
+        await persistController(controller);
+        if (evidence && evidence.outcome !== 'uncertain') {
+          await persistEvidence(controller, assessmentEvidence(controller, assessment));
+          await writeUserLearningState(controller.userId, learningSnapshot);
+        }
+      }).catch(error => {
+        controller.directorStatus = 'assessment_unavailable';
+        logger.warn?.('[tutor-v2] diagnostic persistence failed', error.message);
+      });
+      return true;
+    } };
   }
 
   async function assessTurn(controller, { turnId, transcript, acoustic = {}, modelObservation = null, isCurrent = () => true }) {
@@ -1994,7 +2000,8 @@ export function createTutorV2Service({
       controller.liveDirector = (adaptive ? createTutorDiagnosticDirector : createTutorLiveDirector)({
         send: (event) => sendSideband(controller, event),
         assess: (turn) => adaptive ? assessDiagnosticTurn(controller, turn) : assessTurn(controller, turn),
-        question: () => controller.activityState.diagnostic?.pendingQuestion,
+        question: () => controller.activityState.diagnostic?.status === 'active'
+          ? controller.activityState.diagnostic.pendingQuestion : null,
         onQuestion: (transcript, rowId) => {
           const q = controller.activityState.diagnostic?.pendingQuestion;
           if (q && (q.spokenRowId === rowId || (!q.spokenText && /[?？]|ですか|ますか|ください|質問|どうぞ/.test(transcript)))) {
@@ -2079,6 +2086,9 @@ export function createTutorV2Service({
         throw Object.assign(new Error('This baseline cannot be resumed.'), { status: 409 });
       }
       if (existing.liveDirector && existing.status === 'active') await completeSession(existing);
+      if (existing.activityState.diagnostic.status === 'completed') {
+        throw Object.assign(new Error('This baseline has finished and cannot be resumed.'), { status: 409 });
+      }
       if (!existing.liveDirector && existing.activityState.diagnostic.status === 'active') {
         existing.activityState.diagnostic = pauseDiagnostic(existing.activityState.diagnostic, existing.updatedAt);
       }

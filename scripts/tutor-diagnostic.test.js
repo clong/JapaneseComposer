@@ -128,12 +128,12 @@ test('adaptive state rejects stale activity revisions and cannot fall into legac
 const caption = (id, delta, start = 0, end = start + 500) => ({ type: 'session.input_transcript.delta', event_id: id, delta, start_ms: start, end_ms: end });
 const delegate = id => ({ type: 'session.delegation.created', delegation: { id, target: 'client' } });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-function harness(assess = async () => ({ intent: 'answer', complete: true, speak: '次の短い質問。' })) {
+function harness(assess = async () => ({ intent: 'answer', complete: true, speak: '次の短い質問。' }), options = {}) {
   const sent = []; const calls = []; const traces = [];
   const director = createTutorDiagnosticDirector({ send: e => { sent.push(e); return true; },
     assess: async turn => { calls.push(turn); return assess(turn); }, question: () => ({ id: 'q1', revision: 1, task: 'Name?' }),
     context: () => 'Pending task', persistRow: async () => {}, persistFragment: async () => {},
-    status() {}, usage() {}, logError() {}, trace: e => traces.push(e), stableMs: 5, speechQuietMs: 0 });
+    status() {}, usage() {}, logError() {}, trace: e => traces.push(e), stableMs: 5, speechQuietMs: 0, ...options });
   return { director, sent, calls, traces };
 }
 
@@ -164,6 +164,51 @@ test('late caption revisions discard stale work and retry without another delega
     finish(); await delay(25); await h.director.drain();
     assert.equal(h.calls.length, 2);
     assert.equal(h.sent.filter(e => e.type === 'session.commentary.append').length, 1);
+  } finally { h.director.cancel(); }
+});
+
+test('a caption arriving before queued delivery extends the old question without committing stale evidence', async () => {
+  let question = { id: 'q1', revision: 1, task: 'Where are you from?' };
+  let commits = 0;
+  let now = 1000;
+  const h = harness(async turn => ({ intent: 'answer', complete: true, speak: 'Next question',
+    commit() {
+      assert.equal(turn.isCurrent(), true);
+      commits += 1; question = { id: 'q2', revision: 2, task: 'Favorite food?' }; return true;
+    }
+  }), { question: () => question, speechQuietMs: 100, now: () => now, stableMs: 0 });
+  try {
+    h.director.handle(caption('u1', 'クリスと申します。出身は', 0, 1000));
+    await delay(15); await h.director.drain();
+    assert.equal(h.calls.length, 1); assert.equal(commits, 0);
+    now += 50;
+    h.director.handle(caption('u2', 'カリフォルニアです', 1700, 2500));
+    await delay(15); await h.director.drain();
+    assert.equal(h.calls.length, 2);
+    assert.equal(h.calls[1].questionId, 'q1');
+    assert.match(h.calls[1].transcript, /出身は\s*カリフォルニアです/);
+    assert.equal(commits, 0);
+    now += 150; await delay(120);
+    assert.equal(commits, 1);
+    assert.equal(question.id, 'q2');
+    assert.equal(h.sent.filter(e => e.type === 'session.commentary.append').length, 1);
+    h.director.handle(delegate('late')); await delay(15);
+    assert.equal(h.calls.length, 2);
+  } finally { h.director.cancel(); }
+});
+
+test('stopping before queued speech preserves a current assessment without speaking', async () => {
+  let commits = 0;
+  const h = harness(async () => ({ intent: 'answer', complete: true, speak: 'Next question',
+    commit() { commits += 1; return true; }
+  }), { speechQuietMs: 1000 });
+  try {
+    h.director.handle(caption('u1', 'クリスです'));
+    await delay(20); await h.director.drain();
+    assert.equal(commits, 0);
+    await h.director.close(1);
+    assert.equal(commits, 1);
+    assert.equal(h.sent.filter(e => e.type === 'session.commentary.append').length, 0);
   } finally { h.director.cancel(); }
 });
 

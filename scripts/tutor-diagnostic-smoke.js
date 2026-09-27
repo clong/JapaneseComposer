@@ -62,9 +62,13 @@ const director = createTutorDiagnosticDirector({ send,
     if (!response.ok) throw new Error(safe(payload.error?.message || 'Assessment failed'));
     const result = validateDiagnosticDecision(JSON.parse(payload.output.flatMap(x => x.content || []).filter(x => x.type === 'output_text').map(x => x.text).join('')));
     if (!turn.isCurrent()) return null;
-    activityState.diagnostic = recordDiagnosticResult(activityState.diagnostic, result, turn);
-    assessments.push({ transcript: turn.transcript, intent: result.intent, evidence: activityState.diagnostic.evidence.length });
-    return { ...result, speak: diagnosticReply(activityState.diagnostic, result, question) };
+    const next = recordDiagnosticResult(activityState.diagnostic, result, turn);
+    return { ...result, speak: diagnosticReply(next, result, question), commit() {
+      if (!turn.isCurrent()) return false;
+      activityState.diagnostic = next;
+      assessments.push({ transcript: turn.transcript, intent: result.intent, evidence: next.evidence.length });
+      return true;
+    } };
   }
 });
 const greeting = createTutorLiveGreeting(send, 'diagnostic_smoke_greeting');
