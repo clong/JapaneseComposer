@@ -8,8 +8,8 @@ import { buildDiagnosticBlueprint, createInitialActivityState, normalizeTurnAsse
 
 function answer(state, overrides = {}, time = 2000) {
   return recordDiagnosticResult(state, { intent: 'answer', complete: true, success: true, confidence: 0.9,
-    assistance: false, observation: 'Answered the pending question.', topic: 'food', ...overrides },
-  { turnId: `t${state.evidence.length}`, questionId: state.pendingQuestion.id, answerRevision: state.evidence.length + 1,
+    validity: 'valid', assistance: false, observation: 'Answered the pending question.', topic: 'food', ...overrides },
+  { turnId: `t${state.exchanges.length}`, questionId: state.pendingQuestion.id, answerRevision: state.exchanges.length + 1,
     transcript: 'すしです。' }, time);
 }
 
@@ -61,7 +61,7 @@ test('unclear and unfinished speech do not award evidence; results are idempoten
   assert.equal(answer(state, { complete: false }).evidence.length, 0);
   assert.equal(answer(state, { confidence: 0.3 }).evidence.length, 0);
   const turn = { turnId: 't1', questionId: state.pendingQuestion.id, answerRevision: 1, transcript: 'Chrisです' };
-  const result = { intent: 'answer', complete: true, success: true, confidence: 0.9 };
+  const result = { intent: 'answer', complete: true, success: true, confidence: 0.9, validity: 'valid' };
   const next = recordDiagnosticResult(state, result, turn, 2000);
   assert.equal(recordDiagnosticResult(next, result, turn, 2500).evidence.length, 1);
 });
@@ -209,6 +209,7 @@ test('stopping before queued speech preserves a current assessment without speak
     await h.director.close(1);
     assert.equal(commits, 1);
     assert.equal(h.sent.filter(e => e.type === 'session.commentary.append').length, 0);
+    assert.equal(h.sent.filter(e => e.type === 'session.thinking.append').length, 0);
   } finally { h.director.cancel(); }
 });
 

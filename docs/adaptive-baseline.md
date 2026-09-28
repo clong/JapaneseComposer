@@ -8,7 +8,23 @@ The first question asks the learner's name and accepts a name alone. Four separa
 
 The diagnostic targets eight to ten active minutes. It can finish after eight minutes when each track has at least two distinct question samples. At ten minutes it ends even if coverage is incomplete, reporting the uncertainty. Stopping early pauses the same baseline; resuming preserves its evidence and pending question. These thresholds define sampling coverage, not a validated CEFR certification.
 
-`DiagnosticState` and `DiagnosticEvidence` use version 1, stored in the existing session's `activity_state` JSON. The idempotent migration marker is `tutor_v2_005_adaptive_diagnostic`. Each evidence record contains the question ID, activity revision, logical answer ID and revision, actual prompt, combined answer, assistance, outcome, confidence, and progression decision. No new audio format or retention policy is introduced.
+New `DiagnosticState` and `DiagnosticEvidence` records use version 2. Version 1 history remains readable. Version 2 adds exact Japanese probe contracts, listening facts and answer keys, question validity, logical-answer row associations, learner facts with source-turn references, and specific support needs. Invalid tutor questions cannot award or subtract learner evidence.
+
+The `tutor_v2_006_learning_plan` migration adds separate learning-evidence, review-attempt, learning-plan, and reassessment-audit tables. Recordings and raw caption fragments are unchanged. Reassessment snapshots preserve original activity state, outcome, and assessments; replacement evidence, profile, reviews, and plan are committed in one SQLite transaction after all model calls succeed.
+
+## Session progress and learning metrics
+
+The active baseline displays elapsed time, an estimated remaining range, current skill, and the number of areas with two distinct valid samples. Coverage is not session completion. An ongoing exchange may use up to 30 seconds after the ten-minute limit. Stopping pauses the active clock.
+
+Learning metrics count logical answers rather than caption fragments. Independent performance uses valid scorable attempts as its denominator; skill comparisons retain difficulty bands. The weekly table covers rolling seven-day windows. Seven-day retention requires a scheduled independent retrieval at least seven days after the first independent demonstration, with three eligible attempts before displaying a rate. Old review repetition counters are not retention measurements.
+
+## Personal learning plan and reassessment
+
+Completed sessions produce a persisted rolling plan with five unfinished lessons plus completed history. Each objective requires two distinct independent performances; completing a lesson does not claim long-term retention. Prerequisite lessons may appear locked until their required evidence exists. Custom practice does not replace the plan.
+
+`POST /api/tutor/v2/learning-plan` retries plan preparation. `POST /api/tutor/v2/sessions/:id/reassess` starts an authenticated, idempotent audit; poll the ordinary session GET for its status. Failed audits retain original results and can be retried. Reassessment prevents concurrent account mutations while it runs. Deleting a session deletes its audit snapshots, evidence, and retrieval attempts and rebuilds the remaining learning state.
+
+Existing production sessions must be reassessed only with a server that understands version 2. Do not write version 2 state into a database still served by an older deployment.
 
 Unknown assessment dimensions remain null. Transcript-only baselines do not award pronunciation or measured-fluency scores. Progress reports include actual answer examples and distinguish independent performance, performance with help, repeated difficulty, and untested skills. Older baseline records remain readable and are labeled limited evidence; their assessments are excluded when rebuilding mastery after a deletion.
 
@@ -47,6 +63,8 @@ For browser checks, first start the dev server with `data/local.env`, `REQUIRE_G
 TUTOR_DIAGNOSTIC_BROWSER=1 TUTOR_DIAGNOSTIC_URL=http://localhost:5174 node scripts/tutor-diagnostic-browser.js
 ```
 
-This creates and deletes one empty local baseline and checks history and progress at desktop and mobile widths. It does not connect to a voice session or modify production data.
+This creates and deletes an empty local baseline and a plan lesson. It checks history, learning metrics, plan display, active baseline status, and the first-lesson request at desktop and mobile widths. Connection requests are intercepted before they reach OpenAI. It does not modify production data.
 
-The measured answer-caption-to-first-audio latency was 3.4-4.0 seconds in one corrected five-turn smoke and 3.4-8.2 seconds in a later run. The p95 target below 2.5 seconds is not met. This is caption/control telemetry, not a calibrated end-of-speech latency measurement. Synthetic speech and deterministic tests do not establish performance on real microphones, speaker echo, accents, or an expert-labeled proficiency corpus. Live remains a generative speech model: prompt constraints and regression checks reduce unwanted narration but do not provide a formal guarantee for every future conversation.
+The final September 27 five-turn speech check recorded 4.0-4.4 seconds from answer captions to first audio. The p95 target below 2.5 seconds is not met. This is caption/control telemetry, not a calibrated end-of-speech latency measurement. Synthetic speech and deterministic tests do not establish performance on real microphones, speaker echo, accents, or an expert-labeled proficiency corpus. Live remains a generative speech model: prompt constraints and regression checks reduce unwanted narration but do not provide a formal guarantee for every future conversation.
+
+See [the September 27 validation record](baseline-validation-2026-09-27.md) for the production reassessment status and verification results.

@@ -730,6 +730,7 @@ export function AppShell() {
               </div>
 
               <section className="tutor-practice-view" id="tutor-practice-view">
+                <section id="tutor-learning-plan" className="tutor-learning-plan-band" hidden />
                 <section className="tutor-mission-band" id="tutor-v2-today" aria-labelledby="tutor-mission-title">
                   <div className="tutor-mission-copy">
                     <div className="tutor-mission-kicker">Today's mission</div>
@@ -766,6 +767,7 @@ export function AppShell() {
                     <strong id="tutor-current-goal">Start today's mission</strong>
                     <div className="tutor-activity-track" aria-hidden="true"><span id="tutor-activity-progress" /></div>
                   </div>
+                  <section id="tutor-baseline-progress" className="tutor-baseline-progress" aria-label="Baseline progress" hidden />
                   <div className="tutor-avatar-experience" id="tutor-avatar" data-state="idle">
                     <div className="tutor-avatar-heading">
                       <span data-avatar-eyebrow="">Your practice companion</span>
@@ -976,6 +978,7 @@ export function AppShell() {
                   <ActionButton id="tutor-benchmark" label="Record benchmark" icon={DashboardIcon} variant="solid" className="primary" />
                 </div>
                 <div className="tutor-progress-levels" id="tutor-progress-levels" />
+                <section id="tutor-weekly-progress" className="tutor-weekly-progress" />
                 <div className="tutor-progress-grid">
                   <section><div className="tutor-section-title">JF/CEFR dimensions</div><div id="tutor-progress-dimensions" className="tutor-progress-dimensions" /></section>
                   <section><div className="tutor-section-title">Priority skills</div><div id="tutor-progress-skills" className="tutor-progress-skills" /></section>

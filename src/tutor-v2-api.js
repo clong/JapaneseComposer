@@ -51,6 +51,14 @@ export function controlTutorV2Session(sessionId, action, options = {}) {
   });
 }
 
+export function reassessTutorBaseline(sessionId) {
+  return requestJson(`/sessions/${encodeURIComponent(sessionId)}/reassess`, { method: 'POST', body: {} });
+}
+
+export function retryTutorLearningPlan() {
+  return requestJson('/learning-plan', { method: 'POST', body: {} });
+}
+
 export function endTutorV2Session(sessionId, options = {}) {
   return requestJson(`/sessions/${encodeURIComponent(sessionId)}/end`, {
     method: 'POST',

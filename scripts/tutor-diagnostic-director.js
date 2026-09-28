@@ -1,5 +1,6 @@
 import { createTutorLiveTranscript, tutorLiveAppends } from '../src/tutor-live.js';
 import { createHash } from 'node:crypto';
+import { cleanTutorCaption } from '../src/tutor-probes.js';
 
 // Captions are display rows. A logical answer spans all rows for one pending question.
 export function createTutorDiagnosticDirector({ send, assess, question, context, persistRow, persistFragment,
@@ -102,7 +103,8 @@ export function createTutorDiagnosticDirector({ send, assess, question, context,
       }
       return;
     }
-    const answerText = rows.map(row => row.transcript).join(' ').trim();
+    const answerText = cleanTutorCaption(rows.map(row => row.transcript).join(' '));
+    if (!answerText) { rows.forEach(row => row.fragments.forEach(fragment => consumed.add(fragment.eventId))); return; }
     if (!manual && inputAudioSeen && now() - lastVoicedInputAt > 2500 && answerText.length <= 6) {
       rows.forEach(row => row.fragments.forEach(fragment => consumed.add(fragment.eventId)));
       trace({ type: 'director.uncertain_audio', detail: 'Short caption without recent voiced input; excluded from assessment.' });
@@ -155,7 +157,8 @@ export function createTutorDiagnosticDirector({ send, assess, question, context,
             && row.endMs >= userEnd && row.transcript.trim().length > 8);
         if (alreadyAnswered) {
           if (!commit()) { schedule(); return; }
-          append('session.thinking.append', context(), delegationId);
+          // The task is unchanged. Re-sending delivery or hint context here can make
+          // Live continue a clarification it has already finished speaking.
           trace({ type: 'director.reply_already_spoken', questionId: q.id, answerRevision: snapshot });
           status('listening'); return;
         }
