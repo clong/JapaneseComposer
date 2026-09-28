@@ -25,7 +25,14 @@ export function createTutorLearningStore({ query, execute, quote }) {
     (${quote(userId)},${quote(sessionId)},${audit.revision},${json(audit)});`;
   async function read(userId) {
     const evidence = (await query(`SELECT payload FROM user_tutor_learning_evidence WHERE user_id=${quote(userId)};`)).map(parse);
-    const reviews = (await query(`SELECT payload FROM user_tutor_review_attempts WHERE user_id=${quote(userId)};`)).map(parse);
+    const reviews = (await query(`SELECT payload FROM user_tutor_review_attempts WHERE user_id=${quote(userId)};`)).map(parse)
+      .map(review => {
+        // Deletion or reassessment can remove the performance that originally established this target.
+        const learnedAt = evidence.filter(e => e.validity === 'valid' && e.outcome === 'independent'
+          && e.skillId === review.skillId && e.createdAt < review.attemptedAt)
+          .reduce((oldest, e) => Math.min(oldest, e.createdAt), Infinity);
+        return { ...review, learnedAt: Number.isFinite(learnedAt) ? learnedAt : null };
+      });
     const plans = await query(`SELECT payload FROM user_tutor_learning_plans WHERE user_id=${quote(userId)};`);
     const supportNeeds = [];
     const sessions = (await query(`SELECT session_id,started_at,ended_at,activity_state FROM user_tutor_sessions_v2 WHERE user_id=${quote(userId)};`))

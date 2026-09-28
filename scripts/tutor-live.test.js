@@ -516,6 +516,16 @@ test('adaptive baseline persists question evidence, survives pause/resume, and d
     assert.equal(finished.status, 'completed');
     assert.equal(finished.diagnostic.completionReason, 'time_limit_partial');
     assert.equal(finished.learningPlan.lessons.length, 5, 'Results must persist the rolling plan before returning it.');
+    const benchmarkAt = Date.now() - 86400000;
+    query(`INSERT INTO user_tutor_sessions_v2
+      SELECT user_id,'previous_benchmark','completed',mode,'{"id":"benchmark_previous"}','{}','{}','{}',
+        model,voice,'[]',${benchmarkAt},${benchmarkAt},${benchmarkAt}
+      FROM user_tutor_sessions_v2 WHERE session_id='${initial.id}';
+      INSERT INTO user_tutor_turn_assessments
+      SELECT user_id,'previous_benchmark','benchmark_answer',transcript,
+        json_set(assessment,'$.id','benchmark_assessment','$.turnId','benchmark_answer'),created_at,updated_at
+      FROM user_tutor_turn_assessments LIMIT 1;
+      UPDATE user_tutor_profiles_v2 SET profile=json_set(profile,'$.lastBenchmarkAt',${benchmarkAt}) WHERE user_id='local';`);
     actorId = 'other';
     assert.equal((await request(`${base}/reassess`, 'POST', '{}')).statusCode, 404);
     actorId = 'local';
@@ -543,6 +553,7 @@ test('adaptive baseline persists question evidence, survives pause/resume, and d
       'Concurrent retry requests must share one revision after the failed audit.');
     assert.equal((await request(`${base}/reassess`, 'POST', '{}')).statusCode, 200);
     const progress = (await request('/api/tutor/v2/progress')).body;
+    assert.equal(progress.profile.lastBenchmarkAt, benchmarkAt, 'Baseline reassessment must retain unrelated benchmark history.');
     assert.equal(progress.learningPlan.lessons.filter(l => l.status !== 'completed').length, 5);
     assert.ok(progress.learningMetrics.attempts > 0);
     const today = (await request('/api/tutor/v2/today')).body;
@@ -554,6 +565,7 @@ test('adaptive baseline persists question evidence, survives pause/resume, and d
     const lessonSession = (await request('/api/tutor/v2/sessions', 'POST', JSON.stringify({ planLessonId: firstLesson.id }))).body.session;
     assert.equal(lessonSession.mission.planLessonId, firstLesson.id);
     await request(`/api/tutor/v2/sessions/${lessonSession.id}`, 'DELETE');
+    await request('/api/tutor/v2/sessions/previous_benchmark', 'DELETE');
     await request(base, 'DELETE');
     assert.equal(query('SELECT COUNT(*) AS n FROM user_tutor_turn_assessments')[0].n, 0);
     assert.equal(query('SELECT COUNT(*) AS n FROM user_tutor_learning_evidence')[0].n, 0);

@@ -4,6 +4,7 @@ import { createDiagnosticState, recordDiagnosticResult, diagnosticReport, finish
 import { createProbeContract, validateSpokenProbe, learnerIntentOverride, cleanTutorCaption, groupLogicalTutorTurns, captureSpokenProbe } from '../src/tutor-probes.js';
 import { buildLearningPlan, learningMetrics, recordLessonPerformance } from '../src/tutor-learning-plan.js';
 import { reconstructExchanges, reassessDiagnostic } from './tutor-reassessment.js';
+import { createTutorLearningStore } from './tutor-learning-store.js';
 
 test('September 27 regression: optional invitation, session status and already-answered objections are not failures', () => {
   assert.equal(learnerIntentOverride('今質問はありません', '何か簡単な質問がありますか？'), 'optional_decline');
@@ -102,6 +103,28 @@ test('retention requires scheduled independent retrieval after seven days and at
   const review = { scheduled: true, independent: true, learnedAt: 1000, attemptedAt: 1000 + 7 * 86400000, success: true };
   assert.equal(learningMetrics({ reviews: [review, { ...review, independent: false }, { ...review, attemptedAt: 2000 }] }).sevenDayRetention.attempts, 1);
   assert.equal(learningMetrics({ reviews: [review, review, { ...review, success: false }] }).sevenDayRetention.rate, 2 / 3);
+});
+
+test('deletion or reassessment recomputes retention eligibility without changing the stored review', async () => {
+  const day = 86400000;
+  let rows = [evidence('original'), evidence('later', 'independent', { createdAt: 1000 + 3 * day })];
+  const review = { skillId: 'a1.introductions', scheduled: true, independent: true,
+    learnedAt: 1000, attemptedAt: 1000 + 8 * day, success: true };
+  const store = createTutorLearningStore({ quote: value => `'${value}'`, execute: async () => {},
+    query: async sql => (sql.includes('user_tutor_learning_evidence') ? rows
+      : sql.includes('user_tutor_review_attempts') ? [review] : []).map(payload => ({ payload: JSON.stringify(payload) })) });
+  assert.equal((await store.read('local')).metrics.sevenDayRetention.attempts, 1);
+  rows = rows.slice(1);
+  assert.equal((await store.read('local')).metrics.sevenDayRetention.attempts, 0);
+  rows = [evidence('invalid', 'independent', { validity: 'invalid' }),
+    evidence('retrieval', 'independent', { createdAt: review.attemptedAt })];
+  assert.equal((await store.read('local')).reviews[0].learnedAt, null);
+  assert.equal(review.learnedAt, 1000, 'Reconciliation must preserve the original stored record.');
+});
+
+test('a failed plan does not prevent later independent answers from being recorded', () => {
+  const failed = { status: 'failed', error: 'Retry preparing your learning plan.' };
+  assert.equal(recordLessonPerformance(failed, '', evidence('answer')), failed);
 });
 
 test('five-lesson plan distinguishes untested targets and preserves completed objectives', () => {

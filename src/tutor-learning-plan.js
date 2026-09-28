@@ -87,7 +87,7 @@ export function buildLearningPlan({ evidence = [], supportNeeds = [], mastery = 
 }
 
 export function recordLessonPerformance(plan, lessonId, evidence) {
-  if (!plan || evidence.validity !== 'valid' || evidence.outcome !== 'independent') return plan;
+  if (!Array.isArray(plan?.lessons) || evidence.validity !== 'valid' || evidence.outcome !== 'independent') return plan;
   return { ...plan, lessons: plan.lessons.map(lesson => {
     if (lesson.id !== lessonId || lesson.primarySkillId !== evidence.skillId) return lesson;
     const probeKey = String(evidence.prompt || '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();

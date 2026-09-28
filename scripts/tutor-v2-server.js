@@ -2167,7 +2167,7 @@ export function createTutorV2Service({
       });
     if (body?.planLessonId && !body.diagnostic) {
       const plan = (await learningStore.read(actor.id)).plan;
-      const lesson = plan?.lessons.find(l => l.id === body.planLessonId && l.status === 'ready');
+      const lesson = plan?.lessons?.find(l => l.id === body.planLessonId && l.status === 'ready');
       if (!lesson) throw Object.assign(new Error('This lesson is no longer available. Refresh your plan.'), { status: 409 });
       mission = normalizeMission({ ...mission, id: `plan_${lesson.id}`, planLessonId: lesson.id, planId: plan.id,
         title: lesson.title, objective: lesson.objective, targetSkillIds: [lesson.primarySkillId, ...lesson.supportingSkillIds],
@@ -2478,6 +2478,7 @@ export function createTutorV2Service({
       const profileBaseline = latestBaseline?.session_id === sessionId ? revised.diagnostic
         : parseStoredJson(latestBaseline?.activity_state, {}).diagnostic || revised.diagnostic;
       rebuilt.profile = profileWithDiagnostic(rebuilt.profile, profileBaseline);
+      rebuilt.profile.lastBenchmarkAt = learning.profile.lastBenchmarkAt;
       rebuilt.profile.completedDiagnosticAt = profileBaseline.completionReason === 'sufficient_coverage'
         ? latestBaseline?.ended_at || controller.endedAt : null;
       const evidence = [...data.evidence.filter(e => e.sessionId !== sessionId), ...revised.diagnostic.evidence];

@@ -16,10 +16,11 @@ Direct session-API inspection was unavailable in the signed-in browser. A produc
 - Metrics use valid logical answers, retain clear unsuccessful attempts in the denominator, and compare performance within the same target and difficulty. Seven-day retrieval requires actual eligible attempts, not review counters.
 - Five unfinished lessons are persisted with prerequisite checks, evidence references, session duration, and two distinct independent performances per objective. Completed objectives remain separate from delayed retention.
 - Reassessment preserves original records and commits replacement evidence, profile, reviews, and plan atomically. Tests cover failure, retry, concurrent duplicate requests, account isolation, and deletion-driven rebuilding.
+- Failed plan preparation does not block later assessments. Retention eligibility is recomputed from surviving valid evidence, and baseline reassessment preserves unrelated benchmark history.
 
 ## Verification results
 
-- `npm test`: 184 tests, 183 passed, one unrelated opt-in Reading test skipped.
+- `npm test`: 186 tests, 185 passed, one unrelated opt-in Reading test skipped.
 - `npm run build`: passed.
 - Chrome at 1440px and 390px: plan display, baseline status, history, learning metrics, and first-lesson creation passed without page errors or horizontal overflow. Voice connection requests were intercepted in this UI check.
 - Live assessment rubric: all 11 regression examples passed, including the ambiguous restaurant prompt and missing udon listening information.
