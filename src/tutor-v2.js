@@ -163,7 +163,7 @@ export function normalizeSpeakingProfile(profile = {}, legacyProfile = null) {
     goal: cleanString(source.goal, 240) || 'Hold comfortable everyday conversations in Japanese.',
     nativeLanguage: cleanString(source.nativeLanguage, 40) || 'English',
     targetLanguage: 'Japanese',
-    baseline: source.baseline?.version === 1 ? source.baseline : null,
+    baseline: [1, 2].includes(source.baseline?.version) ? source.baseline : null,
     dimensions,
     strengths: cleanStringList(source.strengths || legacy.strengths, 12, 180),
     prioritySkills: cleanStringList(source.prioritySkills, 12, 120),
@@ -262,6 +262,7 @@ export function normalizeMission(mission = {}) {
   const primarySkill = SKILL_BY_ID.get(targetSkillIds[0]);
   return {
     id: cleanString(mission.id, 120) || `mission_${Date.now()}`,
+    planLessonId: cleanString(mission.planLessonId, 180), planId: cleanString(mission.planId, 180),
     title: cleanString(mission.title, 160) || primarySkill?.title || 'Japanese speaking practice',
     objective: cleanString(mission.objective, 500) || primarySkill?.objective || 'Sustain a short Japanese exchange.',
     mode: normalizeMode(mission.mode),
@@ -382,7 +383,7 @@ export function normalizeLessonBlueprint(blueprint = {}) {
   return {
     id: cleanString(blueprint.id, 120) || `blueprint_${Date.now()}`,
     schemaVersion: TUTOR_V2_SCHEMA_VERSION,
-    diagnosticVersion: blueprint.diagnosticVersion === 1 ? 1 : 0,
+    diagnosticVersion: [1, 2].includes(blueprint.diagnosticVersion) ? blueprint.diagnosticVersion : 0,
     mission,
     activities,
     languageBudget: {
@@ -508,7 +509,7 @@ export function buildDiagnosticBlueprint({ profile = {}, durationMinutes = 10 } 
   ];
   return normalizeLessonBlueprint({
     id: `blueprint_${mission.id}`,
-    diagnosticVersion: 1,
+    diagnosticVersion: 2,
     mission,
     activities: definitions.map((definition, index) => createActivity({
       ...definition,
@@ -546,7 +547,7 @@ export function normalizeActivityState(state = {}, blueprint = null) {
 
 export function createInitialActivityState(blueprint) {
   return normalizeActivityState({
-    diagnostic: blueprint?.diagnosticVersion === 1 ? createDiagnosticState(blueprint.id) : null,
+    diagnostic: blueprint?.diagnosticVersion ? createDiagnosticState(blueprint.id) : null,
     blueprintId: blueprint?.id,
     activityIndex: 0,
     attemptCount: 0,
@@ -568,8 +569,8 @@ export function normalizeTurnAssessment(assessment = {}) {
   });
   return {
     id: cleanString(source.id, 120) || `assessment_${Date.now()}`,
-    diagnosticVersion: source.diagnosticVersion === 1 ? 1 : 0,
-    intent: ['answer', 'clarification', 'off_topic', 'unclear', 'incomplete'].includes(source.intent) ? source.intent : 'answer',
+    diagnosticVersion: [1, 2].includes(source.diagnosticVersion) ? source.diagnosticVersion : 0,
+    intent: ['answer', 'clarification', 'off_topic', 'unclear', 'incomplete', 'session_status', 'optional_decline', 'already_answered'].includes(source.intent) ? source.intent : 'answer',
     questionId: cleanString(source.questionId, 160),
     answerRevision: Math.max(0, Number(source.answerRevision) || 0),
     activityRevision: Math.max(0, Number(source.activityRevision) || 0),

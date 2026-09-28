@@ -447,6 +447,7 @@ test('adaptive baseline persists question evidence, survives pause/resume, and d
   query('CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT, name TEXT, picture TEXT, created_at INTEGER, updated_at INTEGER);');
   const sockets = [];
   const inputs = [];
+  let actorId = 'local'; let failAuditCommit = false;
   class Socket extends EventEmitter {
     constructor() { super(); this.readyState = 1; this.sent = []; sockets.push(this); queueMicrotask(() => this.emit('open')); }
     send(value) {
@@ -456,15 +457,19 @@ test('adaptive baseline persists question evidence, survives pause/resume, and d
     close() { this.readyState = 3; this.emit('close'); }
   }
   const service = createTutorV2Service({ apiKey: 'test-secret', workspaceDbPath: databasePath, audioDirectory: directory,
-    runSqlite: async (_path, sql, options) => options?.json ? JSON.stringify(query(sql)) : query(sql),
+    runSqlite: async (_path, sql, options) => {
+      if (failAuditCommit && sql.includes('UPDATE user_tutor_sessions_v2 SET activity_state=')) throw new Error('Simulated transaction failure');
+      return options?.json ? JSON.stringify(query(sql)) : query(sql);
+    },
     sqlString: value => `'${String(value).replaceAll("'", "''")}'`, parseSqliteJson: value => JSON.parse(value || '[]'),
-    writeJson: (res, statusCode, body) => Object.assign(res, { statusCode, body }), getActor: async () => ({ id: 'local' }),
+    writeJson: (res, statusCode, body) => Object.assign(res, { statusCode, body }), getActor: async () => ({ id: actorId }),
     WebSocketImpl: Socket, logger: { warn() {}, error(error) { throw error; } },
     fetchImpl: async (url, options) => {
       if (url.endsWith('/live/sessions')) return new Response(JSON.stringify({ session: { id: `live_${sockets.length}` }, transport: { sdp: 'answer' } }));
       const input = JSON.parse(JSON.parse(options.body).input); inputs.push(input);
       const result = { intent: input.transcript.includes('なんで') ? 'off_topic' : 'answer', complete: true,
-        success: true, assistance: false, confidence: 0.9, topic: 'home', observation: 'Answered a personal information question.' };
+        success: true, assistance: false, confidence: 0.9, topic: 'home', observation: 'Answered a personal information question.',
+        probeValid: true, invalidReason: '', assistanceSubject: 'none', supportPhrase: '', facts: [] };
       return new Response(JSON.stringify({ output: [{ content: [{ type: 'output_text', text: JSON.stringify(result) }] }] }));
     } });
   const request = async (url, method = 'GET', body = '') => {
@@ -485,6 +490,7 @@ test('adaptive baseline persists question evidence, survives pause/resume, and d
     let saved = (await request(base)).body.session;
     assert.equal(saved.activityState.diagnostic.evidence.length, 1);
     const pending = saved.activityState.diagnostic.pendingQuestion.id;
+    emit(fragment('assistant', 'a2', saved.activityState.diagnostic.pendingQuestion.contract.promptJa, 3500, 4500));
     emit(fragment('user', 'u2', 'なんで確認しますか', 6000, 7000));
     await request(`${base}/control`, 'POST', '{"action":"handoff"}'); await wait();
     saved = (await request(base)).body.session;
@@ -503,8 +509,55 @@ test('adaptive baseline persists question evidence, survives pause/resume, and d
     assert.equal(resumed.id, initial.id); assert.equal(resumed.activityState.diagnostic.evidence.length, 2);
     await request(`${base}/connect`, 'POST', 'offer'); await wait();
     assert.equal(sockets.length, 2);
+    // The mock response exposes the controller state; advance active time without waiting ten minutes.
+    const finishing = (await request(base)).body.session;
+    finishing.activityState.diagnostic.elapsedMs = 600000;
+    const finished = (await request(`${base}/end`, 'POST')).body.session;
+    assert.equal(finished.status, 'completed');
+    assert.equal(finished.diagnostic.completionReason, 'time_limit_partial');
+    assert.equal(finished.learningPlan.lessons.length, 5, 'Results must persist the rolling plan before returning it.');
+    actorId = 'other';
+    assert.equal((await request(`${base}/reassess`, 'POST', '{}')).statusCode, 404);
+    actorId = 'local';
+    const beforeAudit = query('SELECT assessment FROM user_tutor_turn_assessments');
+    failAuditCommit = true;
+    assert.equal((await request(`${base}/reassess`, 'POST', '{}')).statusCode, 202);
+    let audit;
+    for (let i = 0; i < 30; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+      audit = (await request(base)).body.session.reassessment;
+      if (audit?.status !== 'running') break;
+    }
+    assert.equal(audit.status, 'failed');
+    assert.deepEqual(query('SELECT assessment FROM user_tutor_turn_assessments'), beforeAudit);
+    failAuditCommit = false;
+    const retries = await Promise.all([request(`${base}/reassess`, 'POST', '{}'), request(`${base}/reassess`, 'POST', '{}')]);
+    assert.ok(retries.every(response => response.statusCode === 202));
+    for (let i = 0; i < 30; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+      audit = (await request(base)).body.session.reassessment;
+      if (audit?.status !== 'running') break;
+    }
+    assert.equal(audit.status, 'completed');
+    assert.equal(query('SELECT COUNT(*) AS n FROM user_tutor_reassessments')[0].n, 2,
+      'Concurrent retry requests must share one revision after the failed audit.');
+    assert.equal((await request(`${base}/reassess`, 'POST', '{}')).statusCode, 200);
+    const progress = (await request('/api/tutor/v2/progress')).body;
+    assert.equal(progress.learningPlan.lessons.filter(l => l.status !== 'completed').length, 5);
+    assert.ok(progress.learningMetrics.attempts > 0);
+    const today = (await request('/api/tutor/v2/today')).body;
+    assert.deepEqual(today.learningPlan, progress.learningPlan);
+    assert.equal(today.learningMetrics.attempts, progress.learningMetrics.attempts);
+    assert.equal(audit.original, undefined, 'Audit backups must not bloat public polling responses.');
+    assert.ok(query('SELECT COUNT(*) AS n FROM user_tutor_mastery_evidence')[0].n > 0);
+    const firstLesson = progress.learningPlan.lessons.find(l => l.status === 'ready');
+    const lessonSession = (await request('/api/tutor/v2/sessions', 'POST', JSON.stringify({ planLessonId: firstLesson.id }))).body.session;
+    assert.equal(lessonSession.mission.planLessonId, firstLesson.id);
+    await request(`/api/tutor/v2/sessions/${lessonSession.id}`, 'DELETE');
     await request(base, 'DELETE');
     assert.equal(query('SELECT COUNT(*) AS n FROM user_tutor_turn_assessments')[0].n, 0);
+    assert.equal(query('SELECT COUNT(*) AS n FROM user_tutor_learning_evidence')[0].n, 0);
+    assert.equal(query('SELECT COUNT(*) AS n FROM user_tutor_reassessments')[0].n, 0);
     assert.equal((await request('/api/tutor/v2/progress')).body.profile.baseline, null);
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });

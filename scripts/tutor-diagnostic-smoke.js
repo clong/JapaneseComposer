@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
 import { createTutorDiagnosticDirector } from './tutor-diagnostic-director.js';
+import { validateSpokenProbe, learnerIntentOverride, captureSpokenProbe } from '../src/tutor-probes.js';
 import { createTutorLiveGreeting } from './tutor-live-server.js';
 import { createTutorLiveSessionConfig, tutorLiveActivityContext } from '../src/tutor-live.js';
 import { buildDiagnosticBlueprint, createInitialActivityState } from '../src/tutor-v2.js';
@@ -24,7 +25,7 @@ const config = createTutorLiveSessionConfig(options);
 config.audio.format = { type: 'audio/pcm', rate: 24000 };
 const clips = [];
 for (const [index, text] of ['クリスです。', 'カリフォルニアに住んでいます。',
-  'すみません。もう一度、ゆっくりお願いします。', 'お名前は何ですか？', 'すしが好きです。'].entries()) {
+  'すみません。もう一度、ゆっくりお願いします。', 'どこに住んでいますか？', 'すしが好きです。'].entries()) {
   const file = path.join(directory, `${index}.wav`);
   execFileSync('/usr/bin/say', ['-v', 'Kyoko', '-r', '140', '-o', file, '--file-format=WAVE', '--data-format=LEI16@24000', text], { stdio: 'ignore' });
   const wav = await readFile(file);
@@ -47,7 +48,7 @@ const director = createTutorDiagnosticDirector({ send,
     if (/[?？]|ですか|ますか|ください|してみて|質問|どうぞ/.test(transcript)) {
       lastQuestionAt = Date.now();
       const q = activityState.diagnostic.pendingQuestion;
-      if (!q.spokenText || q.spokenRowId === rowId) { q.spokenText = transcript; q.spokenRowId = rowId; }
+      captureSpokenProbe(q, transcript, rowId);
     }
   },
   assess: async turn => {
@@ -61,12 +62,16 @@ const director = createTutorDiagnosticDirector({ send,
     const payload = await response.json();
     if (!response.ok) throw new Error(safe(payload.error?.message || 'Assessment failed'));
     const result = validateDiagnosticDecision(JSON.parse(payload.output.flatMap(x => x.content || []).filter(x => x.type === 'output_text').map(x => x.text).join('')));
+    result.intent = learnerIntentOverride(turn.transcript, turn.prompt) || result.intent;
+    result.validity = validateSpokenProbe(question, question.spokenText, activityState.diagnostic.exchanges).validity;
+    if (result.probeValid === false) result.validity = 'invalid';
     if (!turn.isCurrent()) return null;
     const next = recordDiagnosticResult(activityState.diagnostic, result, turn);
     return { ...result, speak: diagnosticReply(next, result, question), commit() {
       if (!turn.isCurrent()) return false;
       activityState.diagnostic = next;
-      assessments.push({ transcript: turn.transcript, intent: result.intent, evidence: next.evidence.length });
+      assessments.push({ transcript: turn.transcript, intent: result.intent, evidence: next.evidence.length,
+        validity: result.validity, probeValid: result.probeValid, reason: result.invalidReason, prompt: question.spokenText });
       return true;
     } };
   }
